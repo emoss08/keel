@@ -1,0 +1,42 @@
+name: ci
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: keel
+          POSTGRES_PASSWORD: keel
+          POSTGRES_DB: keel
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U keel"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      KEEL_TEST_DSN: postgres://keel:keel@localhost:5432/keel?sslmode=disable
+      KEEL_TEST_REQUIRE: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+      - name: gofmt
+        run: test -z "$(gofmt -l . | tee /dev/stderr)"
+      - name: vet
+        run: go vet ./... && (cd bench && go vet ./...)
+      - name: generated code is current
+        run: go run ./cmd/keel gen -check -kinds internal/testmodels/keelkinds ./internal/testmodels/...
+      - name: test
+        run: go test -race -count=1 ./...
+      - name: benchmarks compile and run once
+        run: cd bench && go test -run xxx -bench . -benchtime 1x ./...

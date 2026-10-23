@@ -1,0 +1,16 @@
+.PHONY: check gen test bench
+
+check:
+	@test -z "$$(gofmt -l . | tee /dev/stderr)" || (echo "run gofmt -w"; exit 1)
+	go vet ./...
+	cd bench && go vet ./...
+	go run ./cmd/keel gen -check -kinds internal/testmodels/keelkinds ./internal/testmodels/...
+
+gen:
+	go run ./cmd/keel gen -kinds internal/testmodels/keelkinds ./internal/testmodels/...
+
+test:
+	go test -race -count=1 ./...
+
+bench:
+	cd bench && go test -run xxx -bench . -benchmem -count 6
