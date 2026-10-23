@@ -118,7 +118,8 @@ func (m Migration) Statements() []string {
 
 // Func is a migration written in Go, for data changes SQL cannot express. Set exactly one of Up,
 // which runs in the migration's transaction, and UpNoTx, which runs on the connection outside a
-// transaction.
+// transaction. LockTimeout, StatementTimeout and NoRetry act as the file directives do. Its
+// checksum covers its version and name, so renaming an applied Func is ErrChanged.
 type Func struct {
 	Version          string
 	Name             string
