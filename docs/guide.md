@@ -1721,6 +1721,262 @@ The source is read from its root, so pass the directory itself (`fs.Sub`, or `os
 `migrate.Read(fsys)` parses a source without a database, for a CI check; `migrate.Create(dir, name,
 notx)` writes an empty pair.
 
+## Seeds
+
+Package `github.com/emoss08/keel/seed` applies the data a database needs: **reference data**
+production needs (states, hazmat references, roles) and **fixtures** for development (test
+organizations, workers, shipments). [migrations-and-seeds.md](migrations-and-seeds.md) explains
+the design and how the binaries that run seeds are laid out.
+
+| Kind | Runs | Re-runs |
+|---|---|---|
+| `seed.Reference` | everywhere, on every deploy | when its fingerprint changes: its name, `Version`, input files or `Fingerprint()` result |
+| `seed.Fixture` | development and test databases; refused on a database marked production | never: reset the database |
+
+### Declaring seeds
+
+Seeds live in a `seed.Registry`, usually a package variable filled at initialisation. `Add` copies
+the seed and returns a pointer that other seeds name in `After`:
+
+```go
+//go:embed data
+var data embed.FS
+
+var Seeds = seed.NewRegistry()
+
+var Plants = Seeds.Add(seed.Seed{
+    Name:   "plants",
+    Kind:   seed.Reference,
+    Inputs: seed.Files(data, "data/plants.yaml"),
+    Run: func(ctx context.Context, r *seed.Run) error {
+        plants, err := seed.YAML[[]*fleet.Plant](r, "data/plants.yaml")
+        if err != nil {
+            return err
+        }
+        p := fleetdb.Plants
+        if _, err := p.Upsert(ctx, r.DB, plants, keel.OnConflict(p.Code)); err != nil {
+            return err
+        }
+        r.Count(int64(len(plants)))
+        return nil
+    },
+})
+
+var CustomerDefaults = Seeds.Add(seed.Seed{
+    Name:        "customer_defaults",
+    Kind:        seed.Reference,
+    After:       []*seed.Seed{Plants},
+    PerTenant:   true,
+    Fingerprint: defaults.Fingerprint, // func() string over the code-built defaults
+    Timeout:     30 * time.Second,
+    Run: func(ctx context.Context, r *seed.Run) error {
+        _, err := fleetdb.Customers.CreateOrSkip(ctx, r.DB, defaults.Customers(),
+            fleetdb.Customers.OrganizationID, fleetdb.Customers.BusinessUnitID, fleetdb.Customers.Code)
+        return err // ctx carries r.Tenant's scope
+    },
+})
+```
+
+| Field | Meaning |
+|---|---|
+| `Name` | stable identity, the key of the seed's bookkeeping row |
+| `Kind` | `seed.Reference` or `seed.Fixture`; required |
+| `Description` | what the seed writes, for status output |
+| `After` | seeds that run first; they must be in the same (merged) registry |
+| `Inputs` | files the seed reads: `seed.Files(fsys, paths...)`; a path may be a glob (`data/*.csv`) |
+| `Fingerprint` | `func() string` whose result joins the fingerprint, for data built from code |
+| `Version` | joins the fingerprint; bump it when a change to `Run` changes what it writes |
+| `PerTenant` | `Run` runs once per tenant, each in its own transaction with the tenant's scope |
+| `Timeout` | bounds one run (one tenant of a `PerTenant` seed) |
+| `Run` | the work; idempotent upserts for reference data, plain creates for fixtures |
+
+`seed.Merge(reference.Seeds, fixtures.Seeds)` combines registries, for a development binary that
+applies both. `Registry.Validate`, `Plan` and `Apply` report every problem at once (`errors.Join`):
+missing or duplicate names, a missing `Kind` or `Run`, `After` seeds outside the registry, cycles,
+a reference seed after a fixture, and unreadable inputs. `Registry.Seeds()` returns the seeds in
+dependency order, each with its `After`, for a tool that draws the graph.
+
+### Applying
+
+```go
+report, err := reference.Seeds.Apply(ctx, db, seed.Options{
+    Environment: seed.Production,
+    System:      withSystem, // func(ctx) ctx: adds the application's system scope
+    Tenants:     tenants.All, // func(ctx, *keel.DB) iter.Seq2[seed.Tenant, error]
+    Parallel:    8,
+    Observer:    progress, // func(seed.Event)
+})
+```
+
+- **What runs.** A reference seed runs when its fingerprint differs from the stored one; a fixture
+  runs when it has never run. An unchanged seed costs one hash and one read.
+- **Transactions.** A seed runs in one `keel.Write` under the `System` context, bounded by its
+  `Timeout`, and its row in `keel_seeds` is written in the same transaction: it applies and is
+  recorded, or leaves no trace. A panic in `Run` is an error that rolls back.
+- **Order.** Seeds start once the seeds they run `After` have finished. With `Parallel` above 1,
+  independent seeds run at once; `Parallel` bounds the transactions in flight, seeds and tenants
+  together. It defaults to 1 because seeds that touch the same tables can deadlock or conflict,
+  `Run` functions may share Go state, and the pool needs `Parallel + 1` connections.
+- **Failure.** A failing seed stops the run from starting more seeds; seeds already running finish.
+  `Apply` returns every failure joined, and the report marks seeds that never started with
+  `seed.ErrAborted`.
+- **Tenants.** A `PerTenant` seed lists tenants through `Options.Tenants` (called under the system
+  scope when the seed starts, so tenants an earlier seed created are included) and runs one
+  transaction per tenant under `Tenant.Context`, up to `Parallel` at once. Each tenant's row in
+  `keel_seed_tenants` commits with its data; the seed's `keel_seeds` row is written once every
+  tenant succeeded. A run that fails at tenant 4,000 of 9,000 stops there, and the next run skips
+  the tenants already applied with the current fingerprint. A forced run reruns every tenant.
+- **Locking.** A run holds a session advisory lock, polled so a waiting process holds no
+  transaction open; a second process waits and reports `LockWait` events about every second,
+  naming the backend that holds the lock. Run seeds against Postgres directly, not through a
+  transaction-mode pooler.
+- **Bookkeeping.** `Apply` creates `keel_seeds`, `keel_seed_tenants` and `keel_meta` on first use.
+  They hold no tenant data and are not tenant tables.
+
+`seed.Tenant` is `{Key, Name, Context}`: `Key` is stable and unique, `Context` returns the context
+with the tenant's scope, the one `keel.Config.Tenant` reads:
+
+```go
+func All(ctx context.Context, db *keel.DB) iter.Seq2[seed.Tenant, error] {
+    return func(yield func(seed.Tenant, error) bool) {
+        orgs, err := orgdb.Organizations.AllTenants().Limit(100_000).List(ctx, db)
+        if err != nil {
+            yield(seed.Tenant{}, err)
+            return
+        }
+        for _, o := range orgs {
+            t := seed.Tenant{Key: string(o.ID), Name: o.Name, Context: func(ctx context.Context) context.Context {
+                return withTenant(ctx, o.ID, o.BusinessUnitID)
+            }}
+            if !yield(t, nil) {
+                return
+            }
+        }
+    }
+}
+```
+
+| Option | Effect |
+|---|---|
+| `Environment` | the environment expected; a database marked otherwise fails with `seed.ErrEnvironment`, an unmarked one is marked |
+| `System` | adds the system scope to the context of non-tenant seeds and the bookkeeping |
+| `Tenants` | lists the tenants of `PerTenant` seeds; required when one runs |
+| `Parallel` | transactions in flight at once; default 1 |
+| `Only` | the seeds named and the seeds they run `After`; the rest are `Excluded` |
+| `Force` | runs the seeds named in `Only` (or all) whatever their state; never fixtures on production |
+| `DryRun` | plans and reports without the lock or any write |
+| `Observer` | receives progress events |
+
+The `Report` lists every registered seed in dependency order with its `Reason`, whether it `Ran`,
+the tenants it applied, its rows, duration and error. It is filled as far as the run got even
+when `Apply` returns an error.
+
+### Plans and status
+
+`Registry.Plan(ctx, db, opts)` returns what `Apply` would do, without the lock or writes: each seed
+with whether it runs and why.
+
+| Reason | Runs | Meaning |
+|---|---|---|
+| `seed.New` | yes | never applied |
+| `seed.InputChanged` | yes | an input file was added, removed or edited; `PlanItem.Changed` names the paths |
+| `seed.VersionChanged` | yes | `Version` differs |
+| `seed.CodeChanged` | yes | `Fingerprint()` returns a different value |
+| `seed.Forced` | yes | `Options.Force` |
+| `seed.UpToDate` | no | applied with the current fingerprint |
+| `seed.FixtureApplied` | no | a fixture that already ran |
+| `seed.Excluded` | no | not selected by `Only` |
+| `seed.Refused` | no | a fixture on a production database |
+
+`keel_seeds` stores each input's hash, so a plan names the file that changed, and
+`PlanItem.Detail` explains every change found. `Registry.Status(ctx, db)` returns each registered
+seed's state (`seed.Applied`, `seed.Pending`, `seed.Changed` with its reason) with when it was
+applied, how long it took, its rows and the tenants applied, followed by `seed.Removed` entries for
+seeds the database records that are no longer registered. `Registry.Prune(ctx, db)` deletes those.
+
+### Environments
+
+```go
+err := seed.MarkEnvironment(ctx, db, seed.Production, false) // once, at the first deploy
+env, err := seed.Environment(ctx, db)                         // "" when unmarked
+```
+
+A database records its environment (`seed.Production`, `seed.Staging`, `seed.Development`,
+`seed.Test`) in `keel_meta` once; marking it again with another environment is
+`seed.ErrEnvironment` unless forced. `Apply` with `Options.Environment` marks an unmarked database.
+A run that would apply a fixture to a database marked production, or with `Environment:
+seed.Production`, fails with `seed.ErrRefused` before anything runs, whichever binary runs it.
+`seed.ParseEnv` reads a command-line flag.
+
+### Inside Run
+
+| Call | Does |
+|---|---|
+| `r.DB`, `r.Seed`, `r.Tenant`, `r.Environment` | the database, the seed, the tenant (`PerTenant`), the run's environment |
+| `r.Rand()` | a PCG generator seeded from the seed's name, fingerprint and tenant key: the same data on every machine |
+| `r.Count(n)` | adds to the rows the report shows; feed it `Copy`, `CreateOrSkip`, `Upsert` results |
+| `seed.YAML[T](r, path)` | decodes YAML with `github.com/goccy/go-yaml`; a duplicated key is an error |
+| `seed.JSON[T](r, path)` | decodes JSON with `keel.Config.JSON`, or `encoding/json` |
+| `seed.CSV[T](r, path)` | decodes every CSV record into a struct `T` |
+| `seed.CSVEach(r, path, fn)` | streams records one at a time, for files too large to hold |
+| `r.Open(path)`, `r.ReadFile(path)`, `r.Inputs()` | raw access to the declared inputs |
+
+The readers read only the seed's declared `Inputs`; any other path is `seed.ErrUndeclaredInput`,
+so every file that shapes the data is in the fingerprint.
+
+CSV maps the header to exported fields by `csv:"name"` tag or the field name in snake case
+(`ProNumber` reads `pro_number`; `csv:"-"` skips a field). A column with no field is an error, so a
+misspelled header cannot drop data. Fields may be strings, booleans, integers, floats,
+`time.Duration`, `time.Time` (RFC 3339 or `2006-01-02`), `encoding.TextUnmarshaler`
+implementations, or pointers to them; an empty cell leaves a field zero and a pointer nil. Large
+files stream into `Copy` in batches:
+
+```go
+batch := make([]*fleet.Plant, 0, 5000)
+flush := func() error {
+    n, err := fleetdb.Plants.Copy(ctx, r.DB, batch)
+    r.Count(n)
+    batch = batch[:0]
+    return err
+}
+err := seed.CSVEach(r, "data/plants.csv", func(p fleet.Plant) error {
+    batch = append(batch, &p)
+    if len(batch) == cap(batch) {
+        return flush()
+    }
+    return nil
+})
+if err == nil && len(batch) > 0 {
+    err = flush()
+}
+```
+
+### Values between seeds
+
+A typed key passes a value from one seed to those that run after it, within one `Apply`:
+
+```go
+var DevOrg = seed.Key[*tenant.Organization]("dev-org")
+
+seed.Put(r, DevOrg, org)    // in the seed that creates it
+org := seed.Must(r, DevOrg) // in a seed that runs After it
+org, ok := seed.Get(r, DevOrg)
+```
+
+`Must` panics, failing the seed with a message that names the key and the seed, when no seed put
+the value in this run. Values do not outlive the `Apply`, and a seed can run without the seed that
+puts a value (that one is up to date, or a fixture already applied), so a seed that may run alone
+reads with `Get` and loads the value from the database when it is absent.
+
+### Progress events
+
+`Options.Observer` receives a `seed.Event` for each step: `LockWait` (with the time waited and the
+holding backend), `LockAcquired`, `Planned` (with the plan), then per seed `SeedStart` (with its
+`Reason`, `Index` of `Total`, and `Tenants` to run), `TenantStart`/`TenantEnd` (with the tenant's
+key, `TenantsDone`, rows, duration and error), `SeedEnd` (rows, duration, error), and finally
+`RunEnd`, always last. The observer is called from the goroutine running the seed, so with
+`Parallel` above 1 from several at once: make it safe for concurrent use, and do not block in it.
+
 ## Performance notes
 
 ### Prepared statements

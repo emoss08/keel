@@ -221,6 +221,38 @@ migrate.LintRule{Name: "tenant-rls", Check: func(m migrate.Migration) []migrate.
 
 ## keel/seed
 
+Status: built, in package `seed` ([guide](guide.md#seeds)). Where the build differs from or adds to
+the design below:
+
+- The environment type is `seed.Env`, because `seed.Environment(ctx, db)` is the function that reads
+  the mark; `seed.ParseEnv` reads a flag. `Apply` with `Options.Environment` marks an unmarked
+  database, so `cmd/db up -env production` records the mark on its first run.
+- A run that would apply a fixture to a production database fails with `seed.ErrRefused` before
+  anything runs, rather than skipping the fixtures: a fixtures binary pointed at production is a
+  mistake to stop, not to work around.
+- `seed.Key[T]` is a generic string type with no methods, so `seed.Key[T]("dev-org")` is a
+  conversion. Values do not outlive one `Apply`; a seed that can run without the seed that puts a
+  value reads it with `seed.Get` and loads it when absent.
+- `Seed.Inputs` is `[]seed.Input`, built by `seed.Files`; a path may be a glob. Readers are
+  `seed.YAML` (`github.com/goccy/go-yaml`: maintained, no dependencies, errors with line and
+  source, duplicate keys rejected), `seed.JSON` (the application's `keel.Config.JSON`), `seed.CSV`
+  and the streaming `seed.CSVEach`, plus `Run.Open`, `Run.ReadFile` and `Run.Inputs`.
+- Seeds start as soon as the seeds they run `After` finish, not depth by depth, and `Parallel`
+  bounds the transactions in flight, seeds and tenants together, so a `PerTenant` seed at
+  `Parallel 8` never runs 64 transactions. Concurrency is opt-in (default 1).
+- A failing seed stops the run from starting more; the others report `seed.ErrAborted`. A panic in
+  `Run` is an error that rolls back.
+- Events carry two fields beyond the contract: `Plan` on `Planned`, and `Holder` (pid, application,
+  state, query) on `LockWait`. `RunEnd` is always the last event, including for a registry that
+  fails validation.
+- A seed's fingerprint does not include the fingerprints of the seeds it runs after: a seed whose
+  output depends on another's data names that dependency in its own `Fingerprint`.
+- The root package gained `keel.Exec`, which runs one raw statement in the transaction on the
+  context, for the bookkeeping writes, and `DB.JSON`, which returns the configured JSON codec.
+- `Status` lists seeds the database records but the registry no longer has as `seed.Removed`,
+  including a `PerTenant` seed whose only trace is the tenants of an unfinished run; `Prune`
+  deletes both.
+
 ### Two kinds of seed
 
 | Kind | What | Where it runs | Re-runs when |
