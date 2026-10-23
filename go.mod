@@ -2,6 +2,8 @@ module github.com/emoss08/keel
 
 go 1.26.0
 
+toolchain go1.26.10
+
 require (
 	github.com/jackc/pgx/v5 v5.11.0
 	golang.org/x/tools v0.52.0

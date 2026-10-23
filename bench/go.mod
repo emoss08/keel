@@ -2,6 +2,8 @@ module github.com/emoss08/keel/bench
 
 go 1.26.0
 
+toolchain go1.26.10
+
 replace (
 	github.com/emoss08/keel => ../
 	github.com/uptrace/bun => github.com/emoss08/bun v0.0.0-20261016005222-2580fd217ad8
