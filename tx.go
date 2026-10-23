@@ -207,4 +207,3 @@ func (tx *txState) runAfterCommit(ctx context.Context) {
 		fn(ctx)
 	}
 }
-
