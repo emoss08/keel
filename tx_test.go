@@ -295,3 +295,33 @@ func TestInterceptor(t *testing.T) {
 	eq(t, len(rows[0].Moves), 1)
 	eq(t, rows[0].Moves[0].Loaded, true)
 }
+
+func TestCustomPlan(t *testing.T) {
+	d := db(t)
+	w := seed(t, 2)
+	s := fleetdb.Shipments
+	n := must(s.Where(keel.Raw("current_setting('plan_cache_mode') = ?", "force_custom_plan")).
+		CustomPlan().Count(w.ctx, d))(t)
+	eq(t, n, int64(2))
+	n = must(s.Where(keel.Raw("current_setting('plan_cache_mode') = ?", "auto")).Count(w.ctx, d))(t)
+	eq(t, n, int64(2))
+}
+
+func TestPlanCacheModes(t *testing.T) {
+	db(t)
+	for _, mode := range []keel.PlanCache{keel.PlanCacheCustom, keel.PlanCacheOff} {
+		cfg := testConfig(testDSN)
+		cfg.PlanCache = mode
+		d, err := keel.Open(context.Background(), cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		w := seed(t, 3)
+		s := fleetdb.Shipments
+		for range 8 {
+			rows := must(s.Where(s.Status.In(fleet.StatusNew, fleet.StatusAssigned)).Load(s.Moves()).All(w.ctx, d))(t)
+			eq(t, len(rows), 2)
+		}
+		d.Close()
+	}
+}

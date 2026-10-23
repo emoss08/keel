@@ -38,7 +38,8 @@ func (q *query) fetch(ctx context.Context, db *DB, fo *fetchOpts, emit func(unsa
 		return err
 	}
 
-	r := &render{scope: run.sc, ctx: ctx, db: run.db}
+	r := newRender(run.sc, ctx, run.db)
+	defer r.recycle()
 	o := selectOpts{}
 	if fo != nil {
 		o.keyset, o.extraCols, o.limit = fo.keyset, fo.extraCols, fo.limit
@@ -47,7 +48,8 @@ func (q *query) fetch(ctx context.Context, db *DB, fo *fetchOpts, emit func(unsa
 	if r.err != nil {
 		return run.close(ctx, r.err)
 	}
-	main := &stmt{sql: string(r.buf), args: r.args, op: "select", table: root.table.Name}
+	main := &stmt{sql: string(r.buf), args: r.argsCopy(), op: "select", table: root.table.Name,
+		customPlan: q.customPlan}
 	plan.track(root)
 	main.scan = func(rows pgx.Rows) error {
 		return plan.scan(ctx, rows, func(row unsafe.Pointer, _ any) { emit(row) })
@@ -276,7 +278,8 @@ func manyStmt(ctx context.Context, run *runner, w pending) (*stmt, *selectPlan, 
 	}
 	q2 := *q
 	q2.ref = n.ref
-	r := &render{scope: run.sc, ctx: ctx, db: run.db}
+	r := newRender(run.sc, ctx, run.db)
+	defer r.recycle()
 	perParent := q2.limit
 	var plan *selectPlan
 	if perParent > 0 {
@@ -297,7 +300,8 @@ func manyStmt(ctx context.Context, run *runner, w pending) (*stmt, *selectPlan, 
 		return nil, nil, r.err
 	}
 	plan.track(n)
-	s := &stmt{sql: string(r.buf), args: r.args, op: "select", table: n.table.Name}
+	s := &stmt{sql: string(r.buf), args: r.argsCopy(), op: "select", table: n.table.Name,
+		customPlan: q.customPlan}
 	child := n.table
 	relIdx := n.rel
 	s.scan = func(rows pgx.Rows) error {
@@ -387,7 +391,8 @@ func typedSlice(k schema.Kind, keys []any) any {
 
 // countStmt counts the query's rows, stopping at limit when limit > 0.
 func (q *query) countStmt(ctx context.Context, db *DB, sc *scopeState, limit int64) (*stmt, error) {
-	r := &render{scope: sc, ctx: ctx, db: db}
+	r := newRender(sc, ctx, db)
+	defer r.recycle()
 	inner := r.section(func() {
 		q.renderSelect(r, newRoot(q), selectOpts{countOnly: true, countCap: limit})
 	})
@@ -401,7 +406,8 @@ func (q *query) countStmt(ctx context.Context, db *DB, sc *scopeState, limit int
 	} else {
 		r.buf = append(r.buf, inner...)
 	}
-	return &stmt{sql: string(r.buf), args: r.args, op: "count", table: q.ref.Table.Name}, nil
+	return &stmt{sql: string(r.buf), args: r.argsCopy(), op: "count", table: q.ref.Table.Name,
+		customPlan: q.customPlan}, nil
 }
 
 func (q *query) count(ctx context.Context, db *DB, limit int64) (int64, error) {
@@ -442,7 +448,8 @@ func (q *query) update(ctx context.Context, db *DB, sets []Assignment) (int64, e
 	if err != nil {
 		return 0, err
 	}
-	r := &render{scope: run.sc, ctx: ctx, db: run.db}
+	r := newRender(run.sc, ctx, run.db)
+	defer r.recycle()
 	sc, alias := r.push(q.ref, joinFrom, q.allTenants)
 	var changed []int32
 	setSQL := r.section(func() {
@@ -502,7 +509,7 @@ func (q *query) update(ctx context.Context, db *DB, sets []Assignment) (int64, e
 		r.s(" AND ")
 		r.buf = append(r.buf, conds...)
 	}
-	s := &stmt{sql: string(r.buf), args: r.args, op: "update", table: t.Name}
+	s := &stmt{sql: string(r.buf), args: r.argsCopy(), op: "update", table: t.Name}
 	bh := bulkHooks(r, s, th, OpUpdate, t, alias, true)
 	err = run.one(ctx, s, !th.has(OpUpdate, AfterWrite))
 	if err == nil && bh != nil {
@@ -524,7 +531,8 @@ func (q *query) delete(ctx context.Context, db *DB) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	r := &render{scope: run.sc, ctx: ctx, db: run.db}
+	r := newRender(run.sc, ctx, run.db)
+	defer r.recycle()
 	sc, alias := r.push(q.ref, joinFrom, q.allTenants)
 	where := r.section(func() {
 		wrote := r.tenantPred(t, alias, q.allTenants)
@@ -548,7 +556,7 @@ func (q *query) delete(ctx context.Context, db *DB) (int64, error) {
 		r.s(" AND ")
 		r.buf = append(r.buf, conds...)
 	}
-	s := &stmt{sql: string(r.buf), args: r.args, op: "delete", table: t.Name}
+	s := &stmt{sql: string(r.buf), args: r.argsCopy(), op: "delete", table: t.Name}
 	bh := bulkHooks(r, s, th, OpDelete, t, alias, false)
 	err = run.one(ctx, s, !th.has(OpDelete, AfterWrite))
 	if err == nil && bh != nil {
@@ -649,7 +657,8 @@ func m2mStmt(ctx context.Context, run *runner, w pending) (*stmt, *selectPlan, e
 	}
 	q2 := *q
 	q2.ref = n.ref
-	r := &render{scope: run.sc, ctx: ctx, db: run.db}
+	r := newRender(run.sc, ctx, run.db)
+	defer r.recycle()
 	jalias := r.newAlias()
 	plan := q2.renderSelect(r, n, selectOpts{
 		keyColumn: func(r *render) {
@@ -684,7 +693,7 @@ func m2mStmt(ctx context.Context, run *runner, w pending) (*stmt, *selectPlan, e
 		return nil, nil, r.err
 	}
 	plan.track(n)
-	s := &stmt{sql: string(r.buf), args: r.args, op: "select", table: n.table.Name}
+	s := &stmt{sql: string(r.buf), args: r.argsCopy(), op: "select", table: n.table.Name}
 	relIdx := n.rel
 	s.scan = func(rows pgx.Rows) error {
 		return plan.scan(ctx, rows, func(row unsafe.Pointer, key any) {

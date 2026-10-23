@@ -2,7 +2,6 @@ package keel
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -19,6 +18,8 @@ type stmt struct {
 
 	scan func(rows pgx.Rows) error
 	tag  pgconn.CommandTag
+
+	customPlan bool
 }
 
 // runner executes the statements of one terminal call. It joins the transaction on the context,
@@ -68,6 +69,17 @@ func (r *runner) batch(ctx context.Context, stmts []*stmt, last bool) error {
 	if len(stmts) == 0 {
 		return nil
 	}
+	custom := false
+	if r.db.cfg.PlanCache != PlanCacheOff {
+		for _, s := range stmts {
+			custom = custom || s.customPlan
+		}
+	}
+	if custom && r.tx == nil {
+		r.tx = &txState{db: r.db, readOnly: true, implicit: true, conn: r.conn}
+		r.conn = nil
+		r.own = true
+	}
 	conn, err := r.acquire(ctx)
 	if err != nil {
 		return err
@@ -81,7 +93,13 @@ func (r *runner) batch(ctx context.Context, stmts []*stmt, last bool) error {
 		}
 	}
 	for _, s := range stmts {
+		if s.customPlan && custom {
+			b.Queue("SELECT set_config('plan_cache_mode', 'force_custom_plan', true)")
+		}
 		b.Queue(s.sql, s.args...)
+		if s.customPlan && custom {
+			b.Queue("SELECT set_config('plan_cache_mode', $1, true)", r.db.planMode())
+		}
 	}
 	commit := r.own && last
 	if commit {
@@ -91,7 +109,7 @@ func (r *runner) batch(ctx context.Context, stmts []*stmt, last bool) error {
 	events := r.db.startEvents(ctx, stmts)
 	start := time.Now()
 	br := conn.SendBatch(ctx, b)
-	runErr := r.readBatch(br, pre, stmts, commit)
+	runErr := r.readBatch(br, pre, stmts, commit, custom)
 	closeErr := br.Close()
 	if runErr == nil {
 		runErr = closeErr
@@ -107,40 +125,58 @@ func (r *runner) batch(ctx context.Context, stmts []*stmt, last bool) error {
 	return runErr
 }
 
-func (r *runner) readBatch(br pgx.BatchResults, pre int, stmts []*stmt, commit bool) error {
+func (r *runner) readBatch(br pgx.BatchResults, pre int, stmts []*stmt, commit, custom bool) error {
 	for range pre {
 		if _, err := br.Exec(); err != nil {
 			return err
 		}
 	}
 	for _, s := range stmts {
-		if s.scan == nil {
-			tag, err := br.Exec()
-			if err != nil {
+		wrap := s.customPlan && custom
+		if wrap {
+			if _, err := br.Exec(); err != nil {
 				return err
 			}
-			s.tag = tag
-			continue
 		}
-		rows, err := br.Query()
-		if err != nil {
+		if err := readOne(br, s); err != nil {
 			return err
 		}
-		scanErr := s.scan(rows)
-		rows.Close()
-		if scanErr != nil {
-			return scanErr
+		if wrap {
+			if _, err := br.Exec(); err != nil {
+				return err
+			}
 		}
-		if err := rows.Err(); err != nil {
-			return err
-		}
-		s.tag = rows.CommandTag()
 	}
 	if commit {
 		if _, err := br.Exec(); err != nil {
 			return err
 		}
 	}
+	return nil
+}
+
+func readOne(br pgx.BatchResults, s *stmt) error {
+	if s.scan == nil {
+		tag, err := br.Exec()
+		if err != nil {
+			return err
+		}
+		s.tag = tag
+		return nil
+	}
+	rows, err := br.Query()
+	if err != nil {
+		return err
+	}
+	scanErr := s.scan(rows)
+	rows.Close()
+	if scanErr != nil {
+		return scanErr
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	s.tag = rows.CommandTag()
 	return nil
 }
 
@@ -166,4 +202,3 @@ func (r *runner) close(ctx context.Context, err error) error {
 	return err
 }
 
-var errClosedRows = errors.New("keel: rows closed")

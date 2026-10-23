@@ -43,10 +43,33 @@ type Config struct {
 	// every connection, so arrays of them bind as parameters. Enums named here bind from Go
 	// strings.
 	LoadTypes []string
-	// DescriptionCacheCapacity sizes pgx's per-connection statement description cache. Defaults
-	// to 4096.
-	DescriptionCacheCapacity int
+	// PlanCache chooses how statements are prepared. The default, PlanCacheAuto, prepares every
+	// statement shape once per connection.
+	PlanCache PlanCache
+	// StatementCacheCapacity is how many prepared statements (or, with PlanCacheOff, statement
+	// descriptions) each connection keeps. Defaults to 512; the least recently used is
+	// deallocated beyond it.
+	StatementCacheCapacity int
 }
+
+// PlanCache chooses how keel prepares statements.
+type PlanCache uint8
+
+const (
+	// PlanCacheAuto prepares each statement shape once per connection and lets Postgres choose
+	// between a generic and a custom plan (plan_cache_mode = auto): it compares the generic plan's
+	// cost with the custom plans of the first executions and keeps custom plans when the generic
+	// one is worse. This skips parsing and, usually, planning.
+	PlanCacheAuto PlanCache = iota
+	// PlanCacheCustom prepares statements but plans every execution for its values
+	// (plan_cache_mode = force_custom_plan). It skips parsing only; use it when parameter values
+	// change plans a lot, as tenants of very different sizes can.
+	PlanCacheCustom
+	// PlanCacheOff prepares nothing: every execution is parsed and planned. Use it behind a
+	// connection pooler that cannot track prepared statements (PgBouncer before 1.21, or without
+	// max_prepared_statements).
+	PlanCacheOff
+)
 
 // TxInfo describes the transaction being started.
 type TxInfo struct {
@@ -84,12 +107,24 @@ func Open(ctx context.Context, cfg Config) (*DB, error) {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
-	if cfg.DescriptionCacheCapacity == 0 {
-		cfg.DescriptionCacheCapacity = 4096
+	if cfg.StatementCacheCapacity == 0 {
+		cfg.StatementCacheCapacity = 512
 	}
-	pc.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeCacheDescribe
-	pc.ConnConfig.DescriptionCacheCapacity = cfg.DescriptionCacheCapacity
-	pc.ConnConfig.StatementCacheCapacity = 0
+	switch cfg.PlanCache {
+	case PlanCacheOff:
+		pc.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeCacheDescribe
+		pc.ConnConfig.DescriptionCacheCapacity = cfg.StatementCacheCapacity
+		pc.ConnConfig.StatementCacheCapacity = 0
+	default:
+		pc.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeCacheStatement
+		pc.ConnConfig.StatementCacheCapacity = cfg.StatementCacheCapacity
+		pc.ConnConfig.DescriptionCacheCapacity = 0
+		mode := "auto"
+		if cfg.PlanCache == PlanCacheCustom {
+			mode = "force_custom_plan"
+		}
+		pc.ConnConfig.RuntimeParams["plan_cache_mode"] = mode
+	}
 	userAfterConnect := pc.AfterConnect
 	pc.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
 		if len(cfg.LoadTypes) > 0 {
@@ -127,3 +162,10 @@ func (db *DB) Pool() *pgxpool.Pool { return db.pool }
 func (db *DB) Ping(ctx context.Context) error { return db.pool.Ping(ctx) }
 
 func (db *DB) now() time.Time { return db.cfg.Now() }
+
+func (db *DB) planMode() string {
+	if db.cfg.PlanCache == PlanCacheCustom {
+		return "force_custom_plan"
+	}
+	return "auto"
+}

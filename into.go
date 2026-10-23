@@ -40,7 +40,8 @@ func Into[R any](ctx context.Context, db *DB, p Projection) ([]R, error) {
 	if err != nil {
 		return nil, err
 	}
-	r := &render{scope: run.sc, ctx: ctx, db: db}
+	r := newRender(run.sc, ctx, db)
+	defer r.recycle()
 	root := newRoot(q)
 	q.renderSelect(r, root, selectOpts{exact: true})
 	if r.err != nil {
@@ -50,7 +51,7 @@ func Into[R any](ctx context.Context, db *DB, p Projection) ([]R, error) {
 	if q.limit > 0 && q.limit <= 1024 {
 		out = make([]R, 0, q.limit)
 	}
-	s := &stmt{sql: string(r.buf), args: r.args, op: "select", table: q.ref.Table.Name}
+	s := &stmt{sql: string(r.buf), args: r.argsCopy(), op: "select", table: q.ref.Table.Name}
 	s.scan = func(rows pgx.Rows) error {
 		m := rows.Conn().TypeMap()
 		fds := rows.FieldDescriptions()

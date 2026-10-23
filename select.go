@@ -400,6 +400,7 @@ func (q *query) renderSelect(r *render, sn *lnode, o selectOpts) *selectPlan {
 		r.s(alias)
 		r.s(wait)
 	}
+	r.release(sel, from, where, group, having, order)
 	return plan
 }
 

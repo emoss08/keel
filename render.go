@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"sync"
 
 	"github.com/emoss08/keel/schema"
 )
@@ -19,10 +20,11 @@ type render struct {
 	nalias int
 
 	scope    *scopeState
-	tenantPH []int
+	tenantPH [8]int
 	ctx      context.Context
 	db       *DB
 	bare     bool
+	free     [][]byte
 }
 
 // scope is one query level: the base table, the tables joined to it and the paths opened by
@@ -54,6 +56,43 @@ type join struct {
 	parentAlias string
 	selected    bool
 	on          []Pred
+}
+
+var renderPool = sync.Pool{New: func() any { return &render{buf: make([]byte, 0, 1024)} }}
+
+// newRender takes a render from the pool. Callers recycle it once its statement is copied out
+// with argsCopy.
+func newRender(sc *scopeState, ctx context.Context, db *DB) *render {
+	r := renderPool.Get().(*render)
+	r.scope, r.ctx, r.db = sc, ctx, db
+	return r
+}
+
+// recycle resets r and returns it to the pool.
+func (r *render) recycle() {
+	if cap(r.buf) > 64<<10 || cap(r.args) > 4096 {
+		return
+	}
+	r.buf = r.buf[:0]
+	clear(r.args)
+	r.args = r.args[:0]
+	r.err = nil
+	r.sc = nil
+	r.nalias = 0
+	r.scope = nil
+	r.tenantPH = [8]int{}
+	r.ctx = nil
+	r.db = nil
+	r.bare = false
+	renderPool.Put(r)
+}
+
+// argsCopy returns the bound arguments in a slice the statement owns.
+func (r *render) argsCopy() []any {
+	if len(r.args) == 0 {
+		return nil
+	}
+	return append(make([]any, 0, len(r.args)), r.args...)
 }
 
 var aliasNames = func() [64]string {
@@ -91,14 +130,29 @@ func (r *render) arg(v any) {
 	r.buf = strconv.AppendInt(r.buf, int64(len(r.args)), 10)
 }
 
-// section runs fn with an empty buffer and returns what it wrote.
+// section runs fn with an empty buffer and returns what it wrote. The buffer comes from the
+// render's free list; release returns it once the section is copied into the statement.
 func (r *render) section(fn func()) []byte {
 	saved := r.buf
-	r.buf = make([]byte, 0, 128)
+	if n := len(r.free); n > 0 {
+		r.buf = r.free[n-1][:0]
+		r.free = r.free[:n-1]
+	} else {
+		r.buf = make([]byte, 0, 256)
+	}
 	fn()
 	out := r.buf
 	r.buf = saved
 	return out
+}
+
+// release returns section buffers to the free list.
+func (r *render) release(bufs ...[]byte) {
+	for _, b := range bufs {
+		if cap(b) > 0 && cap(b) <= 16<<10 {
+			r.free = append(r.free, b)
+		}
+	}
 }
 
 func (r *render) push(base *Ref, mode joinMode, allTenants bool) (*scope, string) {
@@ -201,9 +255,6 @@ func (r *render) col(c Col) {
 
 // tenantArg writes the placeholder of tenant value i, binding it on first use.
 func (r *render) tenantArg(i int) {
-	if r.tenantPH == nil {
-		r.tenantPH = make([]int, len(r.scope.tenant))
-	}
 	if r.tenantPH[i] == 0 {
 		r.args = append(r.args, r.scope.tenant[i])
 		r.tenantPH[i] = len(r.args)

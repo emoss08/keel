@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -209,10 +208,3 @@ func (tx *txState) runAfterCommit(ctx context.Context) {
 	}
 }
 
-// failed reports whether the connection is inside a failed or open transaction that the server
-// will not commit.
-func failed(conn *pgxpool.Conn) bool {
-	return conn.Conn().PgConn().TxStatus() == 'E'
-}
-
-var _ = pgconn.CommandTag{}

@@ -263,7 +263,7 @@ func insertStmts(t *schema.Table, rows []unsafe.Pointer, spec *insertSpec) []*st
 	for start := 0; start < len(rows); start += per {
 		end := min(start+per, len(rows))
 		chunk := rows[start:end]
-		r := &render{}
+		r := newRender(nil, nil, nil)
 		r.s("INSERT INTO ")
 		r.s(t.Quoted)
 		r.s(" AS t0 (")
@@ -304,7 +304,8 @@ func insertStmts(t *schema.Table, rows []unsafe.Pointer, spec *insertSpec) []*st
 				r.s(t.Columns[c].Quoted)
 			}
 		}
-		s := &stmt{sql: string(r.buf), args: r.args, op: "insert", table: t.Name}
+		s := &stmt{sql: string(r.buf), args: r.argsCopy(), op: "insert", table: t.Name}
+		r.recycle()
 		switch {
 		case spec.skip:
 			s.scan = skipScanner(t, spec)
@@ -419,7 +420,9 @@ func (db *DB) upsert(ctx context.Context, ref *Ref, rows []unsafe.Pointer, c Con
 			return nil, run.close(ctx, err)
 		}
 	}
-	r := &render{scope: run.sc, bare: true}
+	r := newRender(run.sc, nil, nil)
+	defer r.recycle()
+	r.bare = true
 	r.s(" ON CONFLICT (")
 	for i, col := range c.cols {
 		if col.Ref.Table != t {
@@ -542,7 +545,8 @@ func (db *DB) save(ctx context.Context, ref *Ref, row unsafe.Pointer, cols []int
 	if th != nil {
 		needs = th.needs
 	}
-	r := &render{scope: run.sc, ctx: ctx, db: db}
+	r := newRender(run.sc, ctx, db)
+	defer r.recycle()
 	r.s("UPDATE ")
 	r.s(t.Quoted)
 	r.s(" t0 SET ")
@@ -610,7 +614,7 @@ func (db *DB) save(ctx context.Context, ref *Ref, row unsafe.Pointer, cols []int
 	if r.err != nil {
 		return run.close(ctx, r.err)
 	}
-	s := &stmt{sql: string(r.buf), args: r.args, op: "update", table: t.Name}
+	s := &stmt{sql: string(r.buf), args: r.argsCopy(), op: "update", table: t.Name}
 	found := false
 	if len(ret) > 0 || old != nil {
 		s.scan = func(rows pgx.Rows) error {
@@ -749,7 +753,8 @@ func (db *DB) deleteRow(ctx context.Context, t *schema.Table, row unsafe.Pointer
 	if err := th.run(ctx, OpDelete, BeforeWrite, &mutation{op: OpDelete, row: row}); err != nil {
 		return run.close(ctx, err)
 	}
-	r := &render{scope: run.sc, ctx: ctx, db: db}
+	r := newRender(run.sc, ctx, db)
+	defer r.recycle()
 	r.s("DELETE FROM ")
 	r.s(t.Quoted)
 	r.s(" t0 WHERE ")
@@ -761,7 +766,7 @@ func (db *DB) deleteRow(ctx context.Context, t *schema.Table, row unsafe.Pointer
 	if r.err != nil {
 		return run.close(ctx, r.err)
 	}
-	s := &stmt{sql: string(r.buf), args: r.args, op: "delete", table: t.Name}
+	s := &stmt{sql: string(r.buf), args: r.argsCopy(), op: "delete", table: t.Name}
 	err = run.one(ctx, s, !th.has(OpDelete, AfterWrite))
 	if err == nil && s.tag.RowsAffected() == 0 {
 		err = ErrNotFound
@@ -783,7 +788,8 @@ func (db *DB) insertFrom(ctx context.Context, ref *Ref, src subquery,
 	if err != nil {
 		return 0, err
 	}
-	r := &render{scope: run.sc, ctx: ctx, db: db}
+	r := newRender(run.sc, ctx, db)
+	defer r.recycle()
 	target := make([]int32, 0, len(cols)+len(t.Tenant))
 	for _, c := range cols {
 		col := c.column()
@@ -830,7 +836,7 @@ func (db *DB) insertFrom(ctx context.Context, ref *Ref, src subquery,
 	if r.err != nil {
 		return 0, run.close(ctx, r.err)
 	}
-	s := &stmt{sql: string(r.buf), args: r.args, op: "insert", table: t.Name}
+	s := &stmt{sql: string(r.buf), args: r.argsCopy(), op: "insert", table: t.Name}
 	err = run.one(ctx, s, true)
 	return s.tag.RowsAffected(), run.close(ctx, err)
 }

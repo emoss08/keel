@@ -115,6 +115,7 @@ type query struct {
 	allTenants bool
 	distinctOn []Expr
 	timeout    time.Duration
+	customPlan bool
 }
 
 type joinClause struct {
@@ -184,6 +185,14 @@ func (q *Query[T]) DistinctOn(es ...Expr) *Query[T] {
 // AllTenants lets the query cross tenants. It needs a system scope.
 func (q *Query[T]) AllTenants() *Query[T] {
 	q.q.allTenants = true
+	return q
+}
+
+// CustomPlan plans this query for its parameter values on every execution, even when the
+// connection would reuse a generic plan. Use it for queries whose best plan depends on the values,
+// such as a filter whose selectivity differs widely between tenants. It costs no round trip.
+func (q *Query[T]) CustomPlan() *Query[T] {
+	q.q.customPlan = true
 	return q
 }
 
@@ -427,4 +436,20 @@ func (q *Query[T]) Each(ctx context.Context, db *DB, size int,
 		}
 		cursor = page.Next
 	}
+}
+
+// ToSQL renders the query's main statement as it would run under ctx's scope, for logging, tests
+// and EXPLAIN. Relation loads that run as separate statements are not included.
+func (q *Query[T]) ToSQL(ctx context.Context, db *DB) (string, []any, error) {
+	r := newRender(db.resolveScope(ctx), ctx, db)
+	defer r.recycle()
+	root := newRoot(&q.q)
+	if err := buildTree(root, q.q.loads); err != nil {
+		return "", nil, err
+	}
+	q.q.renderSelect(r, root, selectOpts{exact: q.q.projection()})
+	if r.err != nil {
+		return "", nil, r.err
+	}
+	return string(r.buf), r.argsCopy(), nil
 }
