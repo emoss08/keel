@@ -86,9 +86,9 @@ type columnArray struct {
 	cast  string
 }
 
-// buildColumn extracts one column of rows into a typed array, reading through the generated field
-// pointers so no value is boxed. Values Postgres has no native array for (enums, JSON, numeric,
-// arrays, custom types) travel as text and are cast to the column's type.
+// buildColumn extracts one column of rows into a keel array parameter, reading through the
+// generated field pointers so no value is boxed. Values Postgres has no native array for (enums,
+// JSON, numeric, arrays, custom types) travel as text and are cast to the column's type.
 func (db *DB) buildColumn(t *schema.Table, col int32, sqlType string, rows []unsafe.Pointer) (columnArray, error) {
 	c := &t.Columns[col]
 	nullable := c.Flags.Has(schema.FlagNullable)
@@ -104,68 +104,68 @@ func (db *DB) buildColumn(t *schema.Table, col int32, sqlType string, rows []uns
 		if textFamily(sqlType) {
 			cast = ""
 		}
-		if nullable {
-			return columnArray{arg: ptrColumn[string](t, col, rows), param: "text[]", cast: cast}, nil
-		}
-		return columnArray{arg: valColumn[string](t, col, rows), param: "text[]", cast: cast}, nil
+		return column[string, textArray, nullTextArray](t, col, rows, nullable, "text[]", cast), nil
 	case schema.KindInt64:
-		return numericColumn[int64](t, col, rows, nullable, "int8[]", native("bigint")), nil
+		return column[int64, int8Array, nullInt8Array](t, col, rows, nullable, "int8[]", native("bigint")), nil
 	case schema.KindInt32:
-		return numericColumn[int32](t, col, rows, nullable, "int4[]", native("integer")), nil
+		return column[int32, int4Array, nullInt4Array](t, col, rows, nullable, "int4[]", native("integer")), nil
 	case schema.KindInt16:
-		return numericColumn[int16](t, col, rows, nullable, "int2[]", native("smallint")), nil
+		return column[int16, int2Array, nullInt2Array](t, col, rows, nullable, "int2[]", native("smallint")), nil
 	case schema.KindFloat64:
-		return numericColumn[float64](t, col, rows, nullable, "float8[]", native("double precision")), nil
+		return column[float64, float8Array, nullFloat8Array](t, col, rows, nullable, "float8[]",
+			native("double precision")), nil
 	case schema.KindFloat32:
-		return numericColumn[float32](t, col, rows, nullable, "float4[]", native("real")), nil
+		return column[float32, float4Array, nullFloat4Array](t, col, rows, nullable, "float4[]",
+			native("real")), nil
 	case schema.KindBool:
-		return numericColumn[bool](t, col, rows, nullable, "bool[]", native("boolean")), nil
+		return column[bool, boolArray, nullBoolArray](t, col, rows, nullable, "bool[]", native("boolean")), nil
 	case schema.KindTime:
-		return numericColumn[time.Time](t, col, rows, nullable, "timestamptz[]",
-			native("timestamp with time zone")), nil
+		return column[time.Time, timestamptzArray, nullTimestamptzArray](t, col, rows, nullable,
+			"timestamptz[]", native("timestamp with time zone")), nil
 	case schema.KindBytes:
-		out := make([][]byte, len(rows))
-		for i, row := range rows {
-			out[i] = *t.Ptr(row, col).(*[]byte)
-		}
-		return columnArray{arg: out, param: "bytea[]"}, nil
+		return columnArray{arg: valColumn[[]byte, byteaArray](t, col, rows), param: "bytea[]"}, nil
 	}
-	out := make([]*string, len(rows))
+	vals := make([]string, len(rows))
+	out := make(nullTextArray, len(rows))
 	for i, row := range rows {
 		s, null, err := db.textValue(c, t.Value(row, col))
 		if err != nil {
 			return columnArray{}, fmt.Errorf("keel: %s.%s: %w", t.Name, c.Name, err)
 		}
 		if !null {
-			out[i] = &s
+			vals[i] = s
+			out[i] = &vals[i]
 		}
 	}
 	return columnArray{arg: out, param: "text[]", cast: sqlType}, nil
 }
 
+// column reads a column of a basic type into its keel array parameter: A for a non-nullable
+// column, P, whose nil elements bind as NULL, for a nullable one.
+func column[V any, A ~[]V, P ~[]*V](t *schema.Table, col int32, rows []unsafe.Pointer, nullable bool,
+	param, cast string) columnArray {
+	if nullable {
+		return columnArray{arg: ptrColumn[V, P](t, col, rows), param: param, cast: cast}
+	}
+	return columnArray{arg: valColumn[V, A](t, col, rows), param: param, cast: cast}
+}
+
 // valColumn reads a non-nullable column into a slice of its basic type.
-func valColumn[V any](t *schema.Table, col int32, rows []unsafe.Pointer) []V {
-	out := make([]V, len(rows))
+func valColumn[V any, A ~[]V](t *schema.Table, col int32, rows []unsafe.Pointer) A {
+	out := make(A, len(rows))
 	for i, row := range rows {
 		out[i] = *t.Ptr(row, col).(*V)
 	}
 	return out
 }
 
-// ptrColumn reads a nullable column into a slice of pointers; nil elements bind as NULL.
-func ptrColumn[V any](t *schema.Table, col int32, rows []unsafe.Pointer) []*V {
-	out := make([]*V, len(rows))
+// ptrColumn reads a nullable column into a slice of pointers.
+func ptrColumn[V any, P ~[]*V](t *schema.Table, col int32, rows []unsafe.Pointer) P {
+	out := make(P, len(rows))
 	for i, row := range rows {
 		out[i] = *t.Ptr(row, col).(**V)
 	}
 	return out
-}
-
-func numericColumn[V any](t *schema.Table, col int32, rows []unsafe.Pointer, nullable bool, param, cast string) columnArray {
-	if nullable {
-		return columnArray{arg: ptrColumn[V](t, col, rows), param: param, cast: cast}
-	}
-	return columnArray{arg: valColumn[V](t, col, rows), param: param, cast: cast}
 }
 
 // textFamily reports SQL types a text value converts to by assignment, so the insert needs no

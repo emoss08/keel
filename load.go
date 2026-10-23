@@ -91,13 +91,13 @@ func (k *keyScanner) scan(m *pgtype.Map, fd pgconn.FieldDescription, raw []byte,
 	return relKey{s: k.s, n: k.n}, nil
 }
 
-// parentIndex groups the parents of a to-many load by key and keeps the distinct keys as the typed
-// array bound to = ANY($1).
+// parentIndex groups the parents of a to-many load by key and keeps the distinct keys as the keel
+// array parameter bound to = ANY($1).
 type parentIndex struct {
 	kind  keyKind
 	byKey map[relKey][]unsafe.Pointer
-	strs  []string
-	ints  []int64
+	strs  textArray
+	ints  int8Array
 }
 
 func indexParents(t *schema.Table, parents []unsafe.Pointer, col int32, kind keyKind) *parentIndex {

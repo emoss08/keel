@@ -152,13 +152,16 @@ func Open(ctx context.Context, cfg Config) (*DB, error) {
 			}
 			names = append(names, enums...)
 		}
+		var loaded []*pgtype.Type
 		if len(names) > 0 {
 			types, err := conn.LoadTypes(ctx, names)
 			if err != nil {
 				return fmt.Errorf("keel: load types: %w", err)
 			}
 			conn.TypeMap().RegisterTypes(types)
+			loaded = types
 		}
+		registerArrays(conn.TypeMap(), loaded)
 		if userAfterConnect != nil {
 			if err := userAfterConnect(ctx, conn); err != nil {
 				return err

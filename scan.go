@@ -3,6 +3,7 @@ package keel
 import (
 	"context"
 	"fmt"
+	"time"
 	"unsafe"
 
 	"github.com/emoss08/keel/schema"
@@ -113,7 +114,7 @@ func (p *selectPlan) scan(sc *scopeState, sql string, rows pgx.Rows, emit func(r
 			}
 			if plans[i] == nil {
 				fd := fds[i+off]
-				plans[i] = m.PlanScan(fd.DataTypeOID, fd.Format, dst)
+				plans[i] = planScan(m, fd.DataTypeOID, fd.Format, dst)
 			}
 			if err := plans[i].Scan(raw[i], dst); err != nil {
 				return fmt.Errorf("keel: scan %s.%s: %w", t.Name, t.Columns[c.col].Name, err)
@@ -133,6 +134,56 @@ func (p *selectPlan) scan(sc *scopeState, sql string, rows pgx.Rows, emit func(r
 		}
 		emit(cur[0], key)
 	}
+	return nil
+}
+
+// planScan plans decoding a column of type oid into dst. A nullable field of a basic type (a
+// pointer to a pointer) gets a nullScanPlan instead of pgx's, which allocates through reflection.
+func planScan(m *pgtype.Map, oid uint32, format int16, dst any) pgtype.ScanPlan {
+	switch dst.(type) {
+	case **string:
+		return newNullScanPlan[string](m, oid, format)
+	case **int64:
+		return newNullScanPlan[int64](m, oid, format)
+	case **int32:
+		return newNullScanPlan[int32](m, oid, format)
+	case **int16:
+		return newNullScanPlan[int16](m, oid, format)
+	case **float64:
+		return newNullScanPlan[float64](m, oid, format)
+	case **float32:
+		return newNullScanPlan[float32](m, oid, format)
+	case **bool:
+		return newNullScanPlan[bool](m, oid, format)
+	case **time.Time:
+		return newNullScanPlan[time.Time](m, oid, format)
+	}
+	return m.PlanScan(oid, format, dst)
+}
+
+// nullScanPlan decodes a nullable column into a **V field: NULL sets the field to nil, any other
+// value is decoded by the plan of V into a newly allocated V.
+type nullScanPlan[V any] struct {
+	elem pgtype.ScanPlan
+}
+
+// newNullScanPlan returns the nullScanPlan of a column of type oid, planning V's decoding once.
+func newNullScanPlan[V any](m *pgtype.Map, oid uint32, format int16) pgtype.ScanPlan {
+	return &nullScanPlan[V]{elem: m.PlanScan(oid, format, new(V))}
+}
+
+// Scan decodes src into the **V target.
+func (p *nullScanPlan[V]) Scan(src []byte, target any) error {
+	dst := target.(**V)
+	if src == nil {
+		*dst = nil
+		return nil
+	}
+	v := new(V)
+	if err := p.elem.Scan(src, v); err != nil {
+		return err
+	}
+	*dst = v
 	return nil
 }
 
