@@ -66,6 +66,42 @@ services/tms/
 
 ## keel/migrate
 
+> **Status: built** (`migrate`, `migrate/migratecli`, `keel migrate`; usage in
+> [guide.md](guide.md#migrations)). Everything below is implemented and tested against Postgres 18,
+> with these deviations and additions:
+>
+> - **Bookkeeping.** `keel_migrations` also stores `kind` (versioned, repeatable, go, baseline). Its
+>   key is `(version, name)` with a unique index on non-empty versions; repeatable rows have an
+>   empty version.
+> - **Baselines.** A database with no history runs a baseline; one whose newest applied version is
+>   at or past the baseline's records it without running (replacing the row of the squashed
+>   migration that had the same version; older rows stay in `history` and are not reported
+>   missing); one whose history ends before it is `ErrBaselineGap`. "Contains every squashed
+>   version" cannot be checked once the squashed files are deleted, and out-of-order protection makes
+>   the newest version a sound proxy. A migration older than a baseline in the sources is an error.
+>   `Require` also passes for a version covered by an applied baseline, so a server built before a
+>   squash runs against a database built from it.
+> - **Squash** verifies the baseline by applying it to a second scratch database and comparing the
+>   two dumps, turns pg_dump's `SET` lines into `SET LOCAL` (dropping its timeouts, `row_security`
+>   and empty `search_path`, which would leak into the run's session or `After`), and drops
+>   extension comments and `\restrict`-style meta-commands. With several `-dir` sources it squashes
+>   all of them into the first.
+> - **After** also runs, in a transaction of its own, when a run fails after applying some
+>   migrations, so `reconcile()` is never skipped for what did apply.
+> - **`-to`** runs repeatable migrations only when no versioned migration remains pending.
+> - **`check`** compares with the base branch's migrations (`-base-dir`) rather than a single base
+>   version, so it also reports files changed or deleted on the branch.
+> - **Template** returns `(dsn, drop, err)`; `Key` always joins the name
+>   (`keel_tpl_<16 hex of sha256(fingerprint + key)>`); a failed build leaves nothing behind, since
+>   it builds under a temporary name. `RequireWait` takes the polling interval.
+> - **Additions:** `--keel:lint_ignore`; `Event.SQL` (the statement of a `Statement` or `After`
+>   event), `Err` on `Retry` and `Duration` on `LockAcquired`; `Migration.File`; `Plan` and `Status`
+>   flags for marks, gaps and out-of-order migrations; lint also flags `VACUUM`, a notx statement
+>   sharing a split part, `SET NOT NULL` and `UNIQUE`/`PRIMARY KEY` constraints built under the
+>   table lock.
+> - `Require` finds `keel_migrations` through the search path; a server using `Options.Schema` puts
+>   that schema on its search path.
+
 ### Files
 
 A migration is one file, `<version>_<name>.sql`, with the version a UTC timestamp (`20261023143000`).

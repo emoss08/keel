@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"fmt"
 	"os"
 	"sync"
 	"testing"
@@ -13,19 +12,20 @@ import (
 	"github.com/emoss08/keel"
 	"github.com/emoss08/keel/internal/testmodels/ids"
 	"github.com/emoss08/keel/migrate"
-	"github.com/jackc/pgx/v5"
 )
 
-// testDB is the database every integration test shares. It is created for the run and dropped
-// after it.
+// testDB is the database every integration test shares. It is copied from a template for the run
+// and dropped after it with dropTest.
 var (
 	testDSN   string
 	testDB    *keel.DB
+	dropTest  func(context.Context) error
 	setupErr  error
 	adminDSN  = envOr("KEEL_TEST_DSN", "postgres://keel:keel@localhost:55432/keel?sslmode=disable")
 	setupOnce sync.Once
 )
 
+// envOr returns the environment variable k, or def when it is empty.
 func envOr(k, def string) string {
 	if v := os.Getenv(k); v != "" {
 		return v
@@ -33,18 +33,26 @@ func envOr(k, def string) string {
 	return def
 }
 
+// tenantKey holds a tenant on a context.
 type tenantKey struct{}
+
+// systemKey holds a system scope's reason on a context.
 type systemKey struct{}
+
+// tenant is the tenant columns' values.
 type tenant struct{ org, bu ids.ID }
 
+// tenantCtx returns a context scoped to a tenant.
 func tenantCtx(org, bu ids.ID) context.Context {
 	return context.WithValue(context.Background(), tenantKey{}, tenant{org, bu})
 }
 
+// systemCtx returns a context with a system scope.
 func systemCtx(reason string) context.Context {
 	return context.WithValue(context.Background(), systemKey{}, reason)
 }
 
+// testConfig returns the Config the integration tests open with.
 func testConfig(dsn string) keel.Config {
 	return keel.Config{
 		DSN:           dsn,
@@ -72,12 +80,14 @@ func TestMain(m *testing.M) {
 	code := m.Run()
 	if testDB != nil {
 		testDB.Close()
-		dropDatabase()
+	}
+	if dropTest != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		_ = dropTest(ctx)
+		cancel()
 	}
 	os.Exit(code)
 }
-
-var dbName string
 
 // db returns the shared test database, creating it on first use. Tests skip when Postgres is
 // unreachable and KEEL_TEST_REQUIRE is not set.
@@ -93,57 +103,21 @@ func db(t testing.TB) *keel.DB {
 	return testDB
 }
 
+// setup copies the test database from a template of testdata/migrations, built on first use.
 func setup() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	admin, err := pgx.Connect(ctx, adminDSN)
+	var err error
+	testDSN, dropTest, err = migrate.Template(ctx, migrate.TemplateOptions{
+		Admin:   adminDSN,
+		Sources: migrate.Sources(migrate.Source{Name: "testdata", FS: os.DirFS("testdata/migrations")}),
+		Prefix:  "keel_test_",
+	})
 	if err != nil {
-		return err
-	}
-	defer admin.Close(ctx)
-	b := make([]byte, 4)
-	_, _ = rand.Read(b)
-	dbName = "keel_test_" + hex.EncodeToString(b)
-	if _, err := admin.Exec(ctx, "CREATE DATABASE "+dbName); err != nil {
-		return err
-	}
-	cfg, err := pgx.ParseConfig(adminDSN)
-	if err != nil {
-		return err
-	}
-	cfg.Database = dbName
-	testDSN = cfg.ConnString()
-	testDSN = replaceDB(adminDSN, dbName)
-	mig, err := migrate.Open(ctx, testDSN, os.DirFS("testdata/migrations"))
-	if err != nil {
-		return err
-	}
-	defer mig.Close()
-	if _, err := mig.Up(ctx); err != nil {
 		return err
 	}
 	testDB, err = keel.Open(ctx, testConfig(testDSN))
 	return err
-}
-
-func replaceDB(dsn, name string) string {
-	cfg, err := pgx.ParseConfig(dsn)
-	if err != nil {
-		panic(err)
-	}
-	return fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable", cfg.User, cfg.Password, cfg.Host,
-		cfg.Port, name)
-}
-
-func dropDatabase() {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	admin, err := pgx.Connect(ctx, adminDSN)
-	if err != nil {
-		return
-	}
-	defer admin.Close(ctx)
-	_, _ = admin.Exec(ctx, "DROP DATABASE IF EXISTS "+dbName+" WITH (FORCE)")
 }
 
 // newTenant returns a context for a fresh tenant, so tests never see each other's rows.

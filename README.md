@@ -335,16 +335,29 @@ statement's context to its execution and to `AfterQuery`.
 
 ### Migrations
 
-SQL files, applied in order under an advisory lock; `.notx.up.sql` files run outside a transaction
-for `CREATE INDEX CONCURRENTLY`.
+`<version>_<name>.sql` files and Go functions, applied in order under an advisory lock, each in its
+own transaction with a 5s lock timeout retried on contention; `--keel:notx` files run outside a
+transaction for `CREATE INDEX CONCURRENTLY`, and `R_<name>.sql` files re-run when they change.
 
 ```sh
-keel migrate -dir migrations create add_shipment_index notx
-keel migrate -dsn "$DATABASE_URL" -dir migrations up
-keel migrate -dsn "$DATABASE_URL" -dir migrations status
+keel migrate create add_shipment_index -notx
+keel migrate plan -dsn "$KEEL_DSN"
+keel migrate up -dsn "$KEEL_DSN"
+keel migrate status -dsn "$KEEL_DSN"
+keel migrate squash -dump "docker exec pg pg_dump -U app -d {db}"
+keel migrate stamp -package schema -out schema/version_gen.go
 ```
 
-From Go: `migrate.Open(ctx, dsn, fsys)`, then `Up`.
+From Go:
+
+```go
+m, err := migrate.Open(ctx, dsn, migrate.Sources(migrate.Source{Name: "core", FS: dir}),
+    migrate.Options{After: []string{"SELECT trenova_rls.reconcile()"}})
+res, err := m.Up(ctx, migrate.UpOptions{})
+```
+
+and at server startup, `migrate.RequireWait(ctx, pool, schema.Version, time.Second)`. Tests copy a
+migrated database from a template in milliseconds with `migrate.Template`.
 
 ## Benchmarks
 
