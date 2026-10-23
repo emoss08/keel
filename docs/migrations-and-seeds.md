@@ -131,6 +131,22 @@ the newest version on the base branch.
 **Bookkeeping.** `keel_migrations` stores `version`, `name`, `source`, `checksum`, `applied_at` and
 `duration_ms`. A changed applied file is `ErrChanged`, as today.
 
+### Everything else a migrator needs
+
+| Feature | How |
+|---|---|
+| Plan and dry run | `Plan` returns what `Up` would do (pending, baseline marks, After statements); `up -dry-run` prints the SQL |
+| Target | `up -to <version>` stops after that version |
+| Repeatable migrations | `R_<name>.sql` files (functions, views, RLS policy helpers, grants) re-run after the versioned ones whenever their checksum changes, in name order |
+| Go migrations | `migrate.Func{Version, Name, Up func(ctx, pgx.Tx) error}` for data changes SQL cannot express, ordered with the SQL files |
+| Progress events | `Options.Observer` receives lock wait, lock acquired, migration start, statement (notx), retry, migration end, After, run end; the CLI and TUI render from them |
+| Who is blocking | on lock waits and 55P03 retries the event names the blocking backends from `pg_locks`/`pg_stat_activity`: pid, application, state, age, query |
+| Baseline an existing database | `migrate baseline <version>` records every migration up to version as applied without running it |
+| Repair | `migrate repair <version>` accepts the current checksum of an applied file after a comment-only edit, with the old and new checksums in the output |
+| History | `migrate history` lists applied migrations with source, duration and time |
+| Bookkeeping schema | `Options.Schema` puts `keel_migrations` in a schema other than `public` |
+| Machine output | every command takes `-json` |
+
 ### Squash
 
 `keel migrate squash` applies every migration to a scratch database, dumps the schema with
@@ -300,6 +316,18 @@ report, err := reference.Seeds.Apply(ctx, db, seed.Options{
 - **Reporting.** `seed.Options.Observer` receives each seed's start, end, rows and duration; the CLI
   prints them as a table.
 
+### Everything else a seeder needs
+
+| Feature | How |
+|---|---|
+| Plan and dry run | `Plan` returns each seed with why it will run (new, input changed, version changed, code fingerprint changed, forced) or why not |
+| Change explanation | `keel_seeds` stores per-input hashes, so status names the file or fingerprint that changed |
+| Deterministic data | `r.Rand()` is a PCG generator seeded from the seed's name and fingerprint: fixtures and volume data are the same on every machine |
+| Timeouts | `Seed.Timeout` bounds one seed (per tenant for PerTenant seeds) |
+| Progress events | `Options.Observer` receives plan, lock wait, seed start, tenant progress (n of N), rows, seed end, run end |
+| Rows | `r.Count(n)` adds to the rows the report shows; `Copy`, `CreateMany` and `Upsert` results feed it |
+| Machine output | every command takes `-json` |
+
 There is no rollback. Reference data is idempotent and forward-only, like migrations; fixtures go away
 with a database reset, which takes under a second from a template. That deletes Trenova's rollback
 tracker, persistent entity tracker, `seed_rollbacks`, `Down` methods and the `seed-check`, `seed-clean`,
@@ -307,6 +335,12 @@ tracker, persistent entity tracker, `seed_rollbacks`, `Down` methods and the `se
 `seed status`, and `seed prune` deletes them.
 
 ## keel/keelcli
+
+`keelcli` turns an application's migrations and seeds into a command line. Every command works two ways:
+plain, scriptable output when stdout is not a terminal or `-json`/`-plain` is given (CI, Kubernetes
+Jobs, Compose), and an interactive interface built on Bubble Tea v2, Bubbles, Lip Gloss and Huh when it
+is a terminal. The TUI dependencies live only in `keelcli`; a server that imports `keel` or
+`keel/migrate` never links them.
 
 ```go
 // services/tms/cmd/db/main.go
@@ -337,15 +371,63 @@ func main() {
 }
 ```
 
+### Commands
+
 | Command | Does |
 |---|---|
-| `up` | migrate up, then apply seeds: the one deploy step |
-| `migrate up / status / create <name> / squash / stamp [-check] / check / lint` | migrations |
-| `seed apply [names…] / status / prune` | seeds |
-| `reset` | development only: drop the database and recreate it from the current template, building the template first when needed |
-| `template [prune]` | build or prune templates |
+| (none, in a terminal) | opens the console, below |
+| `up [-to v] [-dry-run]` | migrate, then apply seeds: the one deploy step |
+| `migrate up / plan / status / history / create / squash / stamp / check / lint / baseline / repair` | migrations |
+| `seed apply [names…] / plan / status / prune` | seeds |
+| `reset` | development only: recreate the database from the current template, building it first when needed |
+| `template [build / prune]` | templates |
+| `doctor` | connectivity, server version, `plan_cache_mode`, extensions, lock holders, template state, environment mark |
 
-The `Commands` hook lets an application add its own commands, such as Trenova's volume seeder.
+Destructive commands (`reset`, `prune`, `repair`, `baseline`, `squash`) confirm with a Huh prompt that
+names the database and its environment mark, and refuse against a production-marked database unless
+`-yes-production` is given. `create` without a name asks for one and for transactional or notx.
+
+### Live output
+
+In a terminal, `up`, `migrate up` and `seed apply` render a live view instead of log lines: one row per
+migration or seed with a spinner, elapsed time, retries and rows, a progress bar for per-tenant seeds
+(tenant 4,213 of 9,000), and a panel that appears while waiting on a lock showing the blocking backend's
+pid, application, age and query. The run ends with a summary table. Without a terminal the same events
+print as one line each, or as JSON lines with `-json`.
+
+### The console
+
+`trenova-devdb` (or any keelcli binary) with no arguments in a terminal opens a full-screen console:
+
+```
+┌ trenova-devdb ─ postgres://localhost:5432/trenova ─ development ─ v20261023143000 ───────────────┐
+│ Migrations  Seeds  Templates  Lint  Doctor                                                       │
+├──────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ ✓ 20261023143000 baseline              core   applied 2026-10-23 14:31   1.8s                    │
+│ ✓ 20261024091500 shipment_holds        core   applied 2026-10-24 09:16   42ms                    │
+│ • 20261025110000 edi_partner_index     core   pending  notx                                      │
+│ ! 20261025120000 rate_tables           core   changed  checksum differs                          │
+├──────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ --keel:notx                                                                                      │
+│ CREATE INDEX CONCURRENTLY edi_partner_idx ON edi_partners (organization_id, scac);               │
+├──────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ u apply  p plan  c create  / filter  enter view SQL  r refresh  ? help  q quit                   │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+- **Migrations**: every migration with its state (applied, pending, changed, repeatable stale), source,
+  directives and duration; a preview pane with the SQL highlighted; apply all or up to the selected one
+  with the live view; create a migration from a form.
+- **Seeds**: the seed graph as an indented tree in dependency order, each seed's kind, state and the
+  reason it would run; per-tenant progress; apply the selection (with its dependencies) or force it.
+- **Templates**: current and stale templates with size and age; build, prune, reset the database from a
+  template.
+- **Lint**: findings for pending migrations, grouped by rule, jumping to the line in the preview.
+- **Doctor**: the doctor checks, refreshed live, with the current lock holders and long-running
+  queries.
+
+The console uses the same engine calls as the commands; it adds no behaviour of its own, so everything
+it does is also scriptable.
 
 ## Deploying
 
