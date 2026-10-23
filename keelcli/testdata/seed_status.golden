@@ -1,0 +1,12 @@
+SEED                           KIND                 STATE     REASON                            APPLIED              ROWS  TENANTS
+us_states                      reference            applied   up to date                        2026-10-26 07:30       56
+hazmat_references              reference            due       input changed (data/hazmat.yaml)  2026-10-26 07:30    3,104
+ifta_jurisdictions             reference            applied   up to date                        2026-10-26 07:30       68
+organization_roles             reference            due       new
+organization_role_permissions  reference · tenants  due       code changed                      2026-10-26 07:30  211,000    9,000
+document_template_starters     reference            due       version changed                   2026-10-26 07:30       12
+system_agent_definitions       reference            applied   up to date                        2026-10-26 07:30        9
+test_organizations             fixture              due       new
+workers                        fixture              due       new
+shipments                      fixture              due       new
+legacy_rate_codes              reference            orphaned  excluded                          2026-10-06 09:30      412

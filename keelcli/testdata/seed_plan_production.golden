@@ -1,0 +1,13 @@
+SEED                           KIND                 RUNS  REASON
+us_states                      reference            no    up to date
+hazmat_references              reference            yes   input changed (data/hazmat.yaml)
+ifta_jurisdictions             reference            no    up to date
+organization_roles             reference            yes   new
+organization_role_permissions  reference · tenants  yes   code changed
+document_template_starters     reference            yes   version changed
+system_agent_definitions       reference            no    up to date
+test_organizations             fixture              no    refused
+workers                        fixture              no    refused
+shipments                      fixture              no    refused
+
+4 seeds run.

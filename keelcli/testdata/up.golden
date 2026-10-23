@@ -1,0 +1,62 @@
+lock    waiting for the migration lock (attempt 1)
+          blocked by pid 51203 trenova-db (deploy 418), active for 41s, advisory: SELECT pg_advisory_lock(7372631836457123681)
+lock    waiting for the migration lock (attempt 2, 700ms)
+          blocked by pid 51203 trenova-db (deploy 418), active for 41.7s, advisory: SELECT pg_advisory_lock(7372631836457123681)
+lock    waiting for the migration lock (attempt 3, 1.4s)
+          blocked by pid 51203 trenova-db (deploy 418), active for 42.4s, advisory: SELECT pg_advisory_lock(7372631836457123681)
+lock    migration lock acquired after 2.1s
+migrate [1/4] 20261025110000_edi_partner_index  core · notx · lock_timeout 2s
+migrate [1/4] 20261025110000_edi_partner_index  statement 1/2
+migrate [1/4] 20261025110000_edi_partner_index  statement 2/2
+migrate [1/4] 20261025110000_edi_partner_index  applied in 4s
+migrate [2/4] 20261025120000_rate_tables  core
+migrate [2/4] 20261025120000_rate_tables  lock timeout, retry 1: ERROR: canceling statement due to lock timeout (SQLSTATE 55P03)
+          blocked by pid 48121 report-runner, active for 4m13s, AccessShareLock: SELECT s.pro_number, sum(m.distance) FROM shipments s JOIN moves m ON m.shipment_id = s.id WHERE s.organization_id = $1…
+          blocked by pid 48377 trenova-api, idle in transaction for 39.2s, RowExclusiveLock: UPDATE shipments SET status = $1 WHERE id = $2
+migrate [2/4] 20261025120000_rate_tables  lock timeout, retry 2: ERROR: canceling statement due to lock timeout (SQLSTATE 55P03)
+          blocked by pid 48121 report-runner, active for 4m14s, AccessShareLock: SELECT s.pro_number, sum(m.distance) FROM shipments s JOIN moves m ON m.shipment_id = s.id WHERE s.organization_id = $1…
+          blocked by pid 48377 trenova-api, idle in transaction for 40.5s, RowExclusiveLock: UPDATE shipments SET status = $1 WHERE id = $2
+migrate [2/4] 20261025120000_rate_tables  applied in 3.1s
+migrate [3/4] 20261026080000_backfill_rate_currency  core · go
+migrate [3/4] 20261026080000_backfill_rate_currency  applied in 2.6s
+migrate [4/4] R_tenant_rls_helpers  core · repeatable
+migrate [4/4] R_tenant_rls_helpers  applied in 90ms
+migrate after statement 1/1 in 12ms
+migrate done: 4 migrations applied in 11.9s
+seed    us_states skips: up to date
+seed    hazmat_references runs: input changed (data/hazmat.yaml)
+seed    ifta_jurisdictions skips: up to date
+seed    organization_roles runs: new
+seed    organization_role_permissions runs: code changed
+seed    document_template_starters runs: version changed
+seed    system_agent_definitions skips: up to date
+seed    test_organizations runs: new
+seed    workers runs: new
+seed    shipments runs: new
+lock    waiting for the seed lock
+lock    seed lock acquired after 400ms
+seed    [1/7] hazmat_references  reference
+seed    [1/7] hazmat_references  3,121 rows in 1.4s
+seed    [2/7] organization_roles  reference
+seed    [2/7] organization_roles  24 rows in 310ms
+seed    [3/7] organization_role_permissions  reference · 9,000 tenants
+seed    [3/7] organization_role_permissions  tenants 900/9,000
+seed    [3/7] organization_role_permissions  tenants 1,800/9,000
+seed    [3/7] organization_role_permissions  tenants 2,700/9,000
+seed    [3/7] organization_role_permissions  tenants 3,600/9,000
+seed    [3/7] organization_role_permissions  tenants 4,500/9,000
+seed    [3/7] organization_role_permissions  tenants 5,400/9,000
+seed    [3/7] organization_role_permissions  tenants 6,300/9,000
+seed    [3/7] organization_role_permissions  tenants 7,200/9,000
+seed    [3/7] organization_role_permissions  tenants 8,100/9,000
+seed    [3/7] organization_role_permissions  tenants 9,000/9,000
+seed    [3/7] organization_role_permissions  216,000 rows in 7.0s
+seed    [4/7] document_template_starters  reference
+seed    [4/7] document_template_starters  12 rows in 450ms
+seed    [5/7] test_organizations  fixture
+seed    [5/7] test_organizations  3 rows in 520ms
+seed    [6/7] workers  fixture
+seed    [6/7] workers  240 rows in 900ms
+seed    [7/7] shipments  fixture
+seed    [7/7] shipments  12,000 rows in 2.2s
+seed    done: 7 seeds applied in 13.2s

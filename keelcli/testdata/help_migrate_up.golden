@@ -1,0 +1,9 @@
+Usage: trenova-db migrate up [-to version] [-dry-run]
+
+Apply pending migrations.
+
+Flags:
+  -dry-run     print the plan with its SQL instead of applying it
+  -to version  stop after migration version
+
+Global flags: -json -plain -no-color -yes -yes-production

@@ -1,0 +1,13 @@
+SEED                           KIND                 RUNS  REASON
+us_states                      reference            no    excluded
+hazmat_references              reference            no    excluded
+ifta_jurisdictions             reference            no    excluded
+organization_roles             reference            yes   new
+organization_role_permissions  reference · tenants  yes   code changed
+document_template_starters     reference            no    excluded
+system_agent_definitions       reference            no    excluded
+test_organizations             fixture              no    excluded
+workers                        fixture              no    excluded
+shipments                      fixture              no    excluded
+
+2 seeds run.

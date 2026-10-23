@@ -1,0 +1,11 @@
+Would apply 1 migration:
+  1  20261025110000  edi_partner_index  core  notx · lock_timeout 2s
+Then, in the last migration's transaction:
+  SELECT trenova_rls.reconcile()
+
+-- 20261025110000_edi_partner_index (core)
+--keel:notx
+--keel:lock_timeout 2s
+CREATE INDEX CONCURRENTLY edi_partner_idx ON edi_partners (organization_id, scac);
+--keel:split
+CREATE INDEX CONCURRENTLY edi_partner_docs_idx ON edi_documents (partner_id, received_at DESC);

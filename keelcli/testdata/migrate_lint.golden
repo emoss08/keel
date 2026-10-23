@@ -1,0 +1,8 @@
+tenant-rls (1 finding)
+  warning  20261025120000_rate_tables:1  tenant table: reconcile() enables row-level security after this run; add policies in R_tenant_rls_helpers
+not-null-default (1 finding)
+  error  20261025120000_rate_tables:9  ADD COLUMN … NOT NULL without a default fails on a table with rows
+index-concurrently (1 finding)
+  error  20261025120000_rate_tables:10  CREATE INDEX on existing table shipments without CONCURRENTLY blocks writes while it builds
+--- stderr ---
+keelcli: migrate lint found 2 errors

@@ -1,0 +1,5 @@
+PROBLEM  MIGRATION                             DETAIL
+missing  20261020100000_legacy_fuel_codes      applied but no longer in any source
+changed  20261024150000_driver_qualifications  checksum f20badfe differs from the recorded c23c2dbd
+--- stderr ---
+keelcli: migrate check found 2 problems

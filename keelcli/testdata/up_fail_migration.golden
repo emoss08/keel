@@ -1,0 +1,26 @@
+lock    waiting for the migration lock (attempt 1)
+          blocked by pid 51203 trenova-db (deploy 418), active for 41s, advisory: SELECT pg_advisory_lock(7372631836457123681)
+lock    waiting for the migration lock (attempt 2, 700ms)
+          blocked by pid 51203 trenova-db (deploy 418), active for 41.7s, advisory: SELECT pg_advisory_lock(7372631836457123681)
+lock    waiting for the migration lock (attempt 3, 1.4s)
+          blocked by pid 51203 trenova-db (deploy 418), active for 42.4s, advisory: SELECT pg_advisory_lock(7372631836457123681)
+lock    migration lock acquired after 2.1s
+migrate [1/4] 20261025110000_edi_partner_index  core · notx · lock_timeout 2s
+migrate [1/4] 20261025110000_edi_partner_index  statement 1/2
+migrate [1/4] 20261025110000_edi_partner_index  statement 2/2
+migrate [1/4] 20261025110000_edi_partner_index  applied in 4s
+migrate [2/4] 20261025120000_rate_tables  core
+migrate [2/4] 20261025120000_rate_tables  lock timeout, retry 1: ERROR: canceling statement due to lock timeout (SQLSTATE 55P03)
+          blocked by pid 48121 report-runner, active for 4m13s, AccessShareLock: SELECT s.pro_number, sum(m.distance) FROM shipments s JOIN moves m ON m.shipment_id = s.id WHERE s.organization_id = $1…
+          blocked by pid 48377 trenova-api, idle in transaction for 39.2s, RowExclusiveLock: UPDATE shipments SET status = $1 WHERE id = $2
+migrate [2/4] 20261025120000_rate_tables  lock timeout, retry 2: ERROR: canceling statement due to lock timeout (SQLSTATE 55P03)
+          blocked by pid 48121 report-runner, active for 4m14s, AccessShareLock: SELECT s.pro_number, sum(m.distance) FROM shipments s JOIN moves m ON m.shipment_id = s.id WHERE s.organization_id = $1…
+          blocked by pid 48377 trenova-api, idle in transaction for 40.5s, RowExclusiveLock: UPDATE shipments SET status = $1 WHERE id = $2
+migrate [2/4] 20261025120000_rate_tables  applied in 3.1s
+migrate [3/4] 20261026080000_backfill_rate_currency  core · go
+migrate [3/4] 20261026080000_backfill_rate_currency  failed after 2.6s: ERROR: null value in column "currency" of relation "shipments" violates not-null constraint (SQLSTATE 23502)
+migrate stopped after 11.8s, 2 migrations applied: ERROR: null value in column "currency" of relation "shipments" violates not-null constraint (SQLSTATE 23502)
+        left undone: 20261026080000_backfill_rate_currency, R_tenant_rls_helpers
+        seeds not started
+--- stderr ---
+keelcli: ERROR: null value in column "currency" of relation "shipments" violates not-null constraint (SQLSTATE 23502)
