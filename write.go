@@ -79,7 +79,9 @@ func (c Conflict) Update(cols ...interface{ column() Col }) Conflict {
 
 // Upsert inserts rows, updating the existing row on conflict. It reports, per row, whether it
 // was inserted (true) or updated (false). Rows that conflict get the stored version and readonly
-// columns back.
+// columns back. Inserted rows run the create hooks and updated rows the update hooks; outside a
+// transaction the upsert runs in an implicit one when the table has AfterWrite hooks for either,
+// so a failing hook rolls every row back.
 func (h Handle[T]) Upsert(ctx context.Context, db *DB, rows []*T, c Conflict) ([]bool, error) {
 	if len(rows) == 0 {
 		return nil, nil
@@ -92,7 +94,7 @@ func (h Handle[T]) Upsert(ctx context.Context, db *DB, rows []*T, c Conflict) ([
 }
 
 // CreateOrSkip inserts rows, skipping those that conflict on cols, and returns how many were
-// inserted.
+// inserted. Inserted rows run the create hooks; skipped rows run none.
 func (h Handle[T]) CreateOrSkip(ctx context.Context, db *DB, rows []*T,
 	cols ...interface{ column() Col },
 ) (int64, error) {
@@ -124,12 +126,14 @@ func (h Handle[T]) InsertFrom(ctx context.Context, db *DB, src subquery,
 	return db.insertFrom(ctx, h.Ref, src, cols)
 }
 
-func (db *DB) writeRunner(ctx context.Context, th *tableHooks, op Op) (*runner, error) {
+// writeRunner returns the runner of a write. With tx, set when the write may run AfterWrite hooks,
+// it opens an implicit transaction outside one, so a failing hook rolls the write back.
+func (db *DB) writeRunner(ctx context.Context, tx bool) (*runner, error) {
 	r, err := db.newRunner(ctx, true)
 	if err != nil {
 		return nil, err
 	}
-	if r.tx == nil && th.has(op, AfterWrite) {
+	if r.tx == nil && tx {
 		r.tx = &txState{db: db, implicit: true, scopeCtx: ctx}
 		r.own = true
 	}
@@ -215,7 +219,7 @@ func fillTenant(sc *scopeState, t *schema.Table, row unsafe.Pointer) error {
 
 func (db *DB) insert(ctx context.Context, t *schema.Table, rows []unsafe.Pointer) error {
 	th := db.hooks.forTable(t)
-	run, err := db.writeRunner(ctx, th, OpCreate)
+	run, err := db.writeRunner(ctx, th.has(OpCreate, AfterWrite))
 	if err != nil {
 		return err
 	}
@@ -417,7 +421,8 @@ func (db *DB) upsert(ctx context.Context, ref *Ref, rows []unsafe.Pointer, c Con
 		return nil, errf("OnConflict needs the conflicting columns")
 	}
 	th := db.hooks.forTable(t)
-	run, err := db.writeRunner(ctx, th, OpCreate)
+	afterHooks := th.has(OpCreate, AfterWrite) || !c.nothing && th.has(OpUpdate, AfterWrite)
+	run, err := db.writeRunner(ctx, afterHooks)
 	if err != nil {
 		return nil, err
 	}
@@ -501,7 +506,7 @@ func (db *DB) upsert(ctx context.Context, ref *Ref, rows []unsafe.Pointer, c Con
 	if err != nil {
 		return nil, run.close(ctx, err)
 	}
-	err = run.batch(ctx, stmts, !th.has(OpCreate, AfterWrite) && !th.has(OpUpdate, AfterWrite))
+	err = run.batch(ctx, stmts, !afterHooks)
 	if err == nil && c.nothing {
 		for i, row := range rows {
 			inserted[i] = spec.keys[rowKey(t, row)]
@@ -545,7 +550,7 @@ func (db *DB) save(ctx context.Context, ref *Ref, row unsafe.Pointer, cols []int
 		}
 	}
 	th := db.hooks.forTable(t)
-	run, err := db.writeRunner(ctx, th, OpUpdate)
+	run, err := db.writeRunner(ctx, th.has(OpUpdate, AfterWrite))
 	if err != nil {
 		return err
 	}
@@ -758,7 +763,7 @@ func (db *DB) deleteRow(ctx context.Context, t *schema.Table, row unsafe.Pointer
 		return errf("%s has no primary key; DeleteRow needs one", t.Name)
 	}
 	th := db.hooks.forTable(t)
-	run, err := db.writeRunner(ctx, th, OpDelete)
+	run, err := db.writeRunner(ctx, th.has(OpDelete, AfterWrite))
 	if err != nil {
 		return err
 	}

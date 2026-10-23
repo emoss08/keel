@@ -20,7 +20,7 @@ func (q *query) update(ctx context.Context, db *DB, sets []Assignment) (int64, e
 	defer cancel()
 	t := q.ref.Table
 	th := db.hooks.forTable(t)
-	run, err := db.writeRunner(ctx, th, OpUpdate)
+	run, err := db.writeRunner(ctx, th.has(OpUpdate, AfterWrite))
 	if err != nil {
 		return 0, err
 	}
@@ -103,7 +103,7 @@ func (q *query) delete(ctx context.Context, db *DB) (int64, error) {
 	defer cancel()
 	t := q.ref.Table
 	th := db.hooks.forTable(t)
-	run, err := db.writeRunner(ctx, th, OpDelete)
+	run, err := db.writeRunner(ctx, th.has(OpDelete, AfterWrite))
 	if err != nil {
 		return 0, err
 	}

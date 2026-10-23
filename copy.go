@@ -36,7 +36,7 @@ func (h Handle[T]) Copy(ctx context.Context, db *DB, rows []*T) (int64, error) {
 
 func (db *DB) copyRows(ctx context.Context, t *schema.Table, rows []unsafe.Pointer) (int64, error) {
 	th := db.hooks.forTable(t)
-	run, err := db.writeRunner(ctx, th, OpCreate)
+	run, err := db.writeRunner(ctx, th.has(OpCreate, AfterWrite))
 	if err != nil {
 		return 0, err
 	}
