@@ -55,6 +55,9 @@ func Generate(o Options) ([]File, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load packages: %w", err)
 	}
+	if len(pkgs) == 0 {
+		return nil, fmt.Errorf("no packages match %s in %s", strings.Join(o.Patterns, " "), o.Dir)
+	}
 	var loadErrs []error
 	packages.Visit(pkgs, nil, func(p *packages.Package) {
 		for _, e := range p.Errors {
