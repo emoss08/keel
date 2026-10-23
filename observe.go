@@ -18,8 +18,8 @@ type QueryEvent struct {
 	Err      error
 }
 
-// Observer sees every statement keel sends: queries, relation loads, writes and COPY, but not
-// BEGIN, the Config.OnBegin statements, savepoints or COMMIT.
+// Observer sees every statement keel sends: queries, relation loads, writes, COPY, savepoints and
+// advisory locks, but not BEGIN, the Config.OnBegin statements, plan-mode switches or COMMIT.
 //
 // For each statement keel calls every observer's BeforeQuery in order, the first with the
 // terminal's context and each later one with the context the previous one returned. The context

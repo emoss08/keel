@@ -13,12 +13,13 @@ import (
 type Phase uint8
 
 const (
-	// BeforeWrite runs inside the transaction before an entity write (Create, CreateMany, Save,
-	// Upsert, DeleteRow). It may change the row or abort the write by returning an error. Bulk
-	// writes (Query.Update, Query.Delete) do not run BeforeWrite hooks.
+	// BeforeWrite runs inside the transaction before an entity write (Create, CreateMany, Copy,
+	// Save, Upsert, CreateOrSkip, DeleteRow). It may change the row or abort the write by returning
+	// an error. Bulk writes (Query.Update, Query.Delete) do not run BeforeWrite hooks.
 	BeforeWrite Phase = iota
 	// AfterWrite runs inside the transaction after the statement, for entity and bulk writes. An error
-	// rolls the transaction back.
+	// rolls the transaction back: outside a transaction, a write that may run AfterWrite hooks runs in
+	// an implicit one.
 	AfterWrite
 	// Committed runs after the transaction commits. Errors are not returned to the caller;
 	// report them from the hook.

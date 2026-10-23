@@ -186,6 +186,7 @@ page, err := s.
 | `Each` | keyset batches at constant memory |
 | `Update`, `Delete` | bulk writes over the query's filter; rows affected. A query without `Where` is refused |
 | `keel.Into[R]`, `keel.IntoOne[R]` | projections: the picked expressions fill `R`'s exported fields in order |
+| `keel.Batch(ctx, db, items...)` | independent reads in one round trip: `ListInto`, `AllInto`, `OneInto`, `FirstInto`, `PageInto`, `CountInto`, `CountUpToInto`, `ExistsInto`, `IntoSlice`, `IntoValue` each pair a query with a typed destination and keep their terminal's checks; the relation loads of all items share one round trip per level; destinations are filled only when every item succeeded. The terminals above are one-item batches |
 
 ### Expressions
 
@@ -193,7 +194,7 @@ Every clause takes expressions, never strings. Columns are typed by their Go kin
 
 | Kind | Operators |
 |---|---|
-| every column | `IsNull`, `IsNotNull`, `EqCol`, `NeCol`, `InQuery`, `NotInQuery`, `Asc`, `Desc`, `ToNull`, `ToDefault`, `ToExpr`, `Excluded`, `Count`, `CountDistinct`, `Min`, `Max`, `Coalesce` |
+| every column | `IsNull`, `IsNotNull`, `EqCol`, `NeCol`, `InQuery`, `NotInQuery`, `Asc`, `Desc`, `ToNull`, `ToDefault`, `ToExpr`, `Excluded` (only in `Conflict.Set`), `Count`, `CountDistinct`, `Min`, `Max`, `Coalesce` |
 | string, integer, scanner (`AnyCol`) | `Eq`, `Ne`, `Gt`, `Gte`, `Lt`, `Lte`, `Between`, `IsDistinctFrom`, `In`, `NotIn`, `To` |
 | float | as above without `In` and `NotIn` |
 | time | `Eq`, `Ne`, `Gt`, `Gte`, `Lt`, `Lte`, `Between`, `To` |
@@ -237,16 +238,34 @@ err = s.DeleteRow(ctx, db, sh)                     // ErrNotFound when nothing w
 n, err := s.Where(...).Update(ctx, db, s.Status.To(shipment.StatusCanceled))
 n, err = s.Where(...).Delete(ctx, db)
 ins, err := s.Upsert(ctx, db, rows, keel.OnConflict(s.OrganizationID, s.BusinessUnitID, s.ProNumber).Update(s.Status))
+ins, err = s.Upsert(ctx, db, rows, keel.OnConflict(...).Set(s.Status.ToExpr(s.Status.Excluded()), s.Priority.Add(1)))
 n, err = s.CreateOrSkip(ctx, db, rows, s.OrganizationID, s.BusinessUnitID, s.ProNumber)
 n, err = s.InsertFrom(ctx, db, src.Pick(...), s.Name, s.Code)
+n, err = s.Copy(ctx, db, rows)                     // binary COPY; prepared as Create, nothing read back
 ```
 
 After a write keel reads back only what Postgres may have changed: `readonly` columns, and the
 version where it changed it. `Upsert` reports per row whether it inserted (`xmax = 0`); a row that
-conflicted keeps the primary key it was sent with. An `OnConflict(...).Where` predicate must not bind
-values. One row is inserted with `VALUES`; more rows through `INSERT … SELECT … FROM unnest(…)` with
-one typed array per column (column types read from the catalog once per `DB`), 10,000 rows per
-statement, every statement sharing one text and one round trip.
+conflicted keeps the primary key it was sent with. `Conflict.Update` takes columns from the proposed
+row (`col = EXCLUDED.col`); `Conflict.Set` takes `Assignment`s, in which the table's columns read
+the stored row and `Col.Excluded()` the proposed row, with values bound as parameters; a column
+assigned twice is refused, and the `autoupdate` and `version` columns are maintained unless `Set`
+assigns them. The `ON CONFLICT` clause is rendered with each statement, after its values. An
+`OnConflict(...).Where` predicate must not bind values. One row is inserted with `VALUES`; more rows
+through `INSERT … SELECT … FROM unnest(…)` with one typed array per column (column types read from
+the catalog once per `DB`), 10,000 rows per statement, every statement sharing one text and one
+round trip.
+
+`Copy` streams rows through the binary `COPY` protocol (`pgx.CopyFrom`) for loads of many thousands
+of rows. Rows are prepared as `Create` prepares them (autoid, tenant and timestamp columns, model and
+`BeforeWrite` hooks, `ErrTenantMismatch`); `COPY` returns nothing, so `readonly` columns are not read
+back and `AfterWrite` and `Committed` hooks see the rows as written. `COPY` cannot share a pipeline,
+so an implicit transaction (for `OnBegin` or create `AfterWrite` hooks) is begun in a round trip of
+its own first.
+
+`Save` and `DeleteRow` apply interceptors: their predicates join the primary key in the `WHERE`
+clause (relation paths become `FROM`/`USING` joins), so a row they exclude is not written and
+reports `ErrConflict` (versioned `Save`) or `ErrNotFound`.
 
 ## Transactions and scope
 
@@ -267,7 +286,9 @@ v, err := keel.ReadValue(ctx, db, func(ctx context.Context) (T, error) { ... })
   `Config.TenantColumns`. `Config.System` reports a system scope and its reason. A statement on a
   tenant table with neither is refused (`ErrNoScope`). Under a system scope a statement on a tenant
   table must say `AllTenants()` (`ErrAllTenantsRequired`), and `AllTenants()` without a system
-  scope is refused (`ErrSystemScopeRequired`). Inserts under a system scope must carry their tenant
+  scope is refused (`ErrSystemScopeRequired`). A query that says `AllTenants()` covers its joined
+  relations, its to-many loads at every level and its `Any`/`None` predicates; a query used as a
+  subquery (`Exists`, `InQuery`, lateral joins, CTEs, set operations) declares its own. Inserts under a system scope must carry their tenant
   columns; a row of another tenant is refused (`ErrTenantMismatch`).
 - `keel.AfterCommit(ctx, fn)` runs `fn` after the transaction on the context commits, or at once
   outside one.
@@ -295,24 +316,29 @@ v, err := keel.ReadValue(ctx, db, func(ctx context.Context) (T, error) { ... })
 |---|---|---|
 | model hooks | methods on the model | normalisation and derived fields |
 | table hooks | `keel.OnCreate/OnUpdate/OnDelete/OnWrite[T](db, handle, phase, fn, keel.Needs(cols...))` | validation, audit, side effects |
-| interceptors | `db.Intercept(handle, fn)`, `db.InterceptAll(fn)` | add predicates to every statement whose base is a table: queries, loads, subqueries, bulk writes |
+| interceptors | `db.Intercept(handle, fn)`, `db.InterceptAll(fn)` | add `WHERE` predicates to every statement whose base is a table and that has one: queries, loads, subqueries, bulk updates and deletes, `Save`, `DeleteRow`. Never inserts, including an upsert's conflict update |
 | observers | `Config.Observers` | tracing, metrics, slow-query log, N+1 detection |
 
 Table hook phases:
 
 - `BeforeWrite` runs inside the transaction before an entity write (`Create`, `CreateMany`,
-  `Save`, `Upsert`, `DeleteRow`) and may change the row or abort.
+  `Copy`, `Save`, `Upsert`, `CreateOrSkip`, `DeleteRow`) and may change the row or abort.
 - `AfterWrite` runs inside the transaction after the statement, for entity and bulk writes; an
-  error rolls back. A table with `AfterWrite` hooks makes its writes transactional.
+  error rolls back. A table with `AfterWrite` hooks for any operation a write can perform makes
+  that write transactional (an `Upsert` for create or update hooks).
 - `Committed` runs after the transaction commits.
 
-Bulk writes on a table with `AfterWrite` or `Committed` hooks return their rows through `RETURNING`,
-with, for updates, the previous values of the columns hooks declared with `Needs` through
-`RETURNING old.…` (PostgreSQL 18). `Mutation.Old` is filled for `Save` and bulk updates; deletes
-carry the deleted row in `Mutation.Row`. Hooks are resolved per table when registered; a table without hooks pays nothing.
+Bulk writes on a table with `AfterWrite` or `Committed` hooks return their rows through `RETURNING`.
+For every update and delete (`Save`, an upsert's conflicting rows, `DeleteRow`, bulk updates and
+deletes) the previous values of the columns hooks declared with `Needs` are read in the same
+statement through `RETURNING old.…` (PostgreSQL 18) into `Mutation.Old`. Hooks are resolved per
+table when registered; a table without hooks pays nothing.
 
 Observers receive the statement text (never values), the number of bound arguments, duration, rows
-and error; statements sent in one round trip share a start time and a duration.
+and error; statements sent in one round trip share a start time and a duration. Each statement's
+observers chain their `BeforeQuery` contexts from the terminal's context; `AfterQuery` gets the
+statement's final context, and a round trip that carries one statement runs under it. Statements
+of one round trip get sibling contexts and the round trip runs under the terminal's context.
 
 ## Errors
 
