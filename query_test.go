@@ -523,3 +523,34 @@ func TestLock(t *testing.T) {
 		return nil
 	}))
 }
+
+func TestAllTenantsReachesLoadsAndAny(t *testing.T) {
+	d := db(t)
+	w := seed(t, 6)
+	s := fleetdb.Shipments
+	m := s.Moves()
+	st := m.Stops()
+	sys := systemCtx("report")
+	org := w.shipments[0].OrganizationID
+
+	rows := must(s.AllTenants().
+		Where(s.OrganizationID.Eq(org), m.Any(m.Loaded.IsTrue()), m.None(m.Status.Eq(fleet.StatusCanceled))).
+		Load(m.Where(st.Any(st.Kind.Eq("pickup"))).Order(m.Sequence.Asc()), st.Order(st.Sequence.Asc()),
+			s.Tags()).
+		Order(s.ProNumber.Asc()).
+		All(sys, d))(t)
+	eq(t, len(rows), 6)
+	eq(t, len(rows[0].Moves), 2)
+	eq(t, len(rows[0].Moves[0].Stops), 2)
+	eq(t, len(rows[0].Tags), 2)
+
+	c := fleetdb.Customers
+	_, err := s.AllTenants().Where(keel.Exists(c.Where(c.ID.EqCol(s.CustomerID)))).Limit(1).List(sys, d)
+	if !errors.Is(err, keel.ErrAllTenantsRequired) {
+		t.Fatalf("explicit subquery without AllTenants: got %v, want ErrAllTenantsRequired", err)
+	}
+	_, err = s.Where(s.OrganizationID.Eq(org)).Load(m.AllTenants()).Limit(1).List(sys, d)
+	if !errors.Is(err, keel.ErrAllTenantsRequired) {
+		t.Fatalf("root without AllTenants: got %v, want ErrAllTenantsRequired", err)
+	}
+}
