@@ -182,7 +182,9 @@ func (q *Query[T]) DistinctOn(es ...Expr) *Query[T] {
 	return q
 }
 
-// AllTenants lets the query cross tenants. It needs a system scope.
+// AllTenants lets the query cross tenants. It needs a system scope. The query's relation loads
+// and its Any and None predicates cross tenants with it; a query used as a subquery (Exists,
+// InQuery, a lateral join, a CTE, a set operation) declares AllTenants itself.
 func (q *Query[T]) AllTenants() *Query[T] {
 	q.q.allTenants = true
 	return q
@@ -368,6 +370,7 @@ func relExistsQuery(q *query, ps []Pred, not bool) Pred {
 		r.s("EXISTS (")
 		sub := *q
 		sub.where = append(append([]Pred(nil), q.where...), ps...)
+		sub.allTenants = sub.allTenants || r.sc != nil && r.sc.allTenants
 		sub.writeSubquery(r, true)
 		r.b(')')
 	}}

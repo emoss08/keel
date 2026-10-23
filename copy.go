@@ -36,7 +36,7 @@ func (h Handle[T]) Copy(ctx context.Context, db *DB, rows []*T) (int64, error) {
 
 func (db *DB) copyRows(ctx context.Context, t *schema.Table, rows []unsafe.Pointer) (int64, error) {
 	th := db.hooks.forTable(t)
-	run, err := db.writeRunner(ctx, th, OpCreate)
+	run, err := db.writeRunner(ctx, th.has(OpCreate, AfterWrite))
 	if err != nil {
 		return 0, err
 	}
@@ -57,11 +57,11 @@ func (db *DB) copyRows(ctx context.Context, t *schema.Table, rows []unsafe.Point
 	s := &stmt{sql: copySQL(t), op: "copy", table: t.Name}
 	stmts := []*stmt{s}
 	src := &copySource{t: t, rows: rows, vals: make([]any, len(t.Insert))}
-	events := db.startEvents(ctx, stmts)
+	events, qctx := db.startEvents(ctx, stmts)
 	start := time.Now()
-	n, err := conn.CopyFrom(ctx, pgx.Identifier{t.Name}, names, src)
+	n, err := conn.CopyFrom(qctx, pgx.Identifier{t.Name}, names, src)
 	s.tag = pgconn.NewCommandTag("COPY " + strconv.FormatInt(n, 10))
-	db.endEvents(ctx, events, stmts, time.Since(start), err)
+	db.endEvents(events, stmts, time.Since(start), err)
 	if err == nil {
 		err = db.afterWrite(ctx, run, th, OpCreate, rows, nil, nil)
 	}

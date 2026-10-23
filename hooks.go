@@ -13,12 +13,13 @@ import (
 type Phase uint8
 
 const (
-	// BeforeWrite runs inside the transaction before an entity write (Create, CreateMany, Save,
-	// Upsert, DeleteRow). It may change the row or abort the write by returning an error. Bulk
-	// writes (Query.Update, Query.Delete) do not run BeforeWrite hooks.
+	// BeforeWrite runs inside the transaction before an entity write (Create, CreateMany, Copy,
+	// Save, Upsert, CreateOrSkip, DeleteRow). It may change the row or abort the write by returning
+	// an error. Bulk writes (Query.Update, Query.Delete) do not run BeforeWrite hooks.
 	BeforeWrite Phase = iota
 	// AfterWrite runs inside the transaction after the statement, for entity and bulk writes. An error
-	// rolls the transaction back.
+	// rolls the transaction back: outside a transaction, a write that may run AfterWrite hooks runs in
+	// an implicit one.
 	AfterWrite
 	// Committed runs after the transaction commits. Errors are not returned to the caller;
 	// report them from the hook.
@@ -52,16 +53,19 @@ func (o Op) String() string {
 type Mutation[T any] struct {
 	Op Op
 	// Row is the row as written: the entity passed to an entity write, or the row returned by a
-	// bulk write.
+	// bulk write. For DeleteRow it is the entity passed, which may hold only the primary key.
 	Row *T
-	// Old holds the previous values of the columns the hook declared with Needs, for updates and
-	// deletes. Other fields are zero. Nil for creates.
+	// Old holds the stored values, before the write, of the columns the table's hooks declared
+	// with Needs: for every update (Save, an Upsert's conflicting rows, bulk updates) and every
+	// delete (DeleteRow, bulk deletes). Other fields are zero. Nil for creates, and when no hook
+	// of the table declared Needs.
 	Old *T
 
 	changed []int32
 }
 
-// Changed reports whether the write set column c. Creates set every column.
+// Changed reports whether the write set column c. Creates set every column, an Upsert's
+// conflicting rows the columns its Conflict assigns, and deletes none.
 func (m *Mutation[T]) Changed(c interface{ column() Col }) bool {
 	if m.Op == OpCreate {
 		return true
@@ -73,7 +77,8 @@ func (m *Mutation[T]) Changed(c interface{ column() Col }) bool {
 type HookOption func(*hookEntry)
 
 // Needs asks for the previous values of cols on updates and deletes, read in the same statement
-// (RETURNING OLD).
+// (RETURNING old.…, which needs PostgreSQL 18) into Mutation.Old. It costs nothing unless the table
+// has AfterWrite or Committed hooks for the write's op.
 func Needs(cols ...interface{ column() Col }) HookOption {
 	return func(h *hookEntry) {
 		for _, c := range cols {
@@ -215,11 +220,22 @@ func OnWrite[T any](db *DB, t tabler[T], phase Phase,
 	register(db, t, []Op{OpCreate, OpUpdate, OpDelete}, phase, fn, opts)
 }
 
-// Interceptor sees every read and bulk write of a table before it is rendered and may add
-// predicates to it.
+// Interceptor sees a statement on a table before it is rendered and may add predicates to its
+// WHERE clause. It sees every statement whose base is the table and that has a WHERE clause:
+//
+//   - reads: every query terminal and Batch item, Page's total, projections, ToSQL, to-many
+//     relation loads, Any and None, subqueries, and the source query of InsertFrom (OpRead);
+//   - Save and bulk updates (OpUpdate);
+//   - DeleteRow and bulk deletes (OpDelete).
+//
+// On Save and DeleteRow the predicates join the primary key, so a row they exclude is not
+// written. Interceptors never see inserts (Create, CreateMany, Copy, Upsert, CreateOrSkip and the
+// INSERT of InsertFrom), including the update an Upsert applies to a conflicting row, or tables
+// joined into a statement through a relation path.
 type Interceptor func(ctx context.Context, q *Intercepted) error
 
-// Intercepted is the query an interceptor sees.
+// Intercepted is the statement an interceptor sees: its Op (OpRead, OpUpdate or OpDelete), whether
+// it is a read, and its base table.
 type Intercepted struct {
 	Op    Op
 	Read  bool
@@ -236,8 +252,8 @@ type interceptors struct {
 	byTable map[*schema.Table][]Interceptor
 }
 
-// Intercept registers fn for every statement whose base is t's table: queries, relation loads,
-// subqueries and bulk writes. Joined relations are not intercepted.
+// Intercept registers fn for the statements whose base is t's table, as Interceptor describes:
+// reads, Save, DeleteRow and bulk updates and deletes. Joined relations are not intercepted.
 func (db *DB) Intercept(t interface{ TableRef() *Ref }, fn Interceptor) {
 	db.icpt.mu.Lock()
 	defer db.icpt.mu.Unlock()
@@ -248,7 +264,9 @@ func (db *DB) Intercept(t interface{ TableRef() *Ref }, fn Interceptor) {
 	db.icpt.byTable[tbl] = append(slices.Clip(db.icpt.byTable[tbl]), fn)
 }
 
-// InterceptAll registers fn for every statement keel renders.
+// InterceptAll registers fn for the statements of every table that Intercept would cover: reads,
+// Save, DeleteRow and bulk updates and deletes, never inserts. It runs before the interceptors
+// registered for one table.
 func (db *DB) InterceptAll(fn Interceptor) {
 	db.icpt.mu.Lock()
 	defer db.icpt.mu.Unlock()

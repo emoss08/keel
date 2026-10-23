@@ -120,15 +120,15 @@ func (r *runner) batch(ctx context.Context, stmts []*stmt, last bool) error {
 		b.Queue("COMMIT")
 	}
 
-	events := r.db.startEvents(ctx, stmts)
+	events, qctx := r.db.startEvents(ctx, stmts)
 	start := time.Now()
-	br := conn.SendBatch(ctx, b)
+	br := conn.SendBatch(qctx, b)
 	runErr := r.readBatch(br, pre, stmts, commit, custom)
 	closeErr := br.Close()
 	if runErr == nil {
 		runErr = closeErr
 	}
-	r.db.endEvents(ctx, events, stmts, time.Since(start), runErr)
+	r.db.endEvents(events, stmts, time.Since(start), runErr)
 
 	if beginning {
 		r.tx.begun = true
@@ -204,19 +204,19 @@ func scanRows(rows pgx.Rows, s *stmt) error {
 // lone statement does not need.
 func (r *runner) direct(ctx context.Context, conn *pgxpool.Conn, s *stmt) error {
 	stmts := []*stmt{s}
-	events := r.db.startEvents(ctx, stmts)
+	events, qctx := r.db.startEvents(ctx, stmts)
 	start := time.Now()
 	var err error
 	if s.scan == nil {
-		s.tag, err = conn.Exec(ctx, s.sql, s.args...)
+		s.tag, err = conn.Exec(qctx, s.sql, s.args...)
 	} else {
 		var rows pgx.Rows
-		rows, err = conn.Query(ctx, s.sql, s.args...)
+		rows, err = conn.Query(qctx, s.sql, s.args...)
 		if err == nil {
 			err = scanRows(rows, s)
 		}
 	}
-	r.db.endEvents(ctx, events, stmts, time.Since(start), err)
+	r.db.endEvents(events, stmts, time.Since(start), err)
 	return err
 }
 

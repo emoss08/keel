@@ -44,9 +44,15 @@ func (c Col) ToDefault() Assignment {
 // ToExpr sets the column to an expression.
 func (c Col) ToExpr(e Expr) Assignment { return Assignment{col: c, e: e.writeSQL} }
 
-// Excluded is the value proposed for the column by the failed insert of an upsert.
+// Excluded is the value the upsert proposed for the column, in the row that conflicted
+// (EXCLUDED.col). It is valid only in a Conflict.Set assignment; anywhere else the statement fails.
 func (c Col) Excluded() Expr {
 	return exprFunc(func(r *render) {
+		if !r.excluded {
+			r.fail(errf("%s.%s: Excluded is valid only in Conflict.Set", c.Ref.Table.Name,
+				c.Ref.Table.Columns[c.Index].Name))
+			return
+		}
 		r.s("EXCLUDED.")
 		r.s(c.Ref.Table.Columns[c.Index].Quoted)
 	})
@@ -157,7 +163,7 @@ func set(c Col, v any) Assignment {
 
 func add(c Col, v any) Assignment {
 	return Assignment{col: c, e: func(r *render) {
-		r.s(c.Ref.Table.Columns[c.Index].Quoted)
+		r.col(c)
 		r.s(" + ")
 		r.arg(v)
 	}}

@@ -21,6 +21,7 @@ tenant (see [Tenancy](#tenancy)).
 - [Reading](#reading)
 - [Loading relations](#loading-relations)
 - [Pagination](#pagination)
+- [Batching reads](#batching-reads)
 - [Writing](#writing)
 - [Transactions](#transactions)
 - [Tenancy](#tenancy)
@@ -544,8 +545,8 @@ Generated wrappers (`StatusCol`, `IdsIDCol`) take the named type in `Eq`, `Ne`, 
 (`= ANY($1)`), so the statement text does not depend on the number of values. `Lower()` and
 `Text(...)` return a `keel.StringExpr` with `Eq`, `Ne`, `In`, `Like`, `Contains`, `IsNull`, `Asc`
 and `Desc`. `EqCol` and `NeCol` compare with another expression, for joins and correlated
-subqueries. `Col.Excluded()` renders `EXCLUDED.col`; `Conflict.Update` takes columns only, so it has
-no use in keel's upserts today.
+subqueries. `Col.Excluded()` is the value an upsert proposed for the column (`EXCLUDED.col`); it is
+valid only inside `Conflict.Set` (see [Upsert](#upsert)) and fails the statement anywhere else.
 
 Combinators: `keel.And(ps...)` and `keel.Or(ps...)` skip nil predicates (`And` of nothing is
 `TRUE`, `Or` of nothing `FALSE`), `keel.Not(p)`, `keel.True()`. `Where` joins its arguments with
@@ -987,8 +988,8 @@ Many-to-many loads do not take a `Limit`.
 - Interceptors apply to to-many load statements, as to any statement on their table (see
   [Interceptors](#interceptors)).
 - `AfterLoad` hooks run for every loaded row of every table, once all levels are loaded.
-- Under a system scope, to-many loads need `AllTenants` on the relation: `Load(m.AllTenants())`
-  (see [Tenancy](#tenancy)).
+- Under a system scope, to-many loads cross tenants when the query they load into says
+  `AllTenants`, or when the load itself does (`Load(m.AllTenants())`); see [Tenancy](#tenancy).
 
 ## Pagination
 
@@ -1052,6 +1053,62 @@ connection for the whole run.
 `Offset(n)` exists for the rare list that needs it. Prefer `Page` for anything a person scrolls:
 an offset makes Postgres read and discard every skipped row.
 
+## Batching reads
+
+`keel.Batch` runs independent reads in one round trip. Each item pairs a query with a typed
+destination; a page that shows a list, its total and a header record costs one round trip instead
+of three:
+
+```go
+type statusCount struct {
+    Status fleet.Status
+    Loads  int64
+}
+
+s, c := fleetdb.Shipments, fleetdb.Customers
+open := s.Where(s.Status.In(fleet.StatusNew, fleet.StatusAssigned))
+
+var rows []*fleet.Shipment
+var total int64
+var byStatus []statusCount
+var cust *fleet.Customer
+err := keel.Batch(ctx, db,
+    keel.ListInto(open.Clone().Order(s.CreatedAt.Desc()).Limit(50), &rows),
+    keel.CountInto(open.Clone(), &total),
+    keel.IntoSlice(s.Group(s.Status).Pick(s.Status, keel.Count()), &byStatus),
+    keel.OneInto(c.Where(c.ID.Eq("cus_01")), &cust),
+)
+```
+
+| Item | Reads what this terminal returns |
+|---|---|
+| `keel.ListInto(q, &rows)` | `List`; the query needs a `Limit` |
+| `keel.AllInto(q, &rows)` | `All` |
+| `keel.OneInto(q, &row)` | `One` |
+| `keel.FirstInto(q, &row)` | `First` |
+| `keel.PageInto(q, req, &page)` | `Page`, with its total when `req` asks for one |
+| `keel.CountInto(q, &n)`, `keel.CountUpToInto(q, limit, &n)` | `Count`, `CountUpTo` |
+| `keel.ExistsInto(q, &ok)` | `Exists` |
+| `keel.IntoSlice[R](q, &rs)`, `keel.IntoValue[R](q, &r)` | `keel.Into`, `keel.IntoOne` |
+
+How a batch runs:
+
+- The main statements of every item (a page's count included) are sent together: in the
+  transaction on the context; else, when `Config.OnBegin` is set, in an implicit transaction whose
+  `BEGIN`, `OnBegin` statements and, when no relation loads follow, `COMMIT` ride in the same round
+  trip; else on one pooled connection outside a transaction.
+- The to-many relation loads of all items follow, one round trip per level for every item together.
+- Each item keeps its terminal's checks: scope errors, interceptors, `AfterLoad` hooks,
+  `ErrUnbounded` for a list without a `Limit`, `ErrNotFound` and `ErrNotSingular` for single-row
+  items.
+- `Batch` returns the first error and fills the destinations only when every item succeeded, so a
+  failed batch leaves them untouched.
+- The shortest `Timeout` among the items bounds the whole batch.
+- An item holds no result, so it can be built once and run in more than one batch. `Batch` with no
+  items does nothing.
+
+The terminals are one-item batches, so a batch costs nothing beyond the statements it sends.
+
 ## Writing
 
 ### Create
@@ -1096,6 +1153,29 @@ sent in one round trip. keel reads the table's column types from the catalog on 
 of a table and caches them per `DB`; call `db.ForgetColumnTypes()` after a migration changes a table
 while the process runs. An empty slice does nothing.
 
+### Copy
+
+`Copy` inserts rows through Postgres's binary `COPY` protocol and returns how many it inserted. It
+streams the rows instead of building arrays, so it beats `CreateMany` for loads of many thousands of
+rows (imports, backfills, seeding):
+
+```go
+n, err := fleetdb.Shipments.Copy(ctx, db, rows)
+```
+
+- Rows are prepared as `Create` prepares them: the `autoid`, tenant, `autocreate` and `autoupdate`
+  columns are filled, a row of another tenant is refused, and the `BeforeCreate`, `BeforeSave` and
+  `BeforeWrite` hooks run.
+- `COPY` returns nothing, so `readonly` columns are not read back, and `AfterWrite` and `Committed`
+  hooks see the rows as written.
+- `Copy` joins the transaction on the context. Outside one it runs in an implicit transaction when
+  `Config.OnBegin` is set (after the `OnBegin` statements, which `COPY` cannot share a round trip
+  with) or when the table has create `AfterWrite` hooks; otherwise it runs on one pooled connection.
+- Enum columns need their types registered on the connection, which keel does unless
+  `Config.SkipEnums` is set.
+- A duplicate key fails the whole `COPY`; use `CreateOrSkip` or `Upsert` when rows may conflict.
+- Observers see one `copy` statement whose text is `COPY "table" (…) FROM STDIN (FORMAT binary)`.
+
 ### Save and optimistic locking
 
 `Save` updates a row by its primary key. With a `version` column it compares the stored version,
@@ -1136,15 +1216,24 @@ err := s.Save(ctx, db, sh, s.Status, s.CanceledAt)
 Only updatable columns can be named: not primary key, tenant, `autocreate`, `version` or `readonly`
 columns.
 
+[Interceptors](#interceptors) apply to `Save`: their predicates join the primary key in the
+`WHERE` clause (with `FROM` for the relations they reference), so a row they exclude is not
+written. `Save` reports such a row as it reports a missing one: `ErrConflict` on a table with a
+`version` column, `ErrNotFound` otherwise.
+
 ### DeleteRow
 
 `DeleteRow` deletes a row by its primary key and returns `ErrNotFound` when nothing was deleted:
 
 ```go
 if err := fleetdb.Stops.DeleteRow(ctx, db, st); errors.Is(err, keel.ErrNotFound) {
-    // already deleted
+    // already deleted, or excluded by an interceptor
 }
 ```
+
+Interceptors apply as they do to `Save` (with `USING` for the relations they reference). The row
+passed needs only its primary key and tenant columns; delete hooks that declared `Needs` get the
+stored values of those columns in `Mutation.Old`.
 
 ### Bulk updates and deletes
 
@@ -1167,7 +1256,7 @@ Assignments:
 | Assignment | SQL |
 |---|---|
 | `col.To(v)` | `col = $n` |
-| `col.Add(v)` (numeric columns) | `col = col + $n` |
+| `col.Add(v)` (numeric columns) | `col = s.col + $n`, the stored value plus `v` |
 | `col.ToNull()` | `col = NULL` |
 | `col.ToDefault()` | `col = DEFAULT` |
 | `col.ToExpr(e)` | `col = e`, for example `s.Weight.ToExpr(keel.Raw("? * 2", s.Weight))` |
@@ -1192,14 +1281,38 @@ inserted, err := c.Upsert(ctx, db, rows,
 ```
 
 - `keel.OnConflict(cols...)` names the unique columns; it is required.
-- `Update(cols...)` names the columns a conflicting row takes from the proposed row; without
-  columns, every updatable column. The `autoupdate` column is always taken and the `version`
-  incremented.
+- `Update(cols...)` names the columns a conflicting row takes from the proposed row
+  (`col = EXCLUDED.col`).
+- `Set(assignments...)` gives a conflicting row explicit assignments, the same `Assignment` values
+  bulk `Update` takes. Inside them the table's columns read the stored row and `col.Excluded()`
+  reads the proposed row; values bind as parameters.
+- Without `Update` or `Set`, a conflicting row takes every updatable column. `Update` and `Set`
+  combine; a column assigned twice is refused. Unless `Set` assigns them, the `autoupdate` column
+  takes the proposed row's stamp and the `version` column is incremented.
 - `Where(preds...)` matches a partial unique index: `ON CONFLICT (…) WHERE …`. Its predicates must
   not bind values; use constants, as `c.Email.IsNull()` or `keel.Raw("deleted_at IS NULL")` do.
 - Rows that conflict get the stored version and `readonly` columns back. Their primary key keeps the
   value the row was sent with (a fresh `autoid` value), not the stored one; read the row back by its
   unique key when you need it.
+
+```go
+c := fleetdb.Customers
+inserted, err := c.Upsert(ctx, db, rows,
+    keel.OnConflict(c.OrganizationID, c.BusinessUnitID, c.Code).Set(
+        c.Name.ToExpr(c.Name.Excluded()),
+        c.Email.ToExpr(keel.Raw("coalesce(?, ?)", c.Email, c.Email.Excluded())),
+        c.Version.Add(10),
+    ))
+// ON CONFLICT (…) DO UPDATE SET "name" = EXCLUDED."name",
+//   "email" = coalesce(c."email", EXCLUDED."email"), "version" = c."version" + $n,
+//   "updated_at" = EXCLUDED."updated_at"
+```
+
+Interceptors do not see upserts: the conflicting row is updated even when an interceptor would hide
+it from reads. Give a soft-deleted or otherwise hidden row a partial unique index and match it with
+`Where`, or check for it first. Inserted rows run the create hooks and conflicting rows the update
+hooks; outside a transaction an upsert runs in an implicit one when the table has `AfterWrite` hooks
+for either, so a failing hook rolls every row back.
 
 Many rows go through `unnest`, as in `CreateMany`.
 
@@ -1413,9 +1526,8 @@ m := s.Moves()
 cutoff := time.Now().AddDate(-1, 0, 0).Unix()
 
 stale, err := s.AllTenants().
-    Where(s.Status.Eq(fleet.StatusCanceled), s.CanceledAt.Lt(cutoff)).
-    Where(m.AllTenants().None(m.Loaded.IsTrue())).
-    Load(s.Customer(), m.AllTenants()).
+    Where(s.Status.Eq(fleet.StatusCanceled), s.CanceledAt.Lt(cutoff), m.None(m.Loaded.IsTrue())).
+    Load(s.Customer(), m.Stops()).
     Limit(1000).
     List(ctx, db)
 
@@ -1424,10 +1536,12 @@ n, err := s.AllTenants().
     Delete(ctx, db)
 ```
 
-Under a system scope, `AllTenants` is per statement: a subquery, an `Any` or `None` over a to-many
-path, and a to-many load each need their own (`m.AllTenants().None(…)`, `Load(m.AllTenants())`).
-To-one relations joined into a statement follow that statement. `Save` and `DeleteRow` under a
-system scope write by primary key without `AllTenants`.
+A query that says `AllTenants` crosses tenants with everything it contains: to-one relations
+joined into it, its to-many relation loads at every level, and its `Any` and `None` predicates.
+A query used as a subquery (`keel.Exists`, `InQuery`, a lateral join, a CTE, a set operation) is a
+query of its own and says `AllTenants` itself; without it the statement fails with
+`ErrAllTenantsRequired`. `Save` and `DeleteRow` under a system scope write by primary key without
+`AllTenants`.
 
 ### Scope errors
 
@@ -1502,18 +1616,17 @@ receives a `*keel.Mutation[T]`:
 | Field or method | Meaning |
 |---|---|
 | `Op` | `keel.OpCreate`, `keel.OpUpdate` or `keel.OpDelete` (`String()` gives `create`, `update`, `delete`) |
-| `Row` | the row as written: the entity passed to an entity write, or a row returned by a bulk write |
-| `Old` | the previous values of the columns the table's hooks declared with `Needs`, for `Save` and bulk updates; other fields are zero. Nil for creates, deletes and upsert conflicts |
-| `Changed(col)` | whether the write set the column: always true for creates; the written columns for `Save` and bulk updates; false for upsert conflicts |
+| `Row` | the row as written: the entity passed to an entity write, or a row returned by a bulk write (for `DeleteRow`, the entity passed, which may hold only its key) |
+| `Old` | the stored values, before the write, of the columns the table's hooks declared with `Needs`, for every update (`Save`, an upsert's conflicting rows, bulk updates) and every delete (`DeleteRow`, bulk deletes); other fields are zero. Nil for creates and when no hook declared `Needs` |
+| `Changed(col)` | whether the write set the column: always true for creates; the written columns for `Save` and bulk updates; the columns the `Conflict` assigns for an upsert's conflicting rows; false for deletes |
 
 `keel.Needs(cols...)` reads the previous values in the same statement (`RETURNING old.…`, which
-needs PostgreSQL 18). It is only paid for when the table has `AfterWrite` or `Committed` update
-hooks.
+needs PostgreSQL 18). It is only paid for when the table has `AfterWrite` or `Committed` hooks for
+the write's operation.
 
 A table with `AfterWrite` hooks for an operation makes those writes transactional: outside `Write`
-they run in an implicit transaction, so a hook error rolls the statement back. `Upsert` and
-`CreateOrSkip` open that transaction only for create hooks; run them inside `keel.Write` when an
-update hook must be able to roll them back. A table without hooks pays nothing.
+they run in an implicit transaction, so a hook error rolls the statement back. An `Upsert` opens it
+for create or update hooks, since it may do either. A table without hooks pays nothing.
 
 Bulk writes on a table with `AfterWrite` or `Committed` hooks for their operation return every
 written row through `RETURNING` and call the hooks once per row, which costs memory proportional to
@@ -1524,12 +1637,13 @@ the rows written.
 | Write | Model hooks | `BeforeWrite` | `AfterWrite` and `Committed` |
 |---|---|---|---|
 | `Create`, `CreateMany` | `BeforeCreate`, `BeforeSave` | create | create |
-| `Upsert` | `BeforeCreate`, `BeforeSave` on every row | create, on every row | create for inserted rows, update for conflicting rows |
+| `Copy` | `BeforeCreate`, `BeforeSave` | create | create, with rows as written (nothing read back) |
+| `Upsert` | `BeforeCreate`, `BeforeSave` on every row | create, on every row | create for inserted rows, update with `Old` for conflicting rows |
 | `CreateOrSkip` | `BeforeCreate`, `BeforeSave` on every row | create, on every row | create for inserted rows |
 | `Save` | `BeforeUpdate`, `BeforeSave` | update | update, with `Old` |
-| `DeleteRow` | `BeforeDelete` | delete | delete |
+| `DeleteRow` | `BeforeDelete` | delete | delete, with `Old` |
 | `Query.Update` | none | none | update per row, with `Old` |
-| `Query.Delete` | none | none | delete per row |
+| `Query.Delete` | none | none | delete per row, with `Old` |
 | `InsertFrom` | none | none | none |
 
 On inserts, keel fills the `autoid`, tenant and timestamp columns before the hooks run, so hooks see
@@ -1537,8 +1651,9 @@ them. `AfterLoad` runs after reads.
 
 ### Interceptors
 
-An interceptor sees a statement before it is rendered and may add predicates to it. `db.Intercept`
-registers one for every statement whose base is a table; `db.InterceptAll` for every table.
+An interceptor sees a statement before it is rendered and may add predicates to its `WHERE`
+clause. `db.Intercept` registers one for the statements whose base is a table; `db.InterceptAll`
+for those of every table (it runs before the per-table ones).
 
 ```go
 s := fleetdb.Shipments
@@ -1547,8 +1662,8 @@ db.Intercept(s, func(ctx context.Context, q *keel.Intercepted) error {
     if !ok {
         return nil
     }
-    if !q.Read {
-        return errors.New("portal users cannot change shipments in bulk")
+    if q.Op == keel.OpDelete {
+        return errors.New("portal users cannot delete shipments")
     }
     q.Where(s.CustomerID.In(customers...))
     return nil
@@ -1559,11 +1674,23 @@ db.Intercept(s, func(ctx context.Context, q *keel.Intercepted) error {
 `Table` (the `*schema.Table`); `Where(preds...)` adds predicates, joined with `AND`. An error aborts
 the statement.
 
-Interceptors run for queries (every terminal, `Count`, `Page`'s total, `keel.Into`, `ToSQL`), to-many
-relation loads, subqueries (`Exists`, `InQuery`, `Any`, `None`, CTE bodies, lateral joins, the source
-of `InsertFrom`) and bulk `Update` and `Delete`. They do not run for `Create`, `CreateMany`, `Save`,
-`DeleteRow`, `Upsert` or `CreateOrSkip`, nor for relations joined into a statement or tables added
-with `Join`. Columns of the table's base handle resolve inside statements built on a relation path
+Interceptors see exactly the statements that have a `WHERE` clause over their table:
+
+| Statement | `Op` |
+|---|---|
+| queries: every terminal and `Batch` item, `Page`'s total, `keel.Into`, `ToSQL` | `OpRead` |
+| to-many relation loads, and subqueries: `Exists`, `InQuery`, `Any`, `None`, CTE bodies, lateral joins, the source query of `InsertFrom` | `OpRead` |
+| `Save`, and bulk `Update` | `OpUpdate` |
+| `DeleteRow`, and bulk `Delete` | `OpDelete` |
+
+On `Save` and `DeleteRow` the predicates join the primary key, so a row they exclude is not
+written: a soft-delete or ownership interceptor cannot be bypassed by a single-row write. Relation
+path predicates (`s.Customer().Code.Ne(…)`) become `FROM` or `USING` joins, as in bulk writes.
+
+Interceptors never see inserts (`Create`, `CreateMany`, `Copy`, `Upsert`, `CreateOrSkip`, the
+`INSERT` of `InsertFrom`), which have no `WHERE` clause, and that includes the update an `Upsert`
+applies to a conflicting row. They do not see relations joined into a statement or tables added with
+`Join` either. Columns of the table's base handle resolve inside statements built on a relation path
 to the table, so one interceptor covers loads and `Any`.
 
 ### Observers
@@ -1587,7 +1714,7 @@ func (l slowQueryLog) AfterQuery(_ context.Context, e *keel.QueryEvent) {
 
 | `keel.QueryEvent` field | Meaning |
 |---|---|
-| `Op` | `select`, `count`, `insert`, `update`, `delete`, `savepoint` or `lock` |
+| `Op` | `select`, `count`, `insert`, `update`, `delete`, `copy`, `savepoint` or `lock` |
 | `Table` | the statement's table |
 | `SQL` | the statement text, which never contains values |
 | `Args` | the number of bound arguments |
@@ -1595,10 +1722,46 @@ func (l slowQueryLog) AfterQuery(_ context.Context, e *keel.QueryEvent) {
 | `Rows` | rows affected or returned |
 | `Err` | the error of the round trip |
 
-`BeforeQuery` runs for each statement before its round trip and `AfterQuery` after it, observers in
-reverse order. The context `BeforeQuery` returns is not passed on: keep per-statement state keyed by
-the `*QueryEvent`, which is the same pointer in both calls. `BEGIN`, `COMMIT`, `OnBegin` statements
-and plan-mode switches are not reported.
+For each statement keel calls every observer's `BeforeQuery` before the round trip, in order: the
+first gets the terminal's context, each later one the context the previous one returned. The
+context the last one returns is the statement's context:
+
+- `AfterQuery` gets it after the round trip, observers in reverse order, so an observer can start a
+  span in `BeforeQuery` and end it in `AfterQuery`.
+- A round trip that carries one statement (most terminals, `Save`, `Copy`, with or without the
+  `BEGIN`, `OnBegin` statements and `COMMIT` of an implicit transaction) runs under that context,
+  so a deadline, a cancellation or a value an observer adds reaches the execution and pgx's own
+  tracer.
+- Statements that share a round trip (a `Batch`, one level of relation loads, the chunks of a large
+  `CreateMany`, a page and its total) each start from the terminal's context, so their contexts are
+  siblings and one statement's span never contains another's. The round trip itself runs under the
+  terminal's context.
+
+```go
+type traceKey struct{}
+
+type statementSpan struct {
+    name  string
+    start time.Time
+}
+
+type tracingObserver struct{}
+
+func (tracingObserver) BeforeQuery(ctx context.Context, e *keel.QueryEvent) context.Context {
+    return context.WithValue(ctx, traceKey{}, &statementSpan{name: e.Op + " " + e.Table, start: time.Now()})
+}
+
+func (tracingObserver) AfterQuery(ctx context.Context, e *keel.QueryEvent) {
+    sp, ok := ctx.Value(traceKey{}).(*statementSpan)
+    if !ok {
+        return
+    }
+    log.Printf("span %s: %v, %d rows, error %v", sp.name, time.Since(sp.start), e.Rows, e.Err)
+}
+```
+
+The `*QueryEvent` is the same pointer in both calls. `BEGIN`, `COMMIT`, `OnBegin` statements and
+plan-mode switches are not reported.
 
 ## Errors
 
@@ -1737,6 +1900,8 @@ notx)` writes an empty pair.
 ### Round trips
 
 - A read is one round trip, plus one per level of to-many loads. A page and its total share one.
+- Independent reads of one request share a round trip with [`keel.Batch`](#batching-reads), and
+  their relation loads share one per level.
 - With `OnBegin` set, a lone terminal is still one round trip: `BEGIN`, the `OnBegin` statements,
   the statement and `COMMIT` are pipelined. Across a network each saved round trip is worth its
   latency; see [benchmarks.md](benchmarks.md).
@@ -1748,6 +1913,8 @@ notx)` writes an empty pair.
 - `CreateMany`, `Upsert` and `CreateOrSkip` with many rows send one array per column through
   `unnest`, 10,000 rows per statement, one statement text for any row count, all chunks in one round
   trip. A loop of `Create` calls is a round trip per row.
+- `Copy` streams rows through binary `COPY` and beats `CreateMany` from many thousands of rows, at
+  the price of reading nothing back (see [Copy](#copy)).
 - Bulk `Update` and `Delete` are one statement whatever the row count, unless hooks need the rows
   (see [Table hooks](#table-hooks)).
 
@@ -1865,6 +2032,8 @@ The same pattern works for an application:
 | `db.NewDelete().Model(sh).WherePK().Exec(ctx)` | `s.DeleteRow(ctx, db, sh)` |
 | `db.NewDelete().Model((*T)(nil)).Where(...)` | `s.Where(...).Delete(ctx, db)` |
 | `.On("CONFLICT (...) DO UPDATE").Set("x = EXCLUDED.x")` | `s.Upsert(ctx, db, rows, keel.OnConflict(...).Update(s.X))` |
+| `.Set("hits = sp.hits + 1, name = EXCLUDED.name")` on a conflict | `keel.OnConflict(...).Set(s.Hits.Add(1), s.Name.ToExpr(s.Name.Excluded()))` |
+| pgx `CopyFrom` on the underlying pool for large loads | `s.Copy(ctx, db, rows)`, with tenant columns, IDs, timestamps and hooks |
 | `.On("CONFLICT DO NOTHING")` | `s.CreateOrSkip(ctx, db, rows, cols...)` |
 | `INSERT … SELECT` through `NewInsert().Table(...)` | `s.InsertFrom(ctx, db, q, cols...)` |
 | `db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {...})` | `keel.Write(ctx, db, func(ctx context.Context) error {...})`; pass `ctx`, not a `tx` |

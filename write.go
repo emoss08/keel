@@ -11,6 +11,7 @@ import (
 
 	"github.com/emoss08/keel/schema"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
@@ -36,20 +37,24 @@ func (h Handle[T]) CreateMany(ctx context.Context, db *DB, rows []*T) error {
 // Save updates row by its primary key. With a version column it compares the stored version,
 // increments it and returns a *ConflictError (matching ErrConflict) when another writer got
 // there first. cols narrows the columns written; the autoupdate column is always written.
+// Interceptors' predicates join the primary key in the WHERE clause: a row they exclude is not
+// written, and Save reports it as ErrConflict on a table with a version column, else ErrNotFound.
 func (h Handle[T]) Save(ctx context.Context, db *DB, row *T, cols ...interface{ column() Col }) error {
 	return db.save(ctx, h.Ref, unsafe.Pointer(row), cols)
 }
 
-// DeleteRow deletes row by its primary key. It returns ErrNotFound when no row was deleted.
+// DeleteRow deletes row by its primary key. Interceptors' predicates join the primary key in the
+// WHERE clause. It returns ErrNotFound when no row was deleted, including a row they exclude.
 func (h Handle[T]) DeleteRow(ctx context.Context, db *DB, row *T) error {
-	return db.deleteRow(ctx, h.Ref.Table, unsafe.Pointer(row))
+	return db.deleteRow(ctx, h.Ref, unsafe.Pointer(row))
 }
 
-// Conflict is the ON CONFLICT clause of an upsert.
+// Conflict is the ON CONFLICT clause of an upsert. Its methods return a changed copy.
 type Conflict struct {
 	cols    []Col
 	where   []Pred
 	update  []Col
+	set     []Assignment
 	nothing bool
 }
 
@@ -62,24 +67,160 @@ func OnConflict(cols ...interface{ column() Col }) Conflict {
 	return c
 }
 
-// Where matches a partial unique index: ON CONFLICT (…) WHERE ….
+// Where matches a partial unique index: ON CONFLICT (…) WHERE …. The predicates must not bind
+// values, since Postgres matches them against the index predicate when it plans the statement.
 func (c Conflict) Where(ps ...Pred) Conflict {
-	c.where = append(c.where, ps...)
+	c.where = append(slices.Clip(c.where), ps...)
 	return c
 }
 
-// Update names the columns a conflicting row takes from the proposed row. Without columns every
-// updatable column is taken.
+// Update names the columns a conflicting row takes from the proposed row: SET col = EXCLUDED.col.
+// Without Update or Set, a conflicting row takes every updatable column.
 func (c Conflict) Update(cols ...interface{ column() Col }) Conflict {
+	c.update = slices.Clip(c.update)
 	for _, col := range cols {
 		c.update = append(c.update, col.column())
 	}
 	return c
 }
 
+// Set adds assignments for a conflicting row, built as for Query.Update: To binds a value, Add adds
+// to the stored value, ToNull, ToDefault and ToExpr set the rest. Inside an expression the table's
+// columns read the stored row and a column's Excluded reads the proposed row:
+//
+//	keel.OnConflict(c.Code).Set(c.Name.ToExpr(c.Name.Excluded()), c.Hits.Add(1))
+//
+// Update and Set combine; a column must not be assigned twice. Unless Set assigns them, the
+// autoupdate column takes the proposed row's stamp and the version column is incremented.
+func (c Conflict) Set(sets ...Assignment) Conflict {
+	c.set = append(slices.Clip(c.set), sets...)
+	return c
+}
+
+// check validates the clause against ref's table and returns the columns the update of a
+// conflicting row assigns, in the order the SET clause writes them: Update's, Set's (or every
+// updatable column without either), then the autoupdate column.
+func (c *Conflict) check(ref *Ref) ([]int32, error) {
+	t := ref.Table
+	if len(c.cols) == 0 {
+		return nil, errf("OnConflict needs the conflicting columns")
+	}
+	for _, col := range c.cols {
+		if col.Ref.Table != t {
+			return nil, errf("OnConflict names a column of %s on %s", col.Ref.Table.Name, t.Name)
+		}
+	}
+	if c.nothing {
+		return nil, nil
+	}
+	var changed []int32
+	assign := func(col Col) error {
+		if col.Ref.Table != t {
+			return errf("OnConflict assigns a column of %s on %s", col.Ref.Table.Name, t.Name)
+		}
+		if slices.Contains(changed, col.Index) {
+			return errf("OnConflict assigns %s.%s twice", t.Name, t.Columns[col.Index].Name)
+		}
+		changed = append(changed, col.Index)
+		return nil
+	}
+	for _, col := range c.update {
+		if err := assign(col); err != nil {
+			return nil, err
+		}
+	}
+	for _, a := range c.set {
+		if err := assign(a.col); err != nil {
+			return nil, err
+		}
+	}
+	if len(changed) == 0 {
+		changed = append(changed, t.Update...)
+	}
+	if t.AutoUpdate >= 0 && !slices.Contains(changed, t.AutoUpdate) {
+		changed = append(changed, t.AutoUpdate)
+	}
+	return changed, nil
+}
+
+// write writes the ON CONFLICT clause of an upsert on ref's table, inserted under the table's
+// alias. changed is what check returned. Columns resolve to the stored row; Excluded is valid only
+// in the SET clause.
+func (c *Conflict) write(r *render, ref *Ref, changed []int32) {
+	t := ref.Table
+	r.s(" ON CONFLICT (")
+	for i, col := range c.cols {
+		if i > 0 {
+			r.s(", ")
+		}
+		r.s(t.Columns[col.Index].Quoted)
+	}
+	r.b(')')
+	if hasPreds(c.where) {
+		bound := len(r.args)
+		r.bare = true
+		r.s(" WHERE ")
+		r.preds(c.where, false)
+		r.bare = false
+		if len(r.args) > bound {
+			r.fail(errf("OnConflict Where must not bind values; use constants"))
+		}
+	}
+	if c.nothing {
+		r.s(" DO NOTHING")
+		return
+	}
+	sc := &scope{parent: r.sc, joinMode: joinNone}
+	sc.refs = append(sc.refs, scoped{ref: ref, alias: t.Alias})
+	r.sc = sc
+	r.excluded = true
+	defer func() {
+		r.pop()
+		r.excluded = false
+	}()
+	r.s(" DO UPDATE SET ")
+	for i, ci := range changed {
+		if i > 0 {
+			r.s(", ")
+		}
+		q := t.Columns[ci].Quoted
+		r.s(q)
+		if a := c.assignment(ci); a != nil {
+			r.s(" = ")
+			a.e(r)
+			continue
+		}
+		r.s(" = EXCLUDED.")
+		r.s(q)
+	}
+	if t.Version >= 0 && !slices.Contains(changed, t.Version) {
+		q := t.Columns[t.Version].Quoted
+		r.s(", ")
+		r.s(q)
+		r.s(" = ")
+		r.s(t.Alias)
+		r.b('.')
+		r.s(q)
+		r.s(" + 1")
+	}
+}
+
+// assignment returns the Set assignment of column ci, or nil when the column takes the proposed
+// row's value.
+func (c *Conflict) assignment(ci int32) *Assignment {
+	for i := range c.set {
+		if c.set[i].col.Index == ci {
+			return &c.set[i]
+		}
+	}
+	return nil
+}
+
 // Upsert inserts rows, updating the existing row on conflict. It reports, per row, whether it
 // was inserted (true) or updated (false). Rows that conflict get the stored version and readonly
-// columns back.
+// columns back. Inserted rows run the create hooks and updated rows the update hooks; outside a
+// transaction the upsert runs in an implicit one when the table has AfterWrite hooks for either,
+// so a failing hook rolls every row back.
 func (h Handle[T]) Upsert(ctx context.Context, db *DB, rows []*T, c Conflict) ([]bool, error) {
 	if len(rows) == 0 {
 		return nil, nil
@@ -92,7 +233,7 @@ func (h Handle[T]) Upsert(ctx context.Context, db *DB, rows []*T, c Conflict) ([
 }
 
 // CreateOrSkip inserts rows, skipping those that conflict on cols, and returns how many were
-// inserted.
+// inserted. Inserted rows run the create hooks; skipped rows run none.
 func (h Handle[T]) CreateOrSkip(ctx context.Context, db *DB, rows []*T,
 	cols ...interface{ column() Col },
 ) (int64, error) {
@@ -124,12 +265,14 @@ func (h Handle[T]) InsertFrom(ctx context.Context, db *DB, src subquery,
 	return db.insertFrom(ctx, h.Ref, src, cols)
 }
 
-func (db *DB) writeRunner(ctx context.Context, th *tableHooks, op Op) (*runner, error) {
+// writeRunner returns the runner of a write. With tx, set when the write may run AfterWrite hooks,
+// it opens an implicit transaction outside one, so a failing hook rolls the write back.
+func (db *DB) writeRunner(ctx context.Context, tx bool) (*runner, error) {
 	r, err := db.newRunner(ctx, true)
 	if err != nil {
 		return nil, err
 	}
-	if r.tx == nil && th.has(op, AfterWrite) {
+	if r.tx == nil && tx {
 		r.tx = &txState{db: db, implicit: true, scopeCtx: ctx}
 		r.own = true
 	}
@@ -215,7 +358,7 @@ func fillTenant(sc *scopeState, t *schema.Table, row unsafe.Pointer) error {
 
 func (db *DB) insert(ctx context.Context, t *schema.Table, rows []unsafe.Pointer) error {
 	th := db.hooks.forTable(t)
-	run, err := db.writeRunner(ctx, th, OpCreate)
+	run, err := db.writeRunner(ctx, th.has(OpCreate, AfterWrite))
 	if err != nil {
 		return err
 	}
@@ -225,7 +368,7 @@ func (db *DB) insert(ctx context.Context, t *schema.Table, rows []unsafe.Pointer
 			return run.close(ctx, err)
 		}
 	}
-	stmts, err := db.insertStmts(ctx, t, rows, &insertSpec{inserted: make([]bool, len(rows))})
+	stmts, err := db.insertStmts(ctx, t, rows, &insertSpec{})
 	if err != nil {
 		return run.close(ctx, err)
 	}
@@ -236,13 +379,21 @@ func (db *DB) insert(ctx context.Context, t *schema.Table, rows []unsafe.Pointer
 	return run.close(ctx, err)
 }
 
-// insertSpec shapes the INSERT statements of a write.
+// insertSpec shapes the INSERT statements of a write. An upsert sets conflict and its changed
+// columns, the scope its SET clause renders under, inserted, which its scanner fills, and, when
+// its update hooks need previous values, needs and olds, which its scanner fills for the rows
+// that conflicted. CreateOrSkip sets skip and keys instead.
 type insertSpec struct {
-	suffix   string
+	conflict *Conflict
+	ref      *Ref
+	changed  []int32
+	sc       *scopeState
 	upsert   bool
 	skip     bool
 	inserted []bool
 	keys     map[string]bool
+	needs    []int32
+	olds     []unsafe.Pointer
 }
 
 // insertStmts builds the INSERT statements of a write. One row is inserted with VALUES; more rows
@@ -267,7 +418,7 @@ func (db *DB) insertStmts(ctx context.Context, t *schema.Table, rows []unsafe.Po
 	stmts := make([]*stmt, 0, (len(rows)+unnestChunk-1)/unnestChunk)
 	for start := 0; start < len(rows); start += unnestChunk {
 		chunk := rows[start:min(start+unnestChunk, len(rows))]
-		r := newRender(nil, nil, nil)
+		r := newRender(spec.sc, ctx, db)
 		r.s("INSERT INTO ")
 		r.s(t.Quoted)
 		r.s(" AS ")
@@ -293,7 +444,9 @@ func (db *DB) insertStmts(ctx context.Context, t *schema.Table, rows []unsafe.Po
 			r.recycle()
 			return nil, err
 		}
-		r.s(spec.suffix)
+		if spec.conflict != nil {
+			spec.conflict.write(r, spec.ref, spec.changed)
+		}
 		if spec.upsert || len(ret) > 0 {
 			r.s(" RETURNING ")
 			first := true
@@ -310,17 +463,31 @@ func (db *DB) insertStmts(ctx context.Context, t *schema.Table, rows []unsafe.Po
 				r.b('.')
 				r.s(t.Columns[c].Quoted)
 			}
+			for _, c := range spec.needs {
+				r.s(", old.")
+				r.s(t.Columns[c].Quoted)
+			}
+		}
+		if r.err != nil {
+			err := r.err
+			r.recycle()
+			return nil, err
 		}
 		s := &stmt{sql: string(r.buf), args: r.argsCopy(), op: "insert", table: t.Name}
 		r.recycle()
 		switch {
 		case spec.skip:
 			s.scan = skipScanner(t, spec)
-		case spec.upsert || len(ret) > 0:
+		case spec.upsert:
 			base := start
-			s.scan = returningScanner(t, chunk, ret, spec.upsert, func(i int, v bool) {
-				spec.inserted[base+i] = v
-			})
+			var olds []unsafe.Pointer
+			if spec.olds != nil {
+				olds = spec.olds[base : base+len(chunk)]
+			}
+			s.scan = returningScanner(t, chunk, ret, spec.inserted[base:base+len(chunk)],
+				spec.needs, olds)
+		case len(ret) > 0:
+			s.scan = returningScanner(t, chunk, ret, nil, nil, nil)
 		}
 		stmts = append(stmts, s)
 	}
@@ -337,48 +504,67 @@ func returningCols(t *schema.Table, upsert bool) []int32 {
 	return append(out, t.Version)
 }
 
-// returningScanner reads RETURNING rows back into rows, in order. With flagged, the first column
-// says whether the row was inserted.
-func returningScanner(t *schema.Table, rows []unsafe.Pointer, cols []int32, flagged bool,
-	flag func(i int, v bool),
+// returningScanner reads RETURNING rows back into rows, in order. For an upsert, inserted is
+// non-nil: the first column says whether each row was inserted, and with olds the columns after
+// cols, the previous values of needs, are read into a new row in olds for each row that conflicted.
+func returningScanner(t *schema.Table, rows []unsafe.Pointer, cols []int32, inserted []bool,
+	needs []int32, olds []unsafe.Pointer,
 ) func(pgx.Rows) error {
 	return func(res pgx.Rows) error {
 		m := res.Conn().TypeMap()
 		fds := res.FieldDescriptions()
 		off := 0
-		if flagged {
+		if inserted != nil {
 			off = 1
 		}
-		plans := make([]pgtype.ScanPlan, len(cols)+off)
+		plans := make([]pgtype.ScanPlan, off+len(cols)+len(needs))
 		i := 0
 		for res.Next() {
 			if i >= len(rows) {
 				break
 			}
 			raw := res.RawValues()
-			if flagged {
-				var b bool
+			if inserted != nil {
 				if plans[0] == nil {
-					plans[0] = m.PlanScan(fds[0].DataTypeOID, fds[0].Format, &b)
+					plans[0] = m.PlanScan(fds[0].DataTypeOID, fds[0].Format, &inserted[i])
 				}
-				if err := plans[0].Scan(raw[0], &b); err != nil {
+				if err := plans[0].Scan(raw[0], &inserted[i]); err != nil {
 					return err
 				}
-				flag(i, b)
 			}
 			for j, c := range cols {
-				dst := t.Ptr(rows[i], c)
-				if plans[j+off] == nil {
-					plans[j+off] = planScan(m, fds[j+off].DataTypeOID, fds[j+off].Format, dst)
+				if err := scanAt(m, fds, raw, plans, off+j, t, t.Ptr(rows[i], c), c); err != nil {
+					return err
 				}
-				if err := plans[j+off].Scan(raw[j+off], dst); err != nil {
-					return fmt.Errorf("keel: scan %s.%s: %w", t.Name, t.Columns[c].Name, err)
+			}
+			if olds != nil && !inserted[i] {
+				old := t.New()
+				for j, c := range needs {
+					k := off + len(cols) + j
+					if err := scanAt(m, fds, raw, plans, k, t, t.Ptr(old, c), c); err != nil {
+						return err
+					}
 				}
+				olds[i] = old
 			}
 			i++
 		}
 		return nil
 	}
+}
+
+// scanAt decodes column k of a row into dst, the field of table column c, planning the scan on
+// first use.
+func scanAt(m *pgtype.Map, fds []pgconn.FieldDescription, raw [][]byte, plans []pgtype.ScanPlan,
+	k int, t *schema.Table, dst any, c int32,
+) error {
+	if plans[k] == nil {
+		plans[k] = planScan(m, fds[k].DataTypeOID, fds[k].Format, dst)
+	}
+	if err := plans[k].Scan(raw[k], dst); err != nil {
+		return fmt.Errorf("keel: scan %s.%s: %w", t.Name, t.Columns[c].Name, err)
+	}
+	return nil
 }
 
 // skipScanner collects the primary keys of the rows an insert … ON CONFLICT DO NOTHING inserted.
@@ -413,11 +599,13 @@ func rowKey(t *schema.Table, row unsafe.Pointer) string {
 
 func (db *DB) upsert(ctx context.Context, ref *Ref, rows []unsafe.Pointer, c Conflict) ([]bool, error) {
 	t := ref.Table
-	if len(c.cols) == 0 {
-		return nil, errf("OnConflict needs the conflicting columns")
+	changed, err := c.check(ref)
+	if err != nil {
+		return nil, err
 	}
 	th := db.hooks.forTable(t)
-	run, err := db.writeRunner(ctx, th, OpCreate)
+	afterHooks := th.has(OpCreate, AfterWrite) || !c.nothing && th.has(OpUpdate, AfterWrite)
+	run, err := db.writeRunner(ctx, afterHooks)
 	if err != nil {
 		return nil, err
 	}
@@ -427,98 +615,42 @@ func (db *DB) upsert(ctx context.Context, ref *Ref, rows []unsafe.Pointer, c Con
 			return nil, run.close(ctx, err)
 		}
 	}
-	r := newRender(run.sc, nil, nil)
-	defer r.recycle()
-	r.bare = true
-	r.s(" ON CONFLICT (")
-	for i, col := range c.cols {
-		if col.Ref.Table != t {
-			return nil, run.close(ctx, errf("OnConflict names a column of %s on %s",
-				col.Ref.Table.Name, t.Name))
-		}
-		if i > 0 {
-			r.s(", ")
-		}
-		r.s(t.Columns[col.Index].Quoted)
-	}
-	r.b(')')
-	if hasPreds(c.where) {
-		r.s(" WHERE ")
-		r.preds(c.where, false)
-	}
-	if len(r.args) > 0 {
-		return nil, run.close(ctx, errf("OnConflict Where must not bind values; use constants"))
-	}
-	if c.nothing {
-		r.s(" DO NOTHING")
-	} else {
-		update := c.update
-		if len(update) == 0 {
-			for _, ci := range t.Update {
-				update = append(update, Col{Ref: ref, Index: ci})
-			}
-		}
-		r.s(" DO UPDATE SET ")
-		touched := make(map[int32]bool, len(update))
-		for i, col := range update {
-			if i > 0 {
-				r.s(", ")
-			}
-			q := t.Columns[col.Index].Quoted
-			r.s(q)
-			r.s(" = EXCLUDED.")
-			r.s(q)
-			touched[col.Index] = true
-		}
-		if t.AutoUpdate >= 0 && !touched[t.AutoUpdate] {
-			q := t.Columns[t.AutoUpdate].Quoted
-			r.s(", ")
-			r.s(q)
-			r.s(" = EXCLUDED.")
-			r.s(q)
-		}
-		if t.Version >= 0 {
-			q := t.Columns[t.Version].Quoted
-			r.s(", ")
-			r.s(q)
-			r.s(" = ")
-			r.s(t.Alias)
-			r.b('.')
-			r.s(q)
-			r.s(" + 1")
-		}
-	}
-	if r.err != nil {
-		return nil, run.close(ctx, r.err)
-	}
-	spec := &insertSpec{suffix: string(r.buf), upsert: !c.nothing, skip: c.nothing,
-		inserted: make([]bool, len(rows))}
+	spec := &insertSpec{conflict: &c, ref: ref, changed: changed, sc: run.sc, upsert: !c.nothing,
+		skip: c.nothing, inserted: make([]bool, len(rows))}
 	if c.nothing {
 		spec.keys = make(map[string]bool, len(rows))
+	} else if th != nil && len(th.needs) > 0 &&
+		(th.has(OpUpdate, AfterWrite) || th.has(OpUpdate, Committed)) {
+		spec.needs = th.needs
+		spec.olds = make([]unsafe.Pointer, len(rows))
 	}
 	inserted := spec.inserted
 	stmts, err := db.insertStmts(ctx, t, rows, spec)
 	if err != nil {
 		return nil, run.close(ctx, err)
 	}
-	err = run.batch(ctx, stmts, !th.has(OpCreate, AfterWrite) && !th.has(OpUpdate, AfterWrite))
+	err = run.batch(ctx, stmts, !afterHooks)
 	if err == nil && c.nothing {
 		for i, row := range rows {
 			inserted[i] = spec.keys[rowKey(t, row)]
 		}
 	}
 	if err == nil {
-		var created, updated []unsafe.Pointer
+		var created, updated, olds []unsafe.Pointer
 		for i, row := range rows {
-			if inserted[i] {
+			switch {
+			case inserted[i]:
 				created = append(created, row)
-			} else if !c.nothing {
+			case !c.nothing:
 				updated = append(updated, row)
+				if spec.olds != nil {
+					olds = append(olds, spec.olds[i])
+				}
 			}
 		}
 		err = db.afterWrite(ctx, run, th, OpCreate, created, nil, nil)
 		if err == nil {
-			err = db.afterWrite(ctx, run, th, OpUpdate, updated, nil, nil)
+			err = db.afterWrite(ctx, run, th, OpUpdate, updated, olds, changed)
 		}
 	}
 	return inserted, run.close(ctx, err)
@@ -545,7 +677,7 @@ func (db *DB) save(ctx context.Context, ref *Ref, row unsafe.Pointer, cols []int
 		}
 	}
 	th := db.hooks.forTable(t)
-	run, err := db.writeRunner(ctx, th, OpUpdate)
+	run, err := db.writeRunner(ctx, th.has(OpUpdate, AfterWrite))
 	if err != nil {
 		return err
 	}
@@ -585,6 +717,8 @@ func (db *DB) save(ctx context.Context, ref *Ref, row unsafe.Pointer, cols []int
 		r.s(q)
 		r.s(" + 1")
 	}
+	from, guard := r.interceptRow(ref, OpUpdate, " FROM ")
+	r.buf = append(r.buf, from...)
 	r.s(" WHERE ")
 	pkWhere(r, t, row)
 	if t.Version >= 0 {
@@ -599,6 +733,11 @@ func (db *DB) save(ctx context.Context, ref *Ref, row unsafe.Pointer, cols []int
 		r.s(" AND ")
 		r.tenantPred(t, t.Alias, false)
 	}
+	if len(guard) > 0 {
+		r.s(" AND ")
+		r.buf = append(r.buf, guard...)
+	}
+	r.release(from, guard)
 	ret := append([]int32(nil), t.Returning...)
 	if t.Version >= 0 {
 		ret = append(ret, t.Version)
@@ -712,6 +851,30 @@ func checkTenant(sc *scopeState, t *schema.Table, row unsafe.Pointer) error {
 	return nil
 }
 
+// interceptRow renders the predicates interceptors add to a single-row UPDATE or DELETE of ref's
+// table, which the statement writes under the table's alias. It returns the relations those
+// predicates join, as FROM or USING items (keyword), and the predicates with the joins'
+// conditions, for the WHERE clause. Both are nil when no interceptor adds a predicate.
+func (r *render) interceptRow(ref *Ref, op Op, keyword string) (from, where []byte) {
+	ps := r.intercepted(ref.Table, op, false)
+	if !hasPreds(ps) {
+		return nil, nil
+	}
+	sc := &scope{parent: r.sc, joinMode: joinFrom, allTenants: r.scope.system}
+	sc.refs = append(sc.refs, scoped{ref: ref, alias: r.newAlias(ref.Table.Alias)})
+	r.sc = sc
+	defer r.pop()
+	where = r.section(func() { r.preds(ps, false) })
+	var conds []byte
+	from = r.section(func() { conds = r.writeFromJoins(sc, keyword) })
+	if len(conds) > 0 {
+		where = append(where, " AND "...)
+		where = append(where, conds...)
+		r.release(conds)
+	}
+	return from, where
+}
+
 func pkWhere(r *render, t *schema.Table, row unsafe.Pointer) {
 	for i, c := range t.PK {
 		if i > 0 {
@@ -753,12 +916,13 @@ func scanInto(rows pgx.Rows, t *schema.Table, row unsafe.Pointer, ret []int32, o
 	return nil
 }
 
-func (db *DB) deleteRow(ctx context.Context, t *schema.Table, row unsafe.Pointer) error {
+func (db *DB) deleteRow(ctx context.Context, ref *Ref, row unsafe.Pointer) error {
+	t := ref.Table
 	if len(t.PK) == 0 {
 		return errf("%s has no primary key; DeleteRow needs one", t.Name)
 	}
 	th := db.hooks.forTable(t)
-	run, err := db.writeRunner(ctx, th, OpDelete)
+	run, err := db.writeRunner(ctx, th.has(OpDelete, AfterWrite))
 	if err != nil {
 		return err
 	}
@@ -779,22 +943,53 @@ func (db *DB) deleteRow(ctx context.Context, t *schema.Table, row unsafe.Pointer
 	r.s(t.Quoted)
 	r.b(' ')
 	r.s(t.Alias)
+	using, guard := r.interceptRow(ref, OpDelete, " USING ")
+	r.buf = append(r.buf, using...)
 	r.s(" WHERE ")
 	pkWhere(r, t, row)
 	if t.HasTenant() && !run.sc.system {
 		r.s(" AND ")
 		r.tenantPred(t, t.Alias, false)
 	}
+	if len(guard) > 0 {
+		r.s(" AND ")
+		r.buf = append(r.buf, guard...)
+	}
+	r.release(using, guard)
+	var old unsafe.Pointer
+	if th != nil && len(th.needs) > 0 && (th.has(OpDelete, AfterWrite) || th.has(OpDelete, Committed)) {
+		old = t.New()
+		r.s(" RETURNING ")
+		for i, c := range th.needs {
+			if i > 0 {
+				r.s(", ")
+			}
+			r.s("old.")
+			r.s(t.Columns[c].Quoted)
+		}
+	}
 	if r.err != nil {
 		return run.close(ctx, r.err)
 	}
 	s := &stmt{sql: string(r.buf), args: r.argsCopy(), op: "delete", table: t.Name}
+	if old != nil {
+		s.scan = func(rows pgx.Rows) error {
+			if !rows.Next() {
+				return nil
+			}
+			return scanInto(rows, t, row, nil, old, th.needs)
+		}
+	}
 	err = run.one(ctx, s, !th.has(OpDelete, AfterWrite))
 	if err == nil && s.tag.RowsAffected() == 0 {
 		err = ErrNotFound
 	}
 	if err == nil {
-		err = db.afterWrite(ctx, run, th, OpDelete, []unsafe.Pointer{row}, nil, nil)
+		var olds []unsafe.Pointer
+		if old != nil {
+			olds = []unsafe.Pointer{old}
+		}
+		err = db.afterWrite(ctx, run, th, OpDelete, []unsafe.Pointer{row}, olds, nil)
 	}
 	return run.close(ctx, err)
 }

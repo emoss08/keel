@@ -29,8 +29,9 @@ page, err := s.
   planning. `In` binds one array, so 3 IDs and 3,000 IDs are the same statement.
 - **One round trip where Postgres allows it.** Transactions start with their first statement; a
   lone statement that needs a transaction (for example a row-level security `set_config`) runs as one
-  pipelined `BEGIN; …; COMMIT`; a page and its total count share a round trip; to-one relations are
-  joined and to-many relations load one statement per level.
+  pipelined `BEGIN; …; COMMIT`; a page and its total count share a round trip, as do the
+  independent reads of a `keel.Batch`; to-one relations are joined and to-many relations load one
+  statement per level.
 - **Tenancy by construction.** The tenant comes from the context and is applied to every statement
   on a tenant table: reads, joins, relation loads, subqueries, updates, deletes and inserts. A
   statement without a scope fails; crossing tenants needs a system scope and an explicit
@@ -238,6 +239,22 @@ err = s.Where(s.Hazmat.IsTrue()).Each(ctx, db, 500, func(ctx context.Context, ba
 })
 ```
 
+### Batching reads
+
+`keel.Batch` sends independent reads in one round trip and fills typed destinations only when every
+read succeeded.
+
+```go
+var rows []*fleet.Shipment
+var total int64
+var cust *fleet.Customer
+err = keel.Batch(ctx, db,
+    keel.ListInto(s.Where(s.Hazmat.IsTrue()).Order(s.CreatedAt.Desc()).Limit(50), &rows),
+    keel.CountInto(s.Where(s.Hazmat.IsTrue()), &total),
+    keel.OneInto(c.Where(c.Code.Eq("ACME")), &cust),
+)
+```
+
 ### Projections and aggregates
 
 ```go
@@ -280,10 +297,17 @@ codes, err := keel.Into[string](ctx, db, keel.UnionAll(
 ```go
 err = fleetdb.Stops.CreateMany(ctx, db, stops) // one array per column through unnest, one round trip
 
+n, err := s.Copy(ctx, db, imported) // binary COPY for large loads; IDs, tenant columns and hooks as in Create
+
 inserted, err := c.Upsert(ctx, db, rows,
     keel.OnConflict(c.OrganizationID, c.BusinessUnitID, c.Code).Update(c.Name))
 
-n, err := c.CreateOrSkip(ctx, db, rows, c.OrganizationID, c.BusinessUnitID, c.Code)
+inserted, err = c.Upsert(ctx, db, rows, keel.OnConflict(c.OrganizationID, c.BusinessUnitID, c.Code).Set(
+    c.Name.ToExpr(c.Name.Excluded()),                                         // the proposed name
+    c.Email.ToExpr(keel.Raw("coalesce(?, ?)", c.Email, c.Email.Excluded())), // keep a stored email
+))
+
+n, err = c.CreateOrSkip(ctx, db, rows, c.OrganizationID, c.BusinessUnitID, c.Code)
 
 n, err = s.Where(s.Status.Eq(fleet.StatusNew), s.Customer().Code.Eq("ACME")).
     Update(ctx, db, s.Status.To(fleet.StatusCanceled), s.Priority.Add(1))
@@ -304,8 +328,10 @@ keel.OnUpdate(db, s, keel.AfterWrite, func(ctx context.Context, m *keel.Mutation
 }, keel.Needs(s.Status))
 ```
 
-Interceptors (`db.Intercept`) add predicates to every statement on a table; observers
-(`Config.Observers`) see every statement for tracing and metrics.
+Interceptors (`db.Intercept`) add predicates to the reads, bulk writes, `Save` and `DeleteRow` of a
+table (never inserts), so a soft-delete or ownership filter holds for single-row writes too.
+Observers (`Config.Observers`) see every statement; a span started in `BeforeQuery` travels on the
+statement's context to its execution and to `AfterQuery`.
 
 ### Migrations
 

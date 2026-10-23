@@ -213,6 +213,7 @@ func loadStmt(ctx context.Context, run *runner, w pending) (*stmt, *selectPlan, 
 		q = *n.spec
 		q.ref = n.ref
 	}
+	q.allTenants = n.allTenants()
 	r := newRender(run.sc, ctx, run.db)
 	defer r.recycle()
 	m2m := rel.Kind == schema.ManyToMany

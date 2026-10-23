@@ -69,6 +69,17 @@ func (n *lnode) child(ref *Ref) *lnode {
 	return c
 }
 
+// allTenants reports whether n's statement crosses tenants: the query of n or of a node above it,
+// up to the root query, declared AllTenants.
+func (n *lnode) allTenants() bool {
+	for ; n != nil; n = n.parent {
+		if n.spec != nil && n.spec.allTenants {
+			return true
+		}
+	}
+	return false
+}
+
 // statementNodes returns n and the nodes joined into its statement, parents first.
 func (n *lnode) statementNodes() []*lnode {
 	out := []*lnode{n}

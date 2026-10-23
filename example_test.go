@@ -74,6 +74,31 @@ func (l slowQueryLog) AfterQuery(_ context.Context, e *keel.QueryEvent) {
 	}
 }
 
+// traceKey carries a tracingObserver's span on a statement's context.
+type traceKey struct{}
+
+// statementSpan is the span of one statement.
+type statementSpan struct {
+	name  string
+	start time.Time
+}
+
+// tracingObserver starts a span in BeforeQuery and ends the span it finds on the statement's
+// context in AfterQuery, as a tracing library's observer would.
+type tracingObserver struct{}
+
+func (tracingObserver) BeforeQuery(ctx context.Context, e *keel.QueryEvent) context.Context {
+	return context.WithValue(ctx, traceKey{}, &statementSpan{name: e.Op + " " + e.Table, start: time.Now()})
+}
+
+func (tracingObserver) AfterQuery(ctx context.Context, e *keel.QueryEvent) {
+	sp, ok := ctx.Value(traceKey{}).(*statementSpan)
+	if !ok {
+		return
+	}
+	log.Printf("span %s: %v, %d rows, error %v", sp.name, time.Since(sp.start), e.Rows, e.Err)
+}
+
 // appConfig is the configuration of a multi-tenant application.
 func appConfig(dsn string) keel.Config {
 	return keel.Config{
@@ -225,6 +250,23 @@ func ExampleHandle_CreateMany() {
 	}
 }
 
+func ExampleHandle_Copy() {
+	ctx, db := requestContext(), appDB
+	rows := make([]*fleet.Shipment, 0, 50_000)
+	for i := range 50_000 {
+		rows = append(rows, &fleet.Shipment{
+			CustomerID: "cus_01",
+			ProNumber:  fmt.Sprintf("IMPORT-%06d", i),
+			Status:     fleet.StatusNew,
+		})
+	}
+	n, err := fleetdb.Shipments.Copy(ctx, db, rows)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(n, "shipments imported")
+}
+
 func ExampleHandle_Save() {
 	ctx, db := requestContext(), appDB
 	c := fleetdb.Customers
@@ -310,6 +352,21 @@ func ExampleHandle_Upsert() {
 	}
 	for i, r := range rows {
 		fmt.Println(r.Code, "inserted:", inserted[i], "version:", r.Version)
+	}
+}
+
+func ExampleConflict_Set() {
+	ctx, db := requestContext(), appDB
+	c := fleetdb.Customers
+	rows := []*fleet.Customer{{Code: "ACME", Name: "Acme Freight"}}
+	_, err := c.Upsert(ctx, db, rows,
+		keel.OnConflict(c.OrganizationID, c.BusinessUnitID, c.Code).Set(
+			c.Name.ToExpr(c.Name.Excluded()),
+			c.Email.ToExpr(keel.Raw("coalesce(?, ?)", c.Email, c.Email.Excluded())),
+			c.Version.Add(10),
+		))
+	if err != nil {
+		log.Fatal(err)
 	}
 }
 
@@ -850,6 +907,31 @@ func ExampleQuery_Each() {
 	}
 }
 
+func ExampleBatch() {
+	ctx, db := requestContext(), appDB
+	type statusCount struct {
+		Status fleet.Status
+		Loads  int64
+	}
+	s, c := fleetdb.Shipments, fleetdb.Customers
+	open := s.Where(s.Status.In(fleet.StatusNew, fleet.StatusAssigned))
+
+	var rows []*fleet.Shipment
+	var total int64
+	var byStatus []statusCount
+	var cust *fleet.Customer
+	err := keel.Batch(ctx, db,
+		keel.ListInto(open.Clone().Order(s.CreatedAt.Desc()).Limit(50), &rows),
+		keel.CountInto(open.Clone(), &total),
+		keel.IntoSlice(s.Group(s.Status).Pick(s.Status, keel.Count()), &byStatus),
+		keel.OneInto(c.Where(c.ID.Eq("cus_01")), &cust),
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(len(rows), total, len(byStatus), cust.Name)
+}
+
 func ExampleWrite() {
 	ctx, db := requestContext(), appDB
 	s := fleetdb.Shipments
@@ -987,9 +1069,8 @@ func ExampleQuery_AllTenants() {
 	cutoff := time.Now().AddDate(-1, 0, 0).Unix()
 
 	stale, err := s.AllTenants().
-		Where(s.Status.Eq(fleet.StatusCanceled), s.CanceledAt.Lt(cutoff)).
-		Where(m.AllTenants().None(m.Loaded.IsTrue())).
-		Load(s.Customer(), m.AllTenants()).
+		Where(s.Status.Eq(fleet.StatusCanceled), s.CanceledAt.Lt(cutoff), m.None(m.Loaded.IsTrue())).
+		Load(s.Customer(), m.Stops()).
 		Limit(1000).
 		List(ctx, db)
 	if err != nil {
@@ -1076,8 +1157,8 @@ func ExampleDB_Intercept() {
 		if !ok {
 			return nil
 		}
-		if !q.Read {
-			return errors.New("portal users cannot change shipments in bulk")
+		if q.Op == keel.OpDelete {
+			return errors.New("portal users cannot delete shipments")
 		}
 		q.Where(s.CustomerID.In(customers...))
 		return nil
@@ -1089,6 +1170,16 @@ func ExampleDB_Intercept() {
 		log.Fatal(err)
 	}
 	fmt.Println(len(rows))
+}
+
+func ExampleObserver() {
+	cfg := appConfig(os.Getenv("DATABASE_URL"))
+	cfg.Observers = append(cfg.Observers, tracingObserver{})
+	db, err := keel.Open(context.Background(), cfg)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer db.Close()
 }
 
 func Example_modelHooks() {

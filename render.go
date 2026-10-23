@@ -24,6 +24,7 @@ type render struct {
 	ctx      context.Context
 	db       *DB
 	bare     bool
+	excluded bool
 	free     [][]byte
 }
 
