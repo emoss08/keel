@@ -1,0 +1,27 @@
+seed    us_states skips: up to date
+seed    hazmat_references runs: input changed (data/hazmat.yaml)
+seed    ifta_jurisdictions skips: up to date
+seed    organization_roles runs: new
+seed    organization_role_permissions runs: code changed
+seed    document_template_starters runs: version changed
+seed    system_agent_definitions skips: up to date
+seed    test_organizations runs: new
+seed    workers runs: new
+seed    shipments runs: new
+lock    waiting for the seed lock
+lock    seed lock acquired after 400ms
+seed    [1/7] hazmat_references  reference
+seed    [1/7] hazmat_references  3,121 rows in 1.4s
+seed    [2/7] organization_roles  reference
+seed    [2/7] organization_roles  24 rows in 310ms
+seed    [3/7] organization_role_permissions  reference · 9,000 tenants
+seed    [3/7] organization_role_permissions  tenants 900/9,000
+seed    [3/7] organization_role_permissions  tenants 1,800/9,000
+seed    [3/7] organization_role_permissions  tenants 2,700/9,000
+seed    [3/7] organization_role_permissions  tenants 3,600/9,000
+seed    [3/7] organization_role_permissions  tenant org_04231: ERROR: duplicate key value violates unique constraint "role_permissions_role_id_resource_key" (SQLSTATE 23505)
+seed    [3/7] organization_role_permissions  failed after 3.3s: tenant org_04231: ERROR: duplicate key value violates unique constraint "role_permissions_role_id_resource_key" (SQLSTATE 23505)
+seed    stopped after 5.4s, 2 seeds applied: tenant org_04231: ERROR: duplicate key value violates unique constraint "role_permissions_role_id_resource_key" (SQLSTATE 23505)
+        left undone: organization_role_permissions, document_template_starters, test_organizations, workers, shipments
+--- stderr ---
+keelcli: tenant org_04231: ERROR: duplicate key value violates unique constraint "role_permissions_role_id_resource_key" (SQLSTATE 23505)

@@ -1,0 +1,5 @@
+VERSION         NAME                   SOURCE  APPLIED            TOOK  CHECKSUM
+20261023143000  baseline               core    2026-10-24 14:31   1.8s  d98ab277a8eb
+20261024091500  shipment_holds         core    2026-10-25 09:16   42ms  f7522ee08cbf
+20261024150000  driver_qualifications  cloud   2026-10-25 15:02  118ms  c23c2dbdc2ff
+                tenant_rls_helpers     core    2026-10-25 09:16    0ms  6da0633528de

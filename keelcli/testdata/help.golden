@@ -1,0 +1,39 @@
+trenova-db: Trenova's database: migrations and reference seeds.
+
+Usage: trenova-db [flags] <command> [arguments]
+
+Run trenova-db with no command in a terminal to open the console.
+
+Commands:
+  up                migrate, then apply seeds: the deploy step
+  migrate up        apply pending migrations
+  migrate plan      show what migrate up would do
+  migrate status    list migrations with their state
+  migrate history   list applied migrations
+  migrate create    write a new migration file
+  migrate squash    replace applied migrations with one baseline
+  migrate stamp     write the schema version file, or check it
+  migrate check     check ordering and checksums
+  migrate lint      lint pending migrations
+  migrate baseline  record migrations up to version as applied
+  migrate repair    accept the current checksum of a changed migration
+  seed apply        apply seeds that changed, or the named ones
+  seed plan         show which seeds would run and why
+  seed status       list seeds with their state
+  seed prune        delete records of seeds no longer registered
+  reset             recreate the database from the current template
+  template          list template databases
+  template build    build the current template
+  template prune    drop stale templates
+  doctor            check the database, its settings and what holds locks
+  version           print the version
+  help [command]    show help for a command
+
+Global flags, before or after the command:
+  -json            write JSON: one document per result, one line per event
+  -no-color        do not colour output (NO_COLOR also works)
+  -plain           write plain text even in a terminal
+  -yes             answer yes to confirmations
+  -yes-production  allow destructive commands on a production database
+
+Exit codes: 0 ok, 1 failure, 2 usage or refusal, 3 a check found problems.

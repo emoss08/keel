@@ -1,0 +1,7 @@
+Would apply 4 migrations:
+  1  20261025110000  edi_partner_index       core  notx · lock_timeout 2s
+  2  20261025120000  rate_tables             core
+  3  20261026080000  backfill_rate_currency  core  go
+  4  R               tenant_rls_helpers      core  repeatable
+Then, in the last migration's transaction:
+  SELECT trenova_rls.reconcile()

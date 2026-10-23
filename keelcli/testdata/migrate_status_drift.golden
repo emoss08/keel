@@ -1,0 +1,11 @@
+VERSION         NAME                    SOURCE  STATE           APPLIED            TOOK  DETAIL
+20261020100000  legacy_fuel_codes       core    missing         2026-10-23 00:00   12ms  no file in any source
+20261023143000  baseline                core    applied         2026-10-24 14:31   1.8s  baseline
+20261024091500  shipment_holds          core    applied         2026-10-25 09:16   42ms
+20261024150000  driver_qualifications   cloud   changed         2026-10-25 15:02  118ms  checksum differs
+20261025110000  edi_partner_index       core    pending                                  notx · lock_timeout 2s
+20261025120000  rate_tables             core    pending
+20261026080000  backfill_rate_currency  core    pending                                  go
+R               tenant_rls_helpers      core    repeatable-due  2026-10-25 09:16         checksum changed
+
+2 applied · 3 pending · 1 repeatable-due · 1 changed · 1 missing
