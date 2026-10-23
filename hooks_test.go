@@ -130,6 +130,10 @@ func TestMutationOldOnEveryUpdateAndDelete(t *testing.T) {
 			log = append(log, m.Op.String()+" without Old")
 			return nil
 		}
+		if m.Op == keel.OpUpdate && !m.Changed(c.Name) {
+			log = append(log, "update without name changed")
+			return nil
+		}
 		log = append(log, m.Op.String()+" from "+m.Old.Name)
 		return nil
 	}

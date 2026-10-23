@@ -52,16 +52,19 @@ func (o Op) String() string {
 type Mutation[T any] struct {
 	Op Op
 	// Row is the row as written: the entity passed to an entity write, or the row returned by a
-	// bulk write.
+	// bulk write. For DeleteRow it is the entity passed, which may hold only the primary key.
 	Row *T
-	// Old holds the previous values of the columns the hook declared with Needs, for updates and
-	// deletes. Other fields are zero. Nil for creates.
+	// Old holds the stored values, before the write, of the columns the table's hooks declared
+	// with Needs: for every update (Save, an Upsert's conflicting rows, bulk updates) and every
+	// delete (DeleteRow, bulk deletes). Other fields are zero. Nil for creates, and when no hook
+	// of the table declared Needs.
 	Old *T
 
 	changed []int32
 }
 
-// Changed reports whether the write set column c. Creates set every column.
+// Changed reports whether the write set column c. Creates set every column, an Upsert's
+// conflicting rows the columns its Conflict assigns, and deletes none.
 func (m *Mutation[T]) Changed(c interface{ column() Col }) bool {
 	if m.Op == OpCreate {
 		return true
@@ -73,7 +76,8 @@ func (m *Mutation[T]) Changed(c interface{ column() Col }) bool {
 type HookOption func(*hookEntry)
 
 // Needs asks for the previous values of cols on updates and deletes, read in the same statement
-// (RETURNING OLD).
+// (RETURNING old.…, which needs PostgreSQL 18) into Mutation.Old. It costs nothing unless the table
+// has AfterWrite or Committed hooks for the write's op.
 func Needs(cols ...interface{ column() Col }) HookOption {
 	return func(h *hookEntry) {
 		for _, c := range cols {

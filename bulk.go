@@ -86,7 +86,7 @@ func (q *query) update(ctx context.Context, db *DB, sets []Assignment) (int64, e
 		r.buf = append(r.buf, conds...)
 	}
 	s := &stmt{sql: string(r.buf), args: r.argsCopy(), op: "update", table: t.Name}
-	bh := bulkHooks(r, s, th, OpUpdate, t, alias, true)
+	bh := bulkHooks(r, s, th, OpUpdate, t, alias)
 	err = run.one(ctx, s, !th.has(OpUpdate, AfterWrite))
 	if err == nil && bh != nil {
 		err = db.afterWrite(ctx, run, th, OpUpdate, bh.rows, bh.olds, changed)
@@ -133,7 +133,7 @@ func (q *query) delete(ctx context.Context, db *DB) (int64, error) {
 		r.buf = append(r.buf, conds...)
 	}
 	s := &stmt{sql: string(r.buf), args: r.argsCopy(), op: "delete", table: t.Name}
-	bh := bulkHooks(r, s, th, OpDelete, t, alias, false)
+	bh := bulkHooks(r, s, th, OpDelete, t, alias)
 	err = run.one(ctx, s, !th.has(OpDelete, AfterWrite))
 	if err == nil && bh != nil {
 		err = db.afterWrite(ctx, run, th, OpDelete, bh.rows, bh.olds, nil)
@@ -148,20 +148,15 @@ type bulkRows struct {
 }
 
 // bulkHooks extends a bulk UPDATE or DELETE with RETURNING when the table has AfterWrite or
-// Committed hooks for op: the written rows, and for updates the previous values of the columns the
-// hooks need (RETURNING old.…, which needs PostgreSQL 18). It returns nil when no hook needs the
-// rows.
-func bulkHooks(r *render, s *stmt, th *tableHooks, op Op, t *schema.Table, alias string,
-	update bool,
-) *bulkRows {
+// Committed hooks for op: the written rows (for a delete, the deleted rows), and the previous
+// values of the columns the hooks need (RETURNING old.…, which needs PostgreSQL 18). It returns
+// nil when no hook needs the rows.
+func bulkHooks(r *render, s *stmt, th *tableHooks, op Op, t *schema.Table, alias string) *bulkRows {
 	if !th.has(op, AfterWrite) && !th.has(op, Committed) {
 		return nil
 	}
 	cols := t.Select
-	var needs []int32
-	if update {
-		needs = th.needs
-	}
+	needs := th.needs
 	r.s(" RETURNING ")
 	for i, c := range cols {
 		if i > 0 {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -430,6 +431,57 @@ func TestUpsert(t *testing.T) {
 	n := must(c.CreateOrSkip(ctx, d, []*fleet.Customer{{Name: "x", Code: "U2"}, {Name: "y", Code: "U3"}},
 		c.OrganizationID, c.BusinessUnitID, c.Code))(t)
 	eq(t, n, int64(1))
+}
+
+func TestUpsertSet(t *testing.T) {
+	d := db(t)
+	ctx := newTenant()
+	c := fleetdb.Customers
+	existing := newCustomer(t, ctx, "S1")
+	onCode := keel.OnConflict(c.OrganizationID, c.BusinessUnitID, c.Code)
+	merge := onCode.Set(
+		c.Name.ToExpr(keel.Raw("? || ' + ' || ?", c.Name, c.Name.Excluded())),
+		c.Email.To("merged@example.com"),
+	)
+
+	one := []*fleet.Customer{{Name: "One", Code: "S1"}}
+	ins := must(c.Upsert(ctx, d, one, merge))(t)
+	eq(t, ins[0], false)
+	eq(t, one[0].Version, int64(1))
+	got := must(c.Get(ctx, d, existing.ID))(t)
+	eq(t, got.Name, "Customer S1 + One")
+	eq(t, *got.Email, "merged@example.com")
+
+	many := []*fleet.Customer{{Name: "Two", Code: "S1"}, {Name: "Fresh", Code: "S2"}}
+	ins = must(c.Upsert(ctx, d, many, merge))(t)
+	eq(t, ins[0], false)
+	eq(t, ins[1], true)
+	got = must(c.Get(ctx, d, existing.ID))(t)
+	eq(t, got.Name, "Customer S1 + One + Two")
+	eq(t, got.Version, int64(2))
+	eq(t, must(c.Get(ctx, d, many[1].ID))(t).Name, "Fresh")
+
+	bump := []*fleet.Customer{{Name: "Three", Code: "S1"}}
+	_ = must(c.Upsert(ctx, d, bump, onCode.Update(c.Name).Set(c.Version.Add(10))))(t)
+	eq(t, bump[0].Version, int64(12))
+	got = must(c.Get(ctx, d, existing.ID))(t)
+	eq(t, got.Name, "Three")
+	eq(t, got.Version, int64(12))
+
+	if _, err := c.Upsert(ctx, d, bump, onCode.Update(c.Name).Set(c.Name.To("twice"))); err == nil {
+		t.Fatal("assigning a column twice succeeded")
+	}
+	s := fleetdb.Shipments
+	if _, err := c.Upsert(ctx, d, bump, onCode.Set(s.ProNumber.To("x"))); err == nil {
+		t.Fatal("assigning another table's column succeeded")
+	}
+	if _, err := c.Upsert(ctx, d, bump, onCode.Where(c.Name.Eq("x")).Update(c.Name)); err == nil {
+		t.Fatal("a conflict Where that binds a value succeeded")
+	}
+	_, err := c.Where(c.ID.Eq(existing.ID)).Update(ctx, d, c.Name.ToExpr(c.Name.Excluded()))
+	if err == nil || !strings.Contains(err.Error(), "Excluded is valid only in Conflict.Set") {
+		t.Fatalf("Excluded outside an upsert: got %v", err)
+	}
 }
 
 func TestInto(t *testing.T) {
