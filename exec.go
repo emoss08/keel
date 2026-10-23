@@ -84,9 +84,13 @@ func (r *runner) batch(ctx context.Context, stmts []*stmt, last bool) error {
 	if err != nil {
 		return err
 	}
+	beginning := r.tx != nil && !r.tx.begun
+	commit := r.own && last
+	if len(stmts) == 1 && !beginning && !commit && !custom {
+		return r.direct(ctx, conn, stmts[0])
+	}
 	b := &pgx.Batch{}
 	pre := 0
-	beginning := r.tx != nil && !r.tx.begun
 	if beginning {
 		if pre, err = r.tx.queueBegin(b); err != nil {
 			return err
@@ -101,7 +105,6 @@ func (r *runner) batch(ctx context.Context, stmts []*stmt, last bool) error {
 			b.Queue("SELECT set_config('plan_cache_mode', $1, true)", r.db.planMode())
 		}
 	}
-	commit := r.own && last
 	if commit {
 		b.Queue("COMMIT")
 	}
@@ -168,16 +171,42 @@ func readOne(br pgx.BatchResults, s *stmt) error {
 	if err != nil {
 		return err
 	}
+	return scanRows(rows, s)
+}
+
+// scanRows runs a statement's scanner over rows. A server error surfaces on the rows, so it wins
+// over the scanner's error, which it may have caused.
+func scanRows(rows pgx.Rows, s *stmt) error {
 	scanErr := s.scan(rows)
 	rows.Close()
-	if scanErr != nil {
-		return scanErr
-	}
 	if err := rows.Err(); err != nil {
 		return err
 	}
+	if scanErr != nil {
+		return scanErr
+	}
 	s.tag = rows.CommandTag()
 	return nil
+}
+
+// direct sends one statement outside a pipeline. pgx's pipeline keeps per-message bookkeeping a
+// lone statement does not need.
+func (r *runner) direct(ctx context.Context, conn *pgxpool.Conn, s *stmt) error {
+	stmts := []*stmt{s}
+	events := r.db.startEvents(ctx, stmts)
+	start := time.Now()
+	var err error
+	if s.scan == nil {
+		s.tag, err = conn.Exec(ctx, s.sql, s.args...)
+	} else {
+		var rows pgx.Rows
+		rows, err = conn.Query(ctx, s.sql, s.args...)
+		if err == nil {
+			err = scanRows(rows, s)
+		}
+	}
+	r.db.endEvents(ctx, events, stmts, time.Since(start), err)
+	return err
 }
 
 // one sends a single statement.
