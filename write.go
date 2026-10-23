@@ -36,13 +36,16 @@ func (h Handle[T]) CreateMany(ctx context.Context, db *DB, rows []*T) error {
 // Save updates row by its primary key. With a version column it compares the stored version,
 // increments it and returns a *ConflictError (matching ErrConflict) when another writer got
 // there first. cols narrows the columns written; the autoupdate column is always written.
+// Interceptors' predicates join the primary key in the WHERE clause: a row they exclude is not
+// written, and Save reports it as ErrConflict on a table with a version column, else ErrNotFound.
 func (h Handle[T]) Save(ctx context.Context, db *DB, row *T, cols ...interface{ column() Col }) error {
 	return db.save(ctx, h.Ref, unsafe.Pointer(row), cols)
 }
 
-// DeleteRow deletes row by its primary key. It returns ErrNotFound when no row was deleted.
+// DeleteRow deletes row by its primary key. Interceptors' predicates join the primary key in the
+// WHERE clause. It returns ErrNotFound when no row was deleted, including a row they exclude.
 func (h Handle[T]) DeleteRow(ctx context.Context, db *DB, row *T) error {
-	return db.deleteRow(ctx, h.Ref.Table, unsafe.Pointer(row))
+	return db.deleteRow(ctx, h.Ref, unsafe.Pointer(row))
 }
 
 // Conflict is the ON CONFLICT clause of an upsert.
@@ -590,6 +593,8 @@ func (db *DB) save(ctx context.Context, ref *Ref, row unsafe.Pointer, cols []int
 		r.s(q)
 		r.s(" + 1")
 	}
+	from, guard := r.interceptRow(ref, OpUpdate, " FROM ")
+	r.buf = append(r.buf, from...)
 	r.s(" WHERE ")
 	pkWhere(r, t, row)
 	if t.Version >= 0 {
@@ -604,6 +609,11 @@ func (db *DB) save(ctx context.Context, ref *Ref, row unsafe.Pointer, cols []int
 		r.s(" AND ")
 		r.tenantPred(t, t.Alias, false)
 	}
+	if len(guard) > 0 {
+		r.s(" AND ")
+		r.buf = append(r.buf, guard...)
+	}
+	r.release(from, guard)
 	ret := append([]int32(nil), t.Returning...)
 	if t.Version >= 0 {
 		ret = append(ret, t.Version)
@@ -717,6 +727,30 @@ func checkTenant(sc *scopeState, t *schema.Table, row unsafe.Pointer) error {
 	return nil
 }
 
+// interceptRow renders the predicates interceptors add to a single-row UPDATE or DELETE of ref's
+// table, which the statement writes under the table's alias. It returns the relations those
+// predicates join, as FROM or USING items (keyword), and the predicates with the joins'
+// conditions, for the WHERE clause. Both are nil when no interceptor adds a predicate.
+func (r *render) interceptRow(ref *Ref, op Op, keyword string) (from, where []byte) {
+	ps := r.intercepted(ref.Table, op, false)
+	if !hasPreds(ps) {
+		return nil, nil
+	}
+	sc := &scope{parent: r.sc, joinMode: joinFrom, allTenants: r.scope.system}
+	sc.refs = append(sc.refs, scoped{ref: ref, alias: r.newAlias(ref.Table.Alias)})
+	r.sc = sc
+	defer r.pop()
+	where = r.section(func() { r.preds(ps, false) })
+	var conds []byte
+	from = r.section(func() { conds = r.writeFromJoins(sc, keyword) })
+	if len(conds) > 0 {
+		where = append(where, " AND "...)
+		where = append(where, conds...)
+		r.release(conds)
+	}
+	return from, where
+}
+
 func pkWhere(r *render, t *schema.Table, row unsafe.Pointer) {
 	for i, c := range t.PK {
 		if i > 0 {
@@ -758,7 +792,8 @@ func scanInto(rows pgx.Rows, t *schema.Table, row unsafe.Pointer, ret []int32, o
 	return nil
 }
 
-func (db *DB) deleteRow(ctx context.Context, t *schema.Table, row unsafe.Pointer) error {
+func (db *DB) deleteRow(ctx context.Context, ref *Ref, row unsafe.Pointer) error {
+	t := ref.Table
 	if len(t.PK) == 0 {
 		return errf("%s has no primary key; DeleteRow needs one", t.Name)
 	}
@@ -784,12 +819,19 @@ func (db *DB) deleteRow(ctx context.Context, t *schema.Table, row unsafe.Pointer
 	r.s(t.Quoted)
 	r.b(' ')
 	r.s(t.Alias)
+	using, guard := r.interceptRow(ref, OpDelete, " USING ")
+	r.buf = append(r.buf, using...)
 	r.s(" WHERE ")
 	pkWhere(r, t, row)
 	if t.HasTenant() && !run.sc.system {
 		r.s(" AND ")
 		r.tenantPred(t, t.Alias, false)
 	}
+	if len(guard) > 0 {
+		r.s(" AND ")
+		r.buf = append(r.buf, guard...)
+	}
+	r.release(using, guard)
 	if r.err != nil {
 		return run.close(ctx, r.err)
 	}

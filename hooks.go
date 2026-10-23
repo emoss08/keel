@@ -215,11 +215,22 @@ func OnWrite[T any](db *DB, t tabler[T], phase Phase,
 	register(db, t, []Op{OpCreate, OpUpdate, OpDelete}, phase, fn, opts)
 }
 
-// Interceptor sees every read and bulk write of a table before it is rendered and may add
-// predicates to it.
+// Interceptor sees a statement on a table before it is rendered and may add predicates to its
+// WHERE clause. It sees every statement whose base is the table and that has a WHERE clause:
+//
+//   - reads: every query terminal and Batch item, Page's total, projections, ToSQL, to-many
+//     relation loads, Any and None, subqueries, and the source query of InsertFrom (OpRead);
+//   - Save and bulk updates (OpUpdate);
+//   - DeleteRow and bulk deletes (OpDelete).
+//
+// On Save and DeleteRow the predicates join the primary key, so a row they exclude is not
+// written. Interceptors never see inserts (Create, CreateMany, Copy, Upsert, CreateOrSkip and the
+// INSERT of InsertFrom), including the update an Upsert applies to a conflicting row, or tables
+// joined into a statement through a relation path.
 type Interceptor func(ctx context.Context, q *Intercepted) error
 
-// Intercepted is the query an interceptor sees.
+// Intercepted is the statement an interceptor sees: its Op (OpRead, OpUpdate or OpDelete), whether
+// it is a read, and its base table.
 type Intercepted struct {
 	Op    Op
 	Read  bool
@@ -236,8 +247,8 @@ type interceptors struct {
 	byTable map[*schema.Table][]Interceptor
 }
 
-// Intercept registers fn for every statement whose base is t's table: queries, relation loads,
-// subqueries and bulk writes. Joined relations are not intercepted.
+// Intercept registers fn for the statements whose base is t's table, as Interceptor describes:
+// reads, Save, DeleteRow and bulk updates and deletes. Joined relations are not intercepted.
 func (db *DB) Intercept(t interface{ TableRef() *Ref }, fn Interceptor) {
 	db.icpt.mu.Lock()
 	defer db.icpt.mu.Unlock()
@@ -248,7 +259,9 @@ func (db *DB) Intercept(t interface{ TableRef() *Ref }, fn Interceptor) {
 	db.icpt.byTable[tbl] = append(slices.Clip(db.icpt.byTable[tbl]), fn)
 }
 
-// InterceptAll registers fn for every statement keel renders.
+// InterceptAll registers fn for the statements of every table that Intercept would cover: reads,
+// Save, DeleteRow and bulk updates and deletes, never inserts. It runs before the interceptors
+// registered for one table.
 func (db *DB) InterceptAll(fn Interceptor) {
 	db.icpt.mu.Lock()
 	defer db.icpt.mu.Unlock()
