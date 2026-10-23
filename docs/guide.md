@@ -45,7 +45,8 @@ pgx v5 and never uses `database/sql`.
 |---|---|
 | `github.com/emoss08/keel` | the API: `DB`, transactions, queries, expressions, writes, hooks, errors |
 | `github.com/emoss08/keel/cmd/keel` | the command: `keel gen` and `keel migrate` |
-| `github.com/emoss08/keel/migrate` | the SQL-file migration runner |
+| `github.com/emoss08/keel/migrate` | migrations: apply, plan, squash, lint, templates, `Require` |
+| `github.com/emoss08/keel/migrate/migratecli` | the `keel migrate` commands, importable by an application's CLI |
 | `github.com/emoss08/keel/schema` | table metadata the generator writes; applications do not use it directly |
 
 ## Configuration
@@ -1610,7 +1611,10 @@ and plan-mode switches are not reported.
 | `keel.ErrNoScope`, `ErrAllTenantsRequired`, `ErrSystemScopeRequired`, `ErrTenantMismatch` | scope violations; see [Scope errors](#scope-errors) |
 | `keel.ErrUnbounded` | `List` without `Limit` |
 | `keel.ErrReadOnly` | a write, a `Write` or a `Savepoint` inside a `Read` |
-| `migrate.ErrChanged` | `Up` when an applied migration's file changed |
+| `migrate.ErrChanged` | `Up` and `Plan` when an applied migration's file changed |
+| `migrate.ErrOutOfOrder` | `Up` and `Plan` when a pending migration is older than the newest applied one |
+| `migrate.ErrBaselineGap` | `Up` and `Plan` when the database's history ends before a baseline |
+| `migrate.ErrBehind` | `Require` and `RequireWait` when the database has not applied a version; the error is a `*migrate.BehindError` with `Want` and `Have` |
 
 Test them with `errors.Is` (and `errors.As` for `*keel.ConflictError`): keel wraps them with the
 table name. Misuse (an `Update` without `Where`, an `Into` whose struct does not match the picks) is
@@ -1643,57 +1647,111 @@ case err != nil:
 
 ## Migrations
 
-Migrations are SQL files; keel does not generate them from models.
+Migrations are SQL files, plus Go functions for data changes SQL cannot express; keel does not
+generate them from models. `keel/migrate` applies them; `keel migrate` is its command line.
+[migrations-and-seeds.md](migrations-and-seeds.md) is the design and how it fits deploys.
 
 ### Files
 
 ```
 migrations/
-  20260101000000_init.up.sql
-  20260101000000_init.down.sql
-  20260102000000_shipment_status_index.notx.up.sql
-  20260102000000_shipment_status_index.notx.down.sql
+  20260101000000_init.sql
+  20260102000000_shipment_status_index.sql
+  R_shipment_views.sql
 ```
 
-- A migration is a pair `<version>_<name>.up.sql` and `<version>_<name>.down.sql`. The version is a
-  number; `keel migrate create` uses the UTC time (`20060102150405`). Versions sort numerically and
-  must be unique. The down file is optional; `Down` fails on a migration without one.
-- An up file runs in one transaction together with its bookkeeping row in `keel_migrations`.
-- A `*.notx.up.sql` file runs outside a transaction, statement by statement, for work Postgres
-  refuses inside one (`CREATE INDEX CONCURRENTLY`, `ALTER TYPE … ADD VALUE`). Separate its
-  statements with a line holding only `--keel:split`:
+- A migration is `<version>_<name>.sql`. The version is a 14-digit UTC timestamp
+  (`20261023143000`); `keel migrate create` takes it from the clock. Versions must be unique across
+  every source. There are no down migrations: fix forward with a new migration, and rebuild a
+  development database from its template (see [Templates](#templates)).
+- `R_<name>.sql` is repeatable: it runs after the versioned migrations whenever its checksum
+  changes, in name order. Use it for views, functions, RLS helpers and grants, written with
+  `CREATE OR REPLACE` so they re-apply.
+- A transactional migration runs in one transaction together with its row in `keel_migrations`.
+- Directives at the top of a file, before any statement, change how it runs. An unknown or
+  misplaced directive is an error.
+
+| Directive | Effect |
+|---|---|
+| `--keel:notx` | runs outside a transaction, statement by statement, split at `--keel:split` lines |
+| `--keel:lock_timeout 2s` | overrides the lock timeout (default 5s); `0` disables it |
+| `--keel:statement_timeout 1m` | bounds each statement (none by default) |
+| `--keel:no_retry` | fails on the first lock timeout instead of retrying |
+| `--keel:baseline` | a squashed schema (see [Squash](#squash)) |
+| `--keel:lint_ignore a,b` | skips the named lint rules for this file |
 
 ```sql
+--keel:notx
+--keel:lock_timeout 2s
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_shipments_status ON shipments (organization_id, business_unit_id, status);
 --keel:split
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_workers_manager ON workers (organization_id, business_unit_id, manager_id);
 ```
 
-Make non-transactional statements idempotent (`IF NOT EXISTS`): a failure part-way leaves the
-earlier statements applied.
+Use `--keel:notx` for work Postgres refuses inside a transaction (`CREATE INDEX CONCURRENTLY`,
+`DROP INDEX CONCURRENTLY`, `REINDEX CONCURRENTLY`, `VACUUM`). Put each such statement in its own
+`--keel:split` part: Postgres runs several statements sent together as one implicit transaction.
+Make notx statements idempotent (`IF NOT EXISTS`): a failure part-way leaves the earlier ones
+applied. A `CREATE INDEX CONCURRENTLY` that fails leaves an invalid index behind, which
+`IF NOT EXISTS` then skips; drop it before retrying.
+
+### How Up applies
 
 - Runs serialise across processes on an advisory lock, taken by polling: a waiting statement would
   hold a transaction open, and `CREATE INDEX CONCURRENTLY` in the run that holds the lock waits for
-  every open transaction.
-- keel stores a checksum of each applied up file. When an applied file changes, `Up` stops with
-  `migrate.ErrChanged` before applying anything: add a new migration instead of editing an applied
-  one.
+  every open transaction. Two replicas or a retried deploy job never apply a migration twice.
+- Every migration runs with `lock_timeout` 5s (`SET LOCAL` in its transaction, or set for the
+  session around a notx migration's statements and reset after). When a statement times out
+  waiting for a lock (SQLSTATE 55P03), the migration (or the notx statement) is retried with
+  backoff, five times by default. A migration that needs an `ACCESS EXCLUSIVE` lock therefore
+  never queues behind a long report query while every request queues behind it.
+- `Options.After` statements run once, in the last migration's transaction, after a run that
+  applied anything: Trenova's `SELECT trenova_rls.reconcile()` becomes automatic. When the last
+  migration is notx, or a run fails after applying some migrations, they run in a transaction of
+  their own.
+- A pending migration older than the newest applied one is `ErrOutOfOrder`, unless
+  `Options.AllowOutOfOrder`: that is the branch merged with an old timestamp.
+- keel stores each migration's checksum. An applied file that changed is `ErrChanged` before
+  anything runs: add a new migration instead. After a comment-only edit, `migrate repair <version>`
+  accepts the new checksum. Repeatable migrations re-run instead.
+- `keel_migrations` holds `version`, `name`, `source`, `kind` (versioned, repeatable, go,
+  baseline), `checksum`, `applied_at` and `duration_ms`, in `public` or `Options.Schema`.
 
 ### Command line
 
 ```sh
-keel migrate -dir migrations create add_shipment_index        # writes the up and down files
-keel migrate -dir migrations create add_status_index notx     # a .notx pair
-keel migrate -dsn "$DATABASE_URL" -dir migrations up          # apply every pending migration
-keel migrate -dsn "$DATABASE_URL" -dir migrations down        # revert the last applied migration
-keel migrate -dsn "$DATABASE_URL" -dir migrations status      # [x] applied, [ ] pending
+export KEEL_DSN=postgres://localhost:5432/app
+keel migrate create add_shipment_holds            # migrations/20261023143000_add_shipment_holds.sql
+keel migrate create shipment_status_idx -notx     # starts with --keel:notx
+keel migrate create shipment_views -repeatable    # migrations/R_shipment_views.sql
+keel migrate plan                                 # what up would do
+keel migrate up                                   # apply; one line per event
+keel migrate up -to 20261023143000 -dry-run       # print the SQL up to a version
+keel migrate status                               # applied, pending, changed, repeatable-due, missing
+keel migrate history                              # applied migrations, oldest first
+keel migrate check                                # exit 1 on out-of-order, changed or missing migrations
+keel migrate check -base-dir ../main/migrations   # the same against the base branch, without a database
+keel migrate lint                                 # lint pending migrations; -all for every one
+keel migrate baseline 20261023143000              # adopt an existing database
+keel migrate repair 20261023143000                # accept an applied file's new checksum
+keel migrate squash -dump "docker exec pg pg_dump -U app -d {db}"
+keel migrate stamp -package schema -out schema/version_gen.go [-check]
+keel migrate templates [prune]
 ```
 
-`-dsn` defaults to `$DATABASE_URL` and `-dir` to `migrations`.
+Every command takes `-dsn` (default `$KEEL_DSN`), `-dir [name=]path` (repeatable; default
+`migrations`), `-schema`, `-lock-timeout` (`0` for none), `-retries` (`0` for none),
+`-allow-out-of-order`, `-after SQL` (repeatable) and `-json`. With `-json`, `up` writes one JSON
+object per event and the other commands one JSON document. `check`, `lint` (on an error finding)
+and `stamp -check` exit 1 when they find problems.
+
+The same commands are importable from `keel/migrate/migratecli`, as functions that take an
+`io.Writer`, for an application's own database binary.
 
 ### Go API
 
-Embed the files and apply them at startup or from a deploy step:
+Embed the files and apply them from a deploy step, not from the server (see
+[The server's view](#the-servers-view)):
 
 ```go
 //go:embed migrations/*.sql
@@ -1703,23 +1761,147 @@ dir, err := fs.Sub(migrationFiles, "migrations")
 if err != nil {
     return err
 }
-m, err := migrate.Open(ctx, os.Getenv("DATABASE_URL"), dir)
+sources := migrate.Sources(
+    migrate.Source{Name: "core", FS: dir, Funcs: []migrate.Func{{
+        Version: "20261024091500",
+        Name:    "backfill_shipment_holds",
+        Up: func(ctx context.Context, tx pgx.Tx) error {
+            _, err := tx.Exec(ctx, "UPDATE shipments SET hold = false WHERE hold IS NULL")
+            return err
+        },
+    }}},
+    migrate.Source{Name: "cloud", FS: cloudDir},
+)
+m, err := migrate.Open(ctx, os.Getenv("KEEL_DSN"), sources, migrate.Options{
+    After:    []string{"SELECT trenova_rls.reconcile()"},
+    Observer: func(e migrate.Event) { log.Println(e.Kind, e.Index, e.Total) },
+})
 if err != nil {
     return err
 }
 defer m.Close()
 
-applied, err := m.Up(ctx)
-if errors.Is(err, migrate.ErrChanged) {
+res, err := m.Up(ctx, migrate.UpOptions{})
+switch {
+case errors.Is(err, migrate.ErrChanged):
     return errors.New("an applied migration was edited; add a new migration instead")
+case errors.Is(err, migrate.ErrOutOfOrder):
+    return errors.New("a migration is older than the newest applied one; give it a newer version")
+case err != nil:
+    return err
 }
-status, err := m.Status(ctx) // []migrate.Status: Migration (ID(), NoTx, …), Applied, AppliedAt, Changed
+log.Printf("applied %d migrations in %s", len(res.Applied), res.Duration)
 ```
 
-The source is read from its root, so pass the directory itself (`fs.Sub`, or `os.DirFS(dir)`).
-`migrate.New(conn, fsys)` uses a `*pgx.Conn` you own; `m.Down(ctx, n)` reverts the last `n`;
-`migrate.Read(fsys)` parses a source without a database, for a CI check; `migrate.Create(dir, name,
-notx)` writes an empty pair.
+- `migrate.Sources(...)` returns a `Set`; a read error, a duplicate version or a migration older
+  than a baseline travels with it and is returned by `Open`. `Set.Version()` is the newest version
+  and `Set.Fingerprint()` hashes every migration.
+- A `Func` sets `Up` (runs in the migration's transaction) or `UpNoTx` (gets the `*pgx.Conn`).
+- `migrate.New(conn, sources, opts)` uses a `*pgx.Conn` you own.
+- `m.Plan(ctx, migrate.UpOptions{To: v})` returns the baselines Up would mark, the pending and
+  repeatable migrations it would run and the After statements, or the error Up would return;
+  `UpOptions{DryRun: true}` does the same through `Up`.
+- `m.Status(ctx)` returns each migration's `State`, applied time and duration; `m.History(ctx)` the
+  rows of `keel_migrations`; `m.Check(ctx)` and `migrate.CheckAgainst(set, base)` a `CheckReport`.
+- `m.Baseline(ctx, v)` records every migration up to `v` as applied without running it;
+  `m.Repair(ctx, v)` returns the old and new checksums.
+- `Options.LockTimeout`, `Retries` and `RetryBackoff` tune lock handling (negative disables the
+  first two); `Options.Schema` moves `keel_migrations`.
+
+### Progress events
+
+`Options.Observer` receives an `Event` for each step of a run, synchronously on the goroutine
+running `Up`, so it must not block:
+
+| Kind | When | Fields |
+|---|---|---|
+| `LockWait` | about every second while another run holds the lock | `Duration` waited, `Blockers` |
+| `LockAcquired` | the run holds the lock | `Duration` waited |
+| `MigrationStart`, `MigrationEnd` | around each migration | `Migration`, `Index`, `Total`; end: `Duration`, `Err` |
+| `Statement` | before each statement of a notx migration | `Statement` of `Statements`, `SQL` |
+| `Retry` | before a retry after a lock timeout | `Attempt`, `Blockers`, `Err` |
+| `BaselineMarked` | a baseline recorded without running | `Migration` |
+| `After` | before each After statement | `SQL` |
+| `RunEnd` | Up returns | `Duration`, `Err` |
+
+A `Blocker` names a backend holding the lock the run waits for: `PID`, `Application`, `State`,
+`Mode`, `Age` and `Query`, from `pg_locks`, `pg_blocking_pids()` and `pg_stat_activity`. On a
+lock timeout keel finds them from a second connection while the statement waits, so the log says
+which report query held the table. `migratecli.Printer(w, json)` renders events as lines or JSON
+lines.
+
+### Squash
+
+`keel migrate squash` applies the migrations to a scratch database, dumps its schema with
+`pg_dump --schema-only --no-owner --no-privileges`, strips what does not re-apply in a migration
+(psql meta-commands such as `\restrict`, session settings, extension comments, version comments),
+verifies the result by applying it to a second scratch database and comparing the dumps, and
+replaces the migrations with one file, `<newest version>_baseline.sql`, marked `--keel:baseline`.
+Repeatable migrations stay.
+
+- A database whose history reaches the baseline's version records it as applied without running
+  it (`BaselineMarked`); an empty database runs it. A database whose history ends before it is
+  `ErrBaselineGap`: apply the squashed migrations from an earlier release first.
+- `-dump` is the pg_dump command, which must match the server's major version; `{db}` and `{dsn}`
+  are replaced by the scratch database, as in `-dump "docker exec pg pg_dump -U app -d {db}"`.
+  `-admin` names the server for scratch databases (default `-dsn`); `-to` squashes up to a version.
+- From Go: `migrate.Squash(ctx, migrate.SquashOptions{Admin, Dirs, To, Dump, Options})`.
+
+### The server's view
+
+The server links one generated file instead of its migrations:
+
+```sh
+keel migrate stamp -package schema -out schema/version_gen.go   # const Version, const Fingerprint
+keel migrate stamp -out schema/version_gen.go -check            # in CI: fail when stale
+```
+
+```go
+if err := migrate.RequireWait(ctx, pool, schema.Version, time.Second); err != nil {
+    return err // errors.Is(err, migrate.ErrBehind): the database has not applied Version
+}
+```
+
+`migrate.Require(ctx, q, version)` reads `keel_migrations` once: a database that has applied
+`version`, or is ahead of it, passes, which is what a rolling deploy needs; a database behind it, or
+without the table, returns a `*migrate.BehindError` (wrapping `ErrBehind`) with the newest version
+it has. `RequireWait` polls until the deploy job catches up or `ctx` ends. `q` is a
+`*pgxpool.Pool`, `*pgx.Conn` or `pgx.Tx`; the table is found through the search path.
+
+### Templates
+
+```go
+dsn, drop, err := migrate.Template(ctx, migrate.TemplateOptions{
+    Admin:   adminDSN, // any database on the server; the role needs CREATEDB
+    Sources: sources,
+    Key:     seeds.Fingerprint(), // joins the template's identity when Prepare is set
+    Prepare: func(ctx context.Context, dsn string) error { return seed(ctx, dsn) },
+})
+defer drop(ctx)
+```
+
+The first call for a set and key builds `keel_tpl_<hash>` under an advisory lock, so parallel test
+packages build it once between them: it migrates, runs `Prepare`, and marks the database a
+template that takes no connections. Every call returns a fresh database copied from it with
+`CREATE DATABASE … TEMPLATE … STRATEGY FILE_COPY`, in milliseconds. `migrate.Templates(ctx, admin)`
+lists templates with their size and creation time, `migrate.PruneTemplates(ctx, admin, keep)` drops
+the others (`keel migrate templates prune` keeps the current one), and
+`migrate.ResetFromTemplate(ctx, admin, dbname, template)` recreates a database from a template.
+
+### Lint
+
+`keel migrate lint` and `migrate.Lint(migrations, rules...)` check SQL lexically, with comments and
+literals removed; a table not created earlier in the same migration counts as existing.
+
+| Rule | Flags |
+|---|---|
+| `index-concurrently` | `CREATE INDEX` without `CONCURRENTLY` on an existing table |
+| `not-null-default` | `ADD COLUMN … NOT NULL` without a `DEFAULT` on an existing table (error) |
+| `notx-mixed` | `CONCURRENTLY` or `VACUUM` in a transaction, a notx statement sharing a split part (errors); `ALTER TYPE … ADD VALUE` beside other statements |
+| `lock-heavy` | `ALTER COLUMN … TYPE`, `SET NOT NULL`, `ADD CONSTRAINT` that validates or builds an index under the table lock, `VALIDATE` in the migration that added it `NOT VALID` |
+
+Add rules with `migrate.LintRule{Name: "tenant-rls", Check: func(m migrate.Migration) []migrate.Finding { … }}`,
+and skip one for a file with `--keel:lint_ignore`.
 
 ## Performance notes
 
@@ -1791,8 +1973,9 @@ KEEL_TEST_REQUIRE=1 go test ./...  # fail instead of skipping
 ```
 
 - `KEEL_TEST_DSN` names the server (default `postgres://keel:keel@localhost:55432/keel`). On first
-  use the tests create a database with a random name, apply `testdata/migrations` with
-  `migrate.Up`, and open a `keel.DB` on it; `TestMain` drops it with `DROP DATABASE … WITH (FORCE)`.
+  use the tests copy a database from a template of `testdata/migrations` with `migrate.Template`
+  (built once, then reused while the migrations are unchanged) and open a `keel.DB` on it;
+  `TestMain` drops it.
 - Each test works in a fresh random tenant (`newTenant()`), so tests never see each other's rows and
   need no cleanup between them.
 - SQL golden tests ([render_test.go](../render_test.go)) open a `DB` on an address nothing listens
@@ -1804,9 +1987,9 @@ KEEL_TEST_REQUIRE=1 go test ./...  # fail instead of skipping
 
 The same pattern works for an application:
 
-- In `TestMain` or a `sync.Once`, create a database per test binary, apply the embedded migrations
-  with `migrate.Open(ctx, dsn, dir)` and `Up`, and open the application's `keel.DB` with its real
-  `Config`. Drop the database when the run ends.
+- In `TestMain` or a `sync.Once`, get a database per test binary from `migrate.Template` (see
+  [Templates](#templates)), with `Prepare` loading reference data, and open the application's
+  `keel.DB` with its real `Config`. Call the returned drop function when the run ends.
 - Give each test its own tenant context. Tenancy keeps tests apart, so they can run with
   `t.Parallel()` against one database.
 - Test system jobs with a system scope, and assert scope errors with `errors.Is`.
