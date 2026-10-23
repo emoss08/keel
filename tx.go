@@ -178,6 +178,34 @@ func (tx *txState) queueBegin(b *pgx.Batch) (int, error) {
 	return n, nil
 }
 
+// begin sends BEGIN, the transaction options and the OnBegin statements in one round trip, unless
+// the transaction has begun, for a statement that cannot join a batch, such as COPY.
+func (tx *txState) begin(ctx context.Context) error {
+	if tx.begun {
+		return nil
+	}
+	conn, err := tx.acquire(ctx)
+	if err != nil {
+		return err
+	}
+	b := &pgx.Batch{}
+	n, err := tx.queueBegin(b)
+	if err != nil {
+		return err
+	}
+	br := conn.SendBatch(ctx, b)
+	tx.begun = true
+	for range n {
+		if _, err = br.Exec(); err != nil {
+			break
+		}
+	}
+	if closeErr := br.Close(); err == nil {
+		err = closeErr
+	}
+	return err
+}
+
 // end commits or rolls back and releases the connection. A transaction that never sent a
 // statement costs nothing.
 func (tx *txState) end(ctx context.Context, err error) error {
