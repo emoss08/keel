@@ -251,7 +251,7 @@ func loadStmt(ctx context.Context, run *runner, w pending) (*stmt, *selectPlan, 
 		customPlan: q.customPlan}
 	child := n.table
 	s.scan = func(rows pgx.Rows) error {
-		return plan.scan(run.sc, rows, func(row unsafe.Pointer, key relKey) {
+		return plan.scan(run.sc, s.sql, rows, func(row unsafe.Pointer, key relKey) {
 			if !m2m {
 				var ok bool
 				if key, ok = readKey(child, row, remote); !ok {

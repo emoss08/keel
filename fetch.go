@@ -54,7 +54,7 @@ func (q *query) fetch(ctx context.Context, db *DB, fo *fetchOpts, emit func(unsa
 	main := &stmt{sql: string(r.buf), args: r.argsCopy(), op: "select", table: root.table.Name,
 		customPlan: q.customPlan}
 	main.scan = func(rows pgx.Rows) error {
-		return plan.scan(run.sc, rows, func(row unsafe.Pointer, _ relKey) { emit(row) })
+		return plan.scan(run.sc, main.sql, rows, func(row unsafe.Pointer, _ relKey) { emit(row) })
 	}
 	stmts := []*stmt{main}
 

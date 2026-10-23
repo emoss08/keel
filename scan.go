@@ -49,7 +49,7 @@ func (p *selectPlan) track() {
 }
 
 // scan decodes rows, calling emit with each base row and, for keyed statements, its relation key.
-func (p *selectPlan) scan(sc *scopeState, rows pgx.Rows, emit func(row unsafe.Pointer, key relKey)) error {
+func (p *selectPlan) scan(sc *scopeState, sql string, rows pgx.Rows, emit func(row unsafe.Pointer, key relKey)) error {
 	m := rows.Conn().TypeMap()
 	fds := rows.FieldDescriptions()
 	off := 0
@@ -59,7 +59,7 @@ func (p *selectPlan) scan(sc *scopeState, rows pgx.Rows, emit func(row unsafe.Po
 	if len(fds) != len(p.cols)+off {
 		return errf("statement returned %d columns, expected %d", len(fds), len(p.cols)+off)
 	}
-	plans := make([]pgtype.ScanPlan, len(p.cols))
+	plans := cachedPlans(rows.Conn(), sql, p.nodes[0].table, len(p.cols))
 	shared := make([]int8, len(p.cols))
 	for i, c := range p.cols {
 		shared[i] = sharedTenant(sc, p.nodes[c.node].table, c.col, fds[i+off].DataTypeOID)
@@ -203,4 +203,48 @@ func (s *slab) new() unsafe.Pointer {
 	p := unsafe.Add(s.start, uintptr(s.idx)*s.t.Size)
 	s.idx++
 	return p
+}
+
+// planCacheKey identifies a statement's decoding: its text fixes the result columns, its base
+// table fixes the Go fields they fill.
+type planCacheKey struct {
+	sql   string
+	table *schema.Table
+}
+
+// planCache keeps the scan plans of a connection's statements, so a repeated statement decodes
+// without asking pgx to plan each column again. It lives in the connection's CustomData and is
+// used only by the goroutine holding the connection.
+type planCache struct {
+	m map[planCacheKey][]pgtype.ScanPlan
+}
+
+const (
+	planCacheKeyName = "keel.plans"
+	planCacheMax     = 2048
+)
+
+// cachedPlans returns the plan slice of a statement on conn, empty on first use. Callers fill
+// missing entries; the slice stays in the cache.
+func cachedPlans(conn *pgx.Conn, sql string, t *schema.Table, n int) []pgtype.ScanPlan {
+	if conn == nil {
+		return make([]pgtype.ScanPlan, n)
+	}
+	data := conn.PgConn().CustomData()
+	pc, _ := data[planCacheKeyName].(*planCache)
+	if pc == nil {
+		pc = &planCache{m: make(map[planCacheKey][]pgtype.ScanPlan)}
+		data[planCacheKeyName] = pc
+	}
+	key := planCacheKey{sql: sql, table: t}
+	plans, ok := pc.m[key]
+	if ok && len(plans) == n {
+		return plans
+	}
+	if len(pc.m) >= planCacheMax {
+		clear(pc.m)
+	}
+	plans = make([]pgtype.ScanPlan, n)
+	pc.m[key] = plans
+	return plans
 }
