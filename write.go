@@ -593,7 +593,7 @@ func (db *DB) save(ctx context.Context, ref *Ref, row unsafe.Pointer, cols []int
 				r.s(", ")
 			}
 			first = false
-			r.s("new.")
+			r.s("t0.")
 			r.s(t.Columns[c].Quoted)
 		}
 		if old != nil {

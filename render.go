@@ -122,6 +122,11 @@ func (r *render) alias(ref *Ref) string {
 		}
 	}
 	if !ref.isPath() {
+		if ref.alias == "" {
+			if a, ok := r.sameTable(ref.Table); ok {
+				return a
+			}
+		}
 		r.fail(fmt.Errorf("keel: %s is not part of this query", ref.name()))
 		return "t0"
 	}
@@ -142,6 +147,19 @@ func (r *render) alias(ref *Ref) string {
 		return "t0"
 	}
 	return r.addJoin(sc, ref, parentAlias, false)
+}
+
+// sameTable finds the innermost reference to table t, so a column of a table's base handle
+// resolves inside a statement built on a relation path to that table (a load, Any, an interceptor).
+func (r *render) sameTable(t *schema.Table) (string, bool) {
+	for sc := r.sc; sc != nil; sc = sc.parent {
+		for i := range sc.refs {
+			if sc.refs[i].ref.Table == t {
+				return sc.refs[i].alias, true
+			}
+		}
+	}
+	return "", false
 }
 
 func (r *render) scopeOf(ref *Ref) *scope {

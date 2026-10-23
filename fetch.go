@@ -436,13 +436,15 @@ func (q *query) update(ctx context.Context, db *DB, sets []Assignment) (int64, e
 	}
 	ctx, cancel := q.checkTimeout(ctx)
 	defer cancel()
-	run, err := db.newRunner(ctx, true)
+	t := q.ref.Table
+	th := db.hooks.forTable(t)
+	run, err := db.writeRunner(ctx, th, OpUpdate)
 	if err != nil {
 		return 0, err
 	}
-	t := q.ref.Table
 	r := &render{scope: run.sc, ctx: ctx, db: run.db}
 	sc, alias := r.push(q.ref, joinFrom, q.allTenants)
+	var changed []int32
 	setSQL := r.section(func() {
 		touched := make(map[int32]bool, len(sets))
 		for i, a := range sets {
@@ -458,6 +460,7 @@ func (q *query) update(ctx context.Context, db *DB, sets []Assignment) (int64, e
 			r.s(" = ")
 			a.e(r)
 			touched[a.col.Index] = true
+			changed = append(changed, a.col.Index)
 		}
 		if t.AutoUpdate >= 0 && !touched[t.AutoUpdate] {
 			r.s(", ")
@@ -500,7 +503,11 @@ func (q *query) update(ctx context.Context, db *DB, sets []Assignment) (int64, e
 		r.buf = append(r.buf, conds...)
 	}
 	s := &stmt{sql: string(r.buf), args: r.args, op: "update", table: t.Name}
-	err = run.one(ctx, s, true)
+	bh := bulkHooks(r, s, th, OpUpdate, t, alias, true)
+	err = run.one(ctx, s, !th.has(OpUpdate, AfterWrite))
+	if err == nil && bh != nil {
+		err = db.afterWrite(ctx, run, th, OpUpdate, bh.rows, bh.olds, changed)
+	}
 	return s.tag.RowsAffected(), run.close(ctx, err)
 }
 
@@ -511,11 +518,12 @@ func (q *query) delete(ctx context.Context, db *DB) (int64, error) {
 	}
 	ctx, cancel := q.checkTimeout(ctx)
 	defer cancel()
-	run, err := db.newRunner(ctx, true)
+	t := q.ref.Table
+	th := db.hooks.forTable(t)
+	run, err := db.writeRunner(ctx, th, OpDelete)
 	if err != nil {
 		return 0, err
 	}
-	t := q.ref.Table
 	r := &render{scope: run.sc, ctx: ctx, db: run.db}
 	sc, alias := r.push(q.ref, joinFrom, q.allTenants)
 	where := r.section(func() {
@@ -541,8 +549,69 @@ func (q *query) delete(ctx context.Context, db *DB) (int64, error) {
 		r.buf = append(r.buf, conds...)
 	}
 	s := &stmt{sql: string(r.buf), args: r.args, op: "delete", table: t.Name}
-	err = run.one(ctx, s, true)
+	bh := bulkHooks(r, s, th, OpDelete, t, alias, false)
+	err = run.one(ctx, s, !th.has(OpDelete, AfterWrite))
+	if err == nil && bh != nil {
+		err = db.afterWrite(ctx, run, th, OpDelete, bh.rows, bh.olds, nil)
+	}
 	return s.tag.RowsAffected(), run.close(ctx, err)
+}
+
+// bulkRows holds the rows a bulk write returned for its hooks.
+type bulkRows struct {
+	rows []unsafe.Pointer
+	olds []unsafe.Pointer
+}
+
+// bulkHooks extends a bulk UPDATE or DELETE with RETURNING when the table has AfterWrite or
+// Committed hooks for op: the written rows, and for updates the previous values of the columns the
+// hooks need (RETURNING old.…, which needs PostgreSQL 18). It returns nil when no hook needs the
+// rows.
+func bulkHooks(r *render, s *stmt, th *tableHooks, op Op, t *schema.Table, alias string,
+	update bool,
+) *bulkRows {
+	if !th.has(op, AfterWrite) && !th.has(op, Committed) {
+		return nil
+	}
+	cols := t.Select
+	var needs []int32
+	if update {
+		needs = th.needs
+	}
+	r.s(" RETURNING ")
+	for i, c := range cols {
+		if i > 0 {
+			r.s(", ")
+		}
+		r.s(alias)
+		r.b('.')
+		r.s(t.Columns[c].Quoted)
+	}
+	for _, c := range needs {
+		r.s(", old.")
+		r.s(t.Columns[c].Quoted)
+	}
+	s.sql = string(r.buf)
+	s.args = r.args
+	out := &bulkRows{}
+	s.scan = func(rows pgx.Rows) error {
+		for rows.Next() {
+			row := t.New()
+			var old unsafe.Pointer
+			if len(needs) > 0 {
+				old = t.New()
+			}
+			if err := scanInto(rows, t, row, cols, old, needs); err != nil {
+				return err
+			}
+			out.rows = append(out.rows, row)
+			if old != nil {
+				out.olds = append(out.olds, old)
+			}
+		}
+		return nil
+	}
+	return out
 }
 
 func hasPreds(ps []Pred) bool {
