@@ -121,7 +121,6 @@ func keelConfig(dsn string) keel.Config {
 			_, _ = rand.Read(b)
 			return prefix + hex.EncodeToString(b)
 		},
-		LoadTypes: []string{"shipment_status", "_shipment_status"},
 	}
 }
 

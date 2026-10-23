@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -39,10 +40,16 @@ type Config struct {
 	// AfterConnect runs on every new connection, after keel registers its types; use it to
 	// register codecs (a decimal type, a faster JSON codec).
 	AfterConnect func(ctx context.Context, conn *pgx.Conn) error
-	// LoadTypes lists user-defined types (enums, domains) and their array types to register on
-	// every connection, so arrays of them bind as parameters. Enums named here bind from Go
-	// strings.
+	// LoadTypes lists user-defined types (domains, composites) and their array types to register
+	// on every connection. Enums are registered without being listed.
 	LoadTypes []string
+	// SkipEnums turns off registering every enum type of the database on each new connection.
+	// Registered enums bind as arrays and decode into one shared string per label, so enum columns
+	// cost no allocation per row.
+	SkipEnums bool
+	// JSON encodes and decodes json and jsonb values. Defaults to encoding/json; set it to a faster
+	// library (sonic, go-json) with the same signatures.
+	JSON *JSONCodec
 	// PlanCache chooses how statements are prepared. The default, PlanCacheAuto, prepares every
 	// statement shape once per connection.
 	PlanCache PlanCache
@@ -70,6 +77,12 @@ const (
 	// max_prepared_statements).
 	PlanCacheOff
 )
+
+// JSONCodec is a JSON implementation.
+type JSONCodec struct {
+	Marshal   func(v any) ([]byte, error)
+	Unmarshal func(data []byte, v any) error
+}
 
 // TxInfo describes the transaction being started.
 type TxInfo struct {
@@ -127,8 +140,19 @@ func Open(ctx context.Context, cfg Config) (*DB, error) {
 	}
 	userAfterConnect := pc.AfterConnect
 	pc.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
-		if len(cfg.LoadTypes) > 0 {
-			types, err := conn.LoadTypes(ctx, cfg.LoadTypes)
+		if cfg.JSON != nil {
+			registerJSON(conn.TypeMap(), cfg.JSON)
+		}
+		names := append([]string(nil), cfg.LoadTypes...)
+		if !cfg.SkipEnums {
+			enums, err := enumTypes(ctx, conn)
+			if err != nil {
+				return err
+			}
+			names = append(names, enums...)
+		}
+		if len(names) > 0 {
+			types, err := conn.LoadTypes(ctx, names)
 			if err != nil {
 				return fmt.Errorf("keel: load types: %w", err)
 			}
@@ -168,4 +192,35 @@ func (db *DB) planMode() string {
 		return "force_custom_plan"
 	}
 	return "auto"
+}
+
+// enumTypes returns the qualified names of the database's enum types and their array types.
+func enumTypes(ctx context.Context, conn *pgx.Conn) ([]string, error) {
+	rows, err := conn.Query(ctx, `SELECT quote_ident(n.nspname) || '.' || quote_ident(t.typname),
+	       quote_ident(n.nspname) || '.' || quote_ident(a.typname)
+	  FROM pg_type t
+	  JOIN pg_namespace n ON n.oid = t.typnamespace
+	  JOIN pg_type a ON a.oid = t.typarray
+	 WHERE t.typtype = 'e'
+	   AND n.nspname NOT IN ('pg_catalog', 'information_schema')`, pgx.QueryExecModeSimpleProtocol)
+	if err != nil {
+		return nil, fmt.Errorf("keel: list enum types: %w", err)
+	}
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var enum, array string
+		if err := rows.Scan(&enum, &array); err != nil {
+			return nil, err
+		}
+		names = append(names, enum, array)
+	}
+	return names, rows.Err()
+}
+
+func registerJSON(m *pgtype.Map, c *JSONCodec) {
+	m.RegisterType(&pgtype.Type{Name: "json", OID: pgtype.JSONOID,
+		Codec: &pgtype.JSONCodec{Marshal: c.Marshal, Unmarshal: c.Unmarshal}})
+	m.RegisterType(&pgtype.Type{Name: "jsonb", OID: pgtype.JSONBOID,
+		Codec: &pgtype.JSONBCodec{Marshal: c.Marshal, Unmarshal: c.Unmarshal}})
 }

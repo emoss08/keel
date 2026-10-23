@@ -2,6 +2,7 @@ package keel_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 	"testing"
@@ -323,5 +324,43 @@ func TestPlanCacheModes(t *testing.T) {
 			eq(t, len(rows), 2)
 		}
 		d.Close()
+	}
+}
+
+func TestJSONCodec(t *testing.T) {
+	db(t)
+	var marshals, unmarshals int
+	var mu sync.Mutex
+	cfg := testConfig(testDSN)
+	cfg.JSON = &keel.JSONCodec{
+		Marshal: func(v any) ([]byte, error) {
+			mu.Lock()
+			marshals++
+			mu.Unlock()
+			return json.Marshal(v)
+		},
+		Unmarshal: func(b []byte, v any) error {
+			mu.Lock()
+			unmarshals++
+			mu.Unlock()
+			return json.Unmarshal(b, v)
+		},
+	}
+	d, err := keel.Open(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	w := seed(t, 1)
+	s := fleetdb.Shipments
+	sh := w.shipments[0]
+	sh.Attributes = map[string]any{"via": "codec"}
+	ok(t, s.Save(w.ctx, d, sh, s.Attributes))
+	got := must(s.Get(w.ctx, d, sh.ID))(t)
+	eq(t, got.Attributes["via"], any("codec"))
+	mu.Lock()
+	defer mu.Unlock()
+	if marshals == 0 || unmarshals == 0 {
+		t.Fatalf("codec not used: %d marshals, %d unmarshals", marshals, unmarshals)
 	}
 }
