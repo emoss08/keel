@@ -4,18 +4,45 @@ import (
 	"context"
 	"reflect"
 	"sync"
+	"time"
 	"unsafe"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-// Projection is a query whose picked expressions fill a struct. *Query[T] implements it.
+// Projection is a statement whose output columns fill a struct: a query that picks expressions,
+// or a Compound. *Query[T] and Compound implement it.
 type Projection interface {
-	projectionQuery() *query
+	writeProjection(r *render) projectionInfo
 }
 
-func (q *Query[T]) projectionQuery() *query { return &q.q }
+type projectionInfo struct {
+	table      string
+	exprs      int
+	limit      int64
+	timeout    time.Duration
+	customPlan bool
+}
+
+func (q *Query[T]) writeProjection(r *render) projectionInfo {
+	q.q.renderSelect(r, newRoot(&q.q), selectOpts{exact: true})
+	return projectionInfo{table: q.q.ref.Table.Name, exprs: len(q.q.exprs), limit: q.q.limit,
+		timeout: q.q.timeout, customPlan: q.q.customPlan}
+}
+
+func (c Compound) writeProjection(r *render) projectionInfo {
+	c.writeSubquery(r, false)
+	n := 0
+	if len(c.parts) > 0 {
+		if q, ok := c.parts[0].(interface{ pickCount() int }); ok {
+			n = q.pickCount()
+		}
+	}
+	return projectionInfo{table: "compound", exprs: n}
+}
+
+func (q *Query[T]) pickCount() int { return len(q.q.exprs) }
 
 // Into runs a projection and decodes each row into R: the picked expressions fill R's exported
 // fields in order. R may also be a single scalar type when one expression is picked.
@@ -26,32 +53,34 @@ func (q *Query[T]) projectionQuery() *query { return &q.q }
 //	}
 //	rows, err := keel.Into[statusCount](ctx, db, s.Group(s.Status).Pick(s.Status, keel.Count()))
 func Into[R any](ctx context.Context, db *DB, p Projection) ([]R, error) {
-	q := p.projectionQuery()
-	if len(q.exprs) == 0 {
-		return nil, errf("Into needs Pick")
-	}
-	layout, err := layoutOf(reflect.TypeFor[R](), len(q.exprs))
-	if err != nil {
-		return nil, err
-	}
-	ctx, cancel := q.checkTimeout(ctx)
-	defer cancel()
 	run, err := db.newRunner(ctx, false)
 	if err != nil {
 		return nil, err
 	}
 	r := newRender(run.sc, ctx, db)
 	defer r.recycle()
-	root := newRoot(q)
-	q.renderSelect(r, root, selectOpts{exact: true})
+	info := p.writeProjection(r)
 	if r.err != nil {
 		return nil, run.close(ctx, r.err)
 	}
-	var out []R
-	if q.limit > 0 && q.limit <= 1024 {
-		out = make([]R, 0, q.limit)
+	if info.exprs == 0 {
+		return nil, run.close(ctx, errf("Into needs Pick"))
 	}
-	s := &stmt{sql: string(r.buf), args: r.argsCopy(), op: "select", table: q.ref.Table.Name}
+	layout, err := layoutOf(reflect.TypeFor[R](), info.exprs)
+	if err != nil {
+		return nil, run.close(ctx, err)
+	}
+	if info.timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, info.timeout)
+		defer cancel()
+	}
+	var out []R
+	if info.limit > 0 && info.limit <= 1024 {
+		out = make([]R, 0, info.limit)
+	}
+	s := &stmt{sql: string(r.buf), args: r.argsCopy(), op: "select", table: info.table,
+		customPlan: info.customPlan}
 	s.scan = func(rows pgx.Rows) error {
 		m := rows.Conn().TypeMap()
 		fds := rows.FieldDescriptions()

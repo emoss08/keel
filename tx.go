@@ -25,6 +25,8 @@ type txState struct {
 	opts      txOptions
 	scopeCtx  context.Context
 
+	savepoints int
+
 	afterCommit []func(context.Context)
 }
 
@@ -206,4 +208,62 @@ func (tx *txState) runAfterCommit(ctx context.Context) {
 	for _, fn := range tx.afterCommit {
 		fn(ctx)
 	}
+}
+
+// Savepoint runs fn inside a savepoint of the transaction on ctx: an error from fn rolls back to
+// the savepoint and is returned, leaving the transaction usable. Outside a transaction it runs fn
+// in a new Write.
+func Savepoint(ctx context.Context, db *DB, fn func(ctx context.Context) error) error {
+	tx := txFrom(ctx, db)
+	if tx == nil {
+		return Write(ctx, db, fn)
+	}
+	if tx.readOnly {
+		return ErrReadOnly
+	}
+	tx.savepoints++
+	name := "keel_sp_" + strconv.Itoa(tx.savepoints)
+	run := &runner{db: db, sc: db.resolveScope(ctx), tx: tx}
+	if err := run.one(ctx, &stmt{sql: "SAVEPOINT " + name, op: "savepoint"}, false); err != nil {
+		return err
+	}
+	if err := fn(ctx); err != nil {
+		if rbErr := run.one(ctx, &stmt{sql: "ROLLBACK TO SAVEPOINT " + name, op: "savepoint"}, false); rbErr != nil {
+			return errors.Join(err, rbErr)
+		}
+		return err
+	}
+	return run.one(ctx, &stmt{sql: "RELEASE SAVEPOINT " + name, op: "savepoint"}, false)
+}
+
+// LockKey takes a transaction-scoped advisory lock on key, waiting for it, so work without a row to
+// lock is serialised across processes. It needs a transaction; the lock is released when the
+// transaction ends.
+func LockKey(ctx context.Context, db *DB, key string) error {
+	tx := txFrom(ctx, db)
+	if tx == nil {
+		return errf("LockKey needs a transaction on the context")
+	}
+	run := &runner{db: db, sc: db.resolveScope(ctx), tx: tx}
+	return run.one(ctx, &stmt{sql: "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+		args: []any{key}, op: "lock"}, false)
+}
+
+// TryLockKey is LockKey without waiting: it reports whether the lock was taken.
+func TryLockKey(ctx context.Context, db *DB, key string) (bool, error) {
+	tx := txFrom(ctx, db)
+	if tx == nil {
+		return false, errf("TryLockKey needs a transaction on the context")
+	}
+	run := &runner{db: db, sc: db.resolveScope(ctx), tx: tx}
+	var got bool
+	s := &stmt{sql: "SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0))", args: []any{key}, op: "lock"}
+	s.scan = func(rows pgx.Rows) error {
+		if rows.Next() {
+			return rows.Scan(&got)
+		}
+		return nil
+	}
+	err := run.one(ctx, s, false)
+	return got, err
 }

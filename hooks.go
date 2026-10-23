@@ -32,6 +32,8 @@ const (
 	OpCreate Op = iota
 	OpUpdate
 	OpDelete
+	// OpRead is the Op an interceptor sees for queries, loads and subqueries.
+	OpRead
 )
 
 func (o Op) String() string {
@@ -40,6 +42,8 @@ func (o Op) String() string {
 		return "create"
 	case OpUpdate:
 		return "update"
+	case OpRead:
+		return "read"
 	}
 	return "delete"
 }
@@ -86,7 +90,7 @@ type mutation struct {
 }
 
 type hookEntry struct {
-	ops   [3]bool
+	ops   [4]bool
 	phase Phase
 	needs []int32
 	fn    func(ctx context.Context, m *mutation) error

@@ -116,6 +116,7 @@ type query struct {
 	distinctOn []Expr
 	timeout    time.Duration
 	customPlan bool
+	ctes       []*CTETable
 }
 
 type joinClause struct {
@@ -274,6 +275,7 @@ func (q *Query[T]) Clone() *Query[T] {
 	c.q.having = append([]Pred(nil), q.q.having...)
 	c.q.joins = append([]joinClause(nil), q.q.joins...)
 	c.q.distinctOn = append([]Expr(nil), q.q.distinctOn...)
+	c.q.ctes = append([]*CTETable(nil), q.q.ctes...)
 	return c
 }
 

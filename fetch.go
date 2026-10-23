@@ -23,7 +23,7 @@ type fetchOpts struct {
 // fetch runs the query and its relation loads, calling emit for every row of the base table in
 // order.
 func (q *query) fetch(ctx context.Context, db *DB, fo *fetchOpts, emit func(unsafe.Pointer)) error {
-	if q.projection() {
+	if q.projection() || q.ref.Table.New == nil {
 		return errf("a query that picks expressions other than its own columns needs keel.Into")
 	}
 	ctx, cancel := q.checkTimeout(ctx)

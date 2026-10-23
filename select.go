@@ -164,6 +164,10 @@ type selectOpts struct {
 
 // renderSelect writes the SELECT for statement node sn and returns its decoding plan.
 func (q *query) renderSelect(r *render, sn *lnode, o selectOpts) *selectPlan {
+	var with []byte
+	if sn.spec == q && len(q.ctes) > 0 {
+		with = r.section(func() { writeWith(r, q.ctes) })
+	}
 	sc, alias := r.push(sn.ref, joinLeft, q.allTenants)
 	defer r.pop()
 
@@ -204,7 +208,7 @@ func (q *query) renderSelect(r *render, sn *lnode, o selectOpts) *selectPlan {
 			o.extraWhere(r, alias)
 			wrote = true
 		}
-		wrote = r.preds(r.intercepted(sn.table, OpUpdate, true), wrote)
+		wrote = r.preds(r.intercepted(sn.table, OpRead, true), wrote)
 		var ps []Pred
 		if sn.spec != nil {
 			ps = sn.spec.where
@@ -357,6 +361,7 @@ func (q *query) renderSelect(r *render, sn *lnode, o selectOpts) *selectPlan {
 		}
 	})
 
+	r.buf = append(r.buf, with...)
 	r.s("SELECT ")
 	r.buf = append(r.buf, sel...)
 	r.s(" FROM ")
@@ -400,7 +405,7 @@ func (q *query) renderSelect(r *render, sn *lnode, o selectOpts) *selectPlan {
 		r.s(alias)
 		r.s(wait)
 	}
-	r.release(sel, from, where, group, having, order)
+	r.release(with, sel, from, where, group, having, order)
 	return plan
 }
 
