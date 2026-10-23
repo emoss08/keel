@@ -1,210 +1,1876 @@
 # Using keel
 
-## Setup
+This guide shows how to use keel, organised by task. [design.md](design.md) is the contract the
+code follows; [benchmarks.md](benchmarks.md) records how it performs.
+
+The examples use the models keel's own tests run against, in
+[`internal/testmodels/fleet`](../internal/testmodels/fleet/fleet.go): `Customer`, `Shipment`,
+`Move`, `Stop`, `Location`, `Tag`, `Worker` and `Plant`. `keel gen` writes their data-access package,
+`fleetdb`. The examples have compiled counterparts in [`example_test.go`](../example_test.go), so
+the snippets here stay in step with the API.
+
+In the snippets, `db` is the application's `*keel.DB` and `ctx` is a request context that carries a
+tenant (see [Tenancy](#tenancy)).
+
+## Contents
+
+- [Install](#install)
+- [Configuration](#configuration)
+- [Models](#models)
+- [Generating code](#generating-code)
+- [Reading](#reading)
+- [Loading relations](#loading-relations)
+- [Pagination](#pagination)
+- [Writing](#writing)
+- [Transactions](#transactions)
+- [Tenancy](#tenancy)
+- [Hooks, interceptors and observers](#hooks-interceptors-and-observers)
+- [Errors](#errors)
+- [Migrations](#migrations)
+- [Performance notes](#performance-notes)
+- [Testing](#testing)
+- [Coming from Bun](#coming-from-bun)
+
+## Install
+
+```sh
+go get github.com/emoss08/keel
+```
+
+keel needs Go 1.26 and PostgreSQL; its tests run against PostgreSQL 18, which hooks that declare
+`Needs` require (they read previous values with `RETURNING old.…`). keel talks to Postgres through
+pgx v5 and never uses `database/sql`.
+
+| Package | Role |
+|---|---|
+| `github.com/emoss08/keel` | the API: `DB`, transactions, queries, expressions, writes, hooks, errors |
+| `github.com/emoss08/keel/cmd/keel` | the command: `keel gen` and `keel migrate` |
+| `github.com/emoss08/keel/migrate` | the SQL-file migration runner |
+| `github.com/emoss08/keel/schema` | table metadata the generator writes; applications do not use it directly |
+
+## Configuration
+
+`keel.Open` builds the connection pool and returns a `*keel.DB`, which is safe for concurrent use.
+Open one per database at startup and close it at shutdown. The pool connects on first use, so call
+`db.Ping(ctx)` at startup to fail fast on a bad DSN or an unreachable server.
 
 ```go
 db, err := keel.Open(ctx, keel.Config{
-    DSN:           cfg.DSN(),
+    DSN:           os.Getenv("DATABASE_URL"),
     TenantColumns: []string{"organization_id", "business_unit_id"},
     Tenant: func(ctx context.Context) ([]any, bool) {
-        t, ok := dbscope.TenantFrom(ctx)
-        if !ok {
+        sc, ok := ctx.Value(scopeKey{}).(scope)
+        if !ok || sc.SystemReason != "" {
             return nil, false
         }
-        return []any{t.OrganizationID, t.BusinessUnitID}, true
+        return []any{sc.OrganizationID, sc.BusinessUnitID}, true
     },
     System: func(ctx context.Context) (string, bool) {
-        s := dbscope.From(ctx)
-        return s.Reason(), s.Kind() == dbscope.KindSystem
+        sc, ok := ctx.Value(scopeKey{}).(scope)
+        return sc.SystemReason, ok && sc.SystemReason != ""
     },
     OnBegin: func(ctx context.Context, tx keel.TxInfo) ([]keel.Statement, error) {
-        token, err := signer.Token(ctx) // row-level security scope
-        if err != nil {
-            return nil, err
-        }
-        return []keel.Statement{{SQL: "SELECT set_config('app.scope', $1, true)", Args: []any{token}}}, nil
+        sc, _ := ctx.Value(scopeKey{}).(scope)
+        return []keel.Statement{{
+            SQL:  "SELECT set_config('app.organization_id', $1, true)",
+            Args: []any{string(sc.OrganizationID)},
+        }}, nil
     },
-    NewID:     func(prefix string) string { return pulid.MustNew(prefix).String() },
-    LoadTypes: []string{"shipment_status", "_shipment_status"}, // enums whose arrays are bound
-    AfterConnect: func(ctx context.Context, c *pgx.Conn) error {
-        pgxdecimal.Register(c.TypeMap()) // shopspring decimal in binary
-        return nil
-    },
-    Observers: []keel.Observer{tracing, slowLog},
+    NewID:     newID, // Trenova: func(p string) string { return pulid.MustNew(p).String() }
+    Observers: []keel.Observer{slowQueryLog{threshold: 200 * time.Millisecond}},
 })
+if err != nil {
+    return err
+}
+defer db.Close()
 ```
 
-- **Enums in arrays:** an enum compared with `In` is bound as an array of the enum type, so list the
-  enum and its array type (`_name`) in `LoadTypes`. A single enum value binds from a Go string without
-  this.
-- **Decimals:** register a decimal codec (`github.com/jackc/pgx-shopspring-decimal`) so numeric values
-  travel in binary instead of being parsed from text.
-- **PgBouncer:** in transaction mode, prepared statements need PgBouncer 1.21 or later with
-  `max_prepared_statements` set; otherwise use `PlanCache: keel.PlanCacheOff`.
+`scope` and `scopeKey` are the application's own: whatever its authentication middleware puts on
+the request context.
 
-## Models and generation
+### Every field
 
-Embed `keel.Table` and tag every stored field (see [design.md](design.md#models) for every option).
-Then generate:
+| Field | Type | What it does |
+|---|---|---|
+| `DSN` | `string` | connection string; required unless `Pool` is set |
+| `Pool` | `*pgxpool.Config` | a parsed pool configuration, used instead of `DSN`; keel sets its query mode and statement cache and wraps its `AfterConnect` |
+| `TenantColumns` | `[]string` | names of the tenant columns, in the order `Tenant` returns their values |
+| `Tenant` | `func(ctx) ([]any, bool)` | the tenant of the context; a result with a different number of values than `TenantColumns` counts as no tenant |
+| `System` | `func(ctx) (reason string, ok bool)` | reports a system scope; checked before `Tenant` |
+| `OnBegin` | `func(ctx, keel.TxInfo) ([]keel.Statement, error)` | statements sent at the start of every transaction, explicit or implicit; when set, every terminal outside a transaction runs in an implicit one |
+| `NewID` | `func(prefix string) string` | new primary keys for `autoid` columns; a write that needs one fails without it |
+| `Now` | `func() time.Time` | the time stamped into `autocreate` and `autoupdate` columns; defaults to `time.Now` |
+| `Observers` | `[]keel.Observer` | see every statement: tracing, metrics, slow-query logs |
+| `AfterConnect` | `func(ctx, *pgx.Conn) error` | runs on every new connection after keel registers its types; register codecs here |
+| `LoadTypes` | `[]string` | user-defined types (domains, composites) and their array types to register on every connection |
+| `SkipEnums` | `bool` | stops keel registering every enum type of the database on each new connection |
+| `JSON` | `*keel.JSONCodec` | the JSON implementation for `json` and `jsonb` values; defaults to `encoding/json` |
+| `PlanCache` | `keel.PlanCache` | how statements are prepared: `PlanCacheAuto` (default), `PlanCacheCustom`, `PlanCacheOff` |
+| `StatementCacheCapacity` | `int` | prepared statements (or, with `PlanCacheOff`, statement descriptions) kept per connection; defaults to 512 |
 
-```sh
-go run github.com/emoss08/keel/cmd/keel gen -out 'pkg/dbq/{name}db' -kinds pkg/dbq/dbkind ./internal/modules/...
-go run github.com/emoss08/keel/cmd/keel gen -check ...   # in CI
-```
+`keel.TxInfo` tells `OnBegin` whether the transaction is `ReadOnly` and whether it is `Implicit`
+(opened by keel for a single terminal). A `keel.Statement` is `SQL` plus `Args`.
 
-Only data-access packages should import the generated packages.
+### A multi-tenant application
 
-## Reading
+For an application like Trenova, where every tenant table carries `organization_id` and
+`business_unit_id`:
+
+- Set `TenantColumns` to those names and `Tenant` to read them from the request context. Every
+  statement on a table with `tenant` columns is then scoped (see [Tenancy](#tenancy)).
+- Set `System` for work that is not done for one tenant (sweeps, reports, migrations), and give
+  each system scope a reason so logs say why a statement crossed tenants.
+- Set `OnBegin` when Postgres row-level security backs the application's own checks. The
+  `set_config(…, true)` call is transaction-local, and keel pipelines `BEGIN`, the `OnBegin`
+  statements, the statement and `COMMIT` in one round trip, so the extra safety costs no extra
+  round trip (see [Transactions](#transactions)).
+- Set `NewID` to the application's ID generator.
+- Set `JSON` to a fast codec and register a binary decimal codec in `AfterConnect`.
+
+### Connection pool
+
+To size the pool, parse the DSN yourself and pass the pool configuration:
 
 ```go
-s := shipmentdb.Shipments
+pc, err := pgxpool.ParseConfig(os.Getenv("DATABASE_URL"))
+if err != nil {
+    return err
+}
+pc.MaxConns = 32
+pc.MaxConnIdleTime = 5 * time.Minute
 
-sh, err := s.Get(ctx, db, id)                                   // by primary key
-sh, err := s.Where(s.ProNumber.Eq(pro)).One(ctx, db)            // exactly one
-rows, err := s.Where(s.Status.In(a, b)).Order(s.ID.Asc()).Limit(50).List(ctx, db)
-n, err := s.Where(s.Hazmat.IsTrue()).Count(ctx, db)
+cfg := appConfig("")
+cfg.Pool = pc
+cfg.PlanCache = keel.PlanCacheCustom
+cfg.StatementCacheCapacity = 1024
+db, err := keel.Open(ctx, cfg)
 ```
 
-Optional filters: `keel.When(req.Search != "", s.ProNumber.Contains(req.Search))`; `Where` skips
-nil predicates.
+`db.Pool()` returns the underlying `*pgxpool.Pool` for work keel does not cover (`LISTEN`, `COPY`
+of foreign data). Statements sent through it bypass scope checks, interceptors and hooks.
+
+### Statement preparation
+
+Values are always bind parameters, so a statement's text depends only on its shape. keel prepares
+each shape once per connection and Postgres skips parsing it again.
+
+| `PlanCache` | Behaviour |
+|---|---|
+| `keel.PlanCacheAuto` (default) | prepared once per connection; `plan_cache_mode = auto` lets Postgres reuse a generic plan when it is no worse than the custom plans of the first executions, so it usually skips planning too |
+| `keel.PlanCacheCustom` | prepared, but every execution is planned for its values (`force_custom_plan`); use it when tenants of very different sizes make parameter values change plans a lot |
+| `keel.PlanCacheOff` | nothing prepared; every execution is parsed and planned. For poolers that cannot track prepared statements |
+
+keel sets `plan_cache_mode` as a connection parameter. `Query.CustomPlan()` plans one query for its
+values without changing the mode for the rest (see [Plans and timeouts](#plans-and-timeouts)).
+`StatementCacheCapacity` bounds the statements kept per connection; the least recently used is
+deallocated beyond it.
+
+### PgBouncer
+
+- In transaction mode, prepared statements need PgBouncer 1.21 or later with
+  `max_prepared_statements` set. With an older PgBouncer, or without that setting, use
+  `PlanCache: keel.PlanCacheOff`.
+- With `PlanCacheAuto` or `PlanCacheCustom`, keel sends `plan_cache_mode` as a startup parameter.
+  PgBouncer refuses startup parameters it does not track unless they are listed in
+  `ignore_startup_parameters`; list `plan_cache_mode` there, and set the mode on the server (for
+  example `ALTER ROLE app SET plan_cache_mode = force_custom_plan`) if you need a non-default one.
+- keel's transaction-scoped features work in transaction mode: `OnBegin`'s `set_config(…, true)`,
+  `CustomPlan`, `LockKey` and `LockTimeout` all live and die with the transaction.
+- Run migrations against Postgres directly: the migration runner holds a session-level advisory
+  lock.
+
+### JSON
+
+`jsonb` fields are encoded and decoded with `encoding/json` unless `Config.JSON` names another
+implementation with the same signatures:
+
+```go
+JSON: &keel.JSONCodec{Marshal: sonic.Marshal, Unmarshal: sonic.Unmarshal},
+```
+
+The codec is registered for `json` and `jsonb` on every connection and also encodes `jsonb` values
+in bulk inserts.
+
+### Enums, domains and decimals
+
+- **Enums** are registered on every new connection without configuration: keel lists the
+  database's enum types and their array types and loads them, so an enum compared with `In` binds
+  as one array parameter, and enum values decode into one shared string per label, without an
+  allocation per row. `SkipEnums: true` turns this off; then list each enum compared with `In`, and
+  its array type (`_name`), in `LoadTypes`.
+- **Domains and composite types** must be listed in `LoadTypes`, each with its array type.
+- **Decimals:** register a binary codec in `AfterConnect`, for example
+  `github.com/jackc/pgx-shopspring-decimal`, so numeric values travel in binary instead of being
+  parsed from text:
+
+```go
+AfterConnect: func(ctx context.Context, conn *pgx.Conn) error {
+    pgxdecimal.Register(conn.TypeMap())
+    return nil
+},
+```
+
+## Models
+
+A model is a plain struct that embeds `keel.Table`, an empty marker whose `db` tag names the table.
+Every stored field carries a `db` tag. These are the shipment and customer models of the examples:
+
+```go
+type Customer struct {
+    keel.Table `db:"customers"`
+
+    ID             ids.ID  `db:"id,pk,autoid:cus_"`
+    OrganizationID ids.ID  `db:"organization_id,pk,tenant"`
+    BusinessUnitID ids.ID  `db:"business_unit_id,pk,tenant"`
+    Name           string  `db:"name"`
+    Code           string  `db:"code"`
+    Email          *string `db:"email"`
+    Version        int64   `db:"version,version"`
+    CreatedAt      int64   `db:"created_at,autocreate"`
+    UpdatedAt      int64   `db:"updated_at,autoupdate"`
+}
+
+type Shipment struct {
+    keel.Table `db:"shipments"`
+
+    ID             ids.ID         `db:"id,pk,autoid:shp_"`
+    OrganizationID ids.ID         `db:"organization_id,pk,tenant"`
+    BusinessUnitID ids.ID         `db:"business_unit_id,pk,tenant"`
+    CustomerID     ids.ID         `db:"customer_id"`
+    BillToID       *ids.ID        `db:"bill_to_id"`
+    ProNumber      string         `db:"pro_number"`
+    Status         Status         `db:"status"`
+    Priority       Priority       `db:"priority"`
+    Weight         *int64         `db:"weight"`
+    Total          Money          `db:"total"`
+    Hazmat         bool           `db:"hazmat"`
+    Labels         []string       `db:"labels"`
+    Attributes     map[string]any `db:"attributes,jsonb"`
+    SearchVector   string         `db:"search_vector,noselect,readonly,tsvector"`
+    StageRank      int16          `db:"stage_rank,readonly"`
+    CanceledAt     *int64         `db:"canceled_at"`
+    Version        int64          `db:"version,version"`
+    CreatedAt      int64          `db:"created_at,autocreate"`
+    UpdatedAt      int64          `db:"updated_at,autoupdate"`
+
+    Customer *Customer `db:"belongs:customer_id"`
+    BillTo   *Customer `db:"belongs:bill_to_id"`
+    Moves    []*Move   `db:"many:shipment_id"`
+    Tags     []*Tag    `db:"m2m:shipment_tags.shipment_id.tag_id"`
+}
+```
+
+`ids.ID` is `type ID string`, `Status` a string enum, `Priority` an `int16`, and `Money` a
+`sql.Scanner` stored as `numeric`.
+
+Table and column names are lower-case identifiers (`[a-z_][a-z0-9_]*`); schema-qualified names are
+not accepted. A field tagged `db:"-"`, or without a `db` tag, is not stored (the `Worker` model's
+`Initials` is derived in a hook). Stored fields must be exported.
+
+### Column options
+
+The tag is the column name followed by options:
+
+| Option | Meaning | Example |
+|---|---|---|
+| `pk` | part of the primary key | `db:"id,pk"` |
+| `tenant` | a tenant column: filled from the scope on insert, compared with the scope on every statement, added to every relation join | `db:"organization_id,pk,tenant"` |
+| `autoid:<prefix>` | on insert, an empty value is replaced by `Config.NewID(prefix)`; the field must be a string type | `db:"id,pk,autoid:shp_"` |
+| `autocreate` | stamped on insert; `int64` means Unix seconds, `time.Time` a timestamp | `db:"created_at,autocreate"` |
+| `autoupdate` | stamped on insert and on every update, bulk updates and upserts included | `db:"updated_at,autoupdate"` |
+| `version` | optimistic locking: `Save` compares and increments it, bulk updates and upserts increment it; must be `int64` | `db:"version,version"` |
+| `readonly` | never written (generated or trigger-maintained columns); read back after inserts and saves | `db:"stage_rank,readonly"` |
+| `noselect` | not selected by default; usable in predicates. Mark a generated `noselect` column `readonly` too | `db:"search_vector,noselect,readonly,tsvector"` |
+| `jsonb` | the value is encoded as JSON; a nil map or slice in a non-pointer field is written as `{}` or `[]` | `db:"attributes,jsonb"` |
+| `tsvector` | the column gets the full-text operators | see `noselect` |
+
+A model has at most one `version`, `autoid`, `autocreate` and `autoupdate` column. `readonly`
+cannot be combined with `pk`, `tenant`, `version`, `autoid`, `autocreate` or `autoupdate`.
+
+There is no `default:`, `type:` or `notnull`: the SQL migrations own the schema. The value in the
+struct is the value written; keel never substitutes `DEFAULT` for a zero value. A nil slice in a
+non-pointer array field is written as an empty array.
+
+### Go types
+
+| Go field type | Column type in the generated handle |
+|---|---|
+| `string` | `keel.StringCol` |
+| `int64`, `int32`, `int16` | `keel.Int64Col`, `keel.Int32Col`, `keel.Int16Col` |
+| `float64`, `float32` | `keel.Float64Col` |
+| `bool` | `keel.BoolCol` |
+| `[]byte` | `keel.BytesCol` |
+| `time.Time` | `keel.TimeCol` (timestamp, timestamptz or date) |
+| `[]string` | `keel.StringArrayCol` |
+| `[]int64` | `keel.Int64ArrayCol` |
+| `string` with `tsvector` | `keel.TSVectorCol` |
+| any type with `jsonb` | `keel.JSONBCol` |
+| a named type over one of the above (`Status`, `ids.ID`) | a generated wrapper (`StatusCol`, `IdsIDCol`) whose methods take the named type |
+| a type implementing `sql.Scanner` (`Money`, a decimal) | a generated wrapper over `keel.AnyCol` (`MoneyCol`) |
+
+A pointer field (`*int64`, `*ids.ID`) or a `sql.Scanner` whose name starts with `Null` is nullable
+and has the same column type. Plain `int` is refused, because its width is not portable; use
+`int64`. Structs, maps and slices of other element types need the `jsonb` option.
 
 ### Relations
 
+A relation field is a pointer (to-one) or a slice (to-many) of another model, tagged with its kind
+and key. Relation tags take no options.
+
+| Tag | Meaning | Example |
+|---|---|---|
+| `belongs:<fk>` | this table's `<fk>` column references the target's primary key | `Customer *Customer \`db:"belongs:customer_id"\`` |
+| `one:<fk>` | the target's `<fk>` references this table's primary key; at most one row | `Profile *DriverProfile \`db:"one:worker_id"\`` |
+| `many:<fk>` | the target's `<fk>` references this table's primary key | `Moves []*Move \`db:"many:shipment_id"\`` |
+| `m2m:<join_table>.<local_fk>.<remote_fk>` | rows linked through a join table: `<local_fk>` references this table, `<remote_fk>` the target | `Tags []*Tag \`db:"m2m:shipment_tags.shipment_id.tag_id"\`` |
+
+A model may relate to itself (`Worker.Manager *Worker \`db:"belongs:manager_id"\``) and to the same
+target twice (`Customer` and `BillTo`).
+
+Rules:
+
+- The referenced primary key, besides its tenant columns, must be a single column. Tenant columns
+  are not part of the relation key: when both sides have them, keel adds them to every join, as
+  constants from the scope under a tenant scope and as column equalities under a system scope.
+- Keys of to-many relations must be string or integer columns.
+- The target must be a model of the same `keel gen` run.
+
+### Model hooks
+
+Methods on the model with these signatures. The generator detects them and writes direct calls;
+there is no runtime type assertion.
+
+```go
+func (s *Shipment) BeforeCreate(ctx context.Context) error // Create, CreateMany, Upsert, CreateOrSkip
+func (s *Shipment) BeforeUpdate(ctx context.Context) error // Save
+func (s *Shipment) BeforeSave(ctx context.Context) error   // after BeforeCreate or BeforeUpdate
+func (s *Shipment) BeforeDelete(ctx context.Context) error // DeleteRow
+func (s *Shipment) AfterLoad(ctx context.Context) error    // every loaded row, relations included
+```
+
+A method with one of these names and another signature is a generation error. The `Worker` model
+trims names before every write and derives initials after every load:
+
+```go
+func (w *Worker) BeforeSave(_ context.Context) error {
+    w.FirstName = strings.TrimSpace(w.FirstName)
+    w.LastName = strings.TrimSpace(w.LastName)
+    return nil
+}
+
+func (w *Worker) AfterLoad(_ context.Context) error {
+    if w.FirstName != "" && w.LastName != "" {
+        w.Initials = w.FirstName[:1] + w.LastName[:1]
+    }
+    return nil
+}
+```
+
+Model hooks are for normalisation and derived fields. Use [table hooks](#table-hooks) for
+validation that needs the database, audit and side effects.
+
+## Generating code
+
+`keel gen` loads the model packages with `go/packages` and writes one data-access package per
+package that holds models.
+
+```sh
+go run github.com/emoss08/keel/cmd/keel gen ./internal/...
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `-out` | `{dir}/{name}db` | directory of each generated package, relative to the module root. `{dir}` is the model package's directory relative to the module root, `{name}` its package name |
+| `-kinds` | `keelkinds` | directory, relative to the module root, of the shared package that holds column types for named types declared outside model packages |
+| `-tags` | none | comma-separated build tags used to load the packages |
+| `-check` | `false` | fail, listing the stale files, when generated files are out of date, instead of writing them |
+
+Without package patterns it loads `./...`. Pass every model package in one run: a relation's
+target must be a model the same run generates. keel's own Makefile runs:
+
+```sh
+go run ./cmd/keel gen -kinds internal/testmodels/keelkinds ./internal/testmodels/...
+```
+
+which writes `internal/testmodels/fleet/fleetdb/keel_gen.go` and
+`internal/testmodels/keelkinds/keel_gen.go`. An `-out` template without `{dir}` puts every package
+under one directory, for example `-out 'internal/dbq/{name}db'`; model packages must then have
+distinct names.
+
+Pin the generator in `go.mod` with a tool directive (`go get -tool github.com/emoss08/keel/cmd/keel`,
+then `go tool keel gen …`), or use `go run` with a version, or a `//go:generate` line in one place.
+
+### In CI
+
+```sh
+go run github.com/emoss08/keel/cmd/keel gen -check -kinds internal/dbq/keelkinds ./internal/...
+```
+
+`-check` exits non-zero and prints the files to regenerate. Run it with the same flags as the
+command that writes the files.
+
+### What a generated package contains
+
+The generated file is `keel_gen.go` in the `-out` directory. For each model (here `fleet.Shipment`)
+it holds:
+
+| Declaration | What it is |
+|---|---|
+| `type ShipmentsTable struct` | the handle type: embeds `keel.Handle[fleet.Shipment]` and has one field per column (`ID`, `ProNumber`, `Status`, …) |
+| `var Shipments` | the base handle, built statically; queries and writes start here |
+| `func (t *ShipmentsTable) Customer() *CustomersTable` | one method per relation, returning the handle of the related table on that path |
+| `func (t *ShipmentsTable) As(alias string) *ShipmentsTable` | a second reference to the table for self-joins and correlated subqueries |
+| `func (t *ShipmentsTable) Get(ctx, db, key ids.ID) (*fleet.Shipment, error)` | fetch by primary key; generated when the key, besides tenant columns, is one non-pointer column |
+| `func BuildShipments(*keel.Ref) *ShipmentsTable` | builds a handle for a reference; relation and alias methods call it |
+| `func ShipmentsSchema() *schema.Table` | the table metadata, written as a static literal with field accessors and hook trampolines |
+
+The handle name is the model name in the plural: `Shipment` → `Shipments`, `Address` →
+`Addresses`, `Company` → `Companies`. Named column types declared in a model package get their
+wrapper in that package's generated package (`fleetdb.StatusCol`, `fleetdb.PriorityCol`,
+`fleetdb.MoneyCol`); named types declared elsewhere get theirs in the `-kinds` package, prefixed
+with their package name (`keelkinds.IdsIDCol` for `ids.ID`; `pulid.ID` would be `PulidIDCol`).
+
+Only data-access packages should import generated packages. The generic types they mention
+(`keel.Handle[T]`, `keel.Query[T]`) then stay out of the rest of the build.
+
+## Reading
+
+### Handles and queries
+
+A query starts from a handle and ends with a terminal method that takes `(ctx, db)`:
+
+```go
+s := fleetdb.Shipments
+rows, err := s.Where(s.Status.Eq(fleet.StatusNew)).Order(s.CreatedAt.Desc()).Limit(50).List(ctx, db)
+```
+
+A handle starts a query with `Query`, `Where`, `Pick`, `Load`, `Order`, `Limit`, `Group`, `Join`,
+`LeftJoin`, `JoinLateral`, `LeftJoinLateral`, `Lock`, `DistinctOn`, `With` or `AllTenants`.
+`Having`, `Offset`, `CustomPlan` and `Timeout` exist on queries only: `s.Query().Timeout(d)`.
+
+Handles are immutable and safe to share. Queries are builders: each method changes the query and
+returns it. Build a query per call, and `Clone` one to branch:
+
+```go
+base := s.Where(s.CustomerID.Eq(customerID))
+open := base.Clone().Where(s.Status.Ne(fleet.StatusDelivered))
+```
+
+### Terminals
+
+| Method | Result |
+|---|---|
+| `Get(ctx, db, key)` | the row with this primary key (generated on the handle); `ErrNotFound` when none |
+| `One` | exactly one row: `ErrNotFound` when none, `ErrNotSingular` when more |
+| `First` | the first row in the query's order, `ErrNotFound` when none |
+| `List` | the rows; returns `ErrUnbounded` without `Limit` |
+| `All` | every row; for sets known to be small |
+| `Count` | the number of rows (of groups, for a grouped query) |
+| `CountUpTo(ctx, db, limit)` | the number of rows, counting no further than `limit` |
+| `Exists` | whether any row matches |
+| `Page(ctx, db, req)` | a keyset page; see [Pagination](#pagination) |
+| `Each(ctx, db, size, fn)` | every row in keyset batches at constant memory |
+| `Update(ctx, db, sets...)`, `Delete(ctx, db)` | bulk writes; see [Writing](#writing) |
+| `keel.Into[R](ctx, db, q)`, `keel.IntoOne[R]` | projections into a struct or scalar; see [Projections](#projections-and-aggregates) |
+| `ToSQL(ctx, db)` | the rendered statement, without running it |
+
+```go
+sh, err := s.Get(ctx, db, "shp_01")
+sh, err = s.Where(s.ProNumber.Eq("PRO-1001")).One(ctx, db)
+newest, err := s.Where(s.CustomerID.Eq(sh.CustomerID)).Order(s.CreatedAt.Desc()).First(ctx, db)
+recent, err := s.Where(s.Status.Eq(fleet.StatusNew)).Order(s.CreatedAt.Desc()).Limit(50).List(ctx, db)
+tags, err := fleetdb.Tags.Query().All(ctx, db)
+
+open := s.Where(s.Status.In(fleet.StatusNew, fleet.StatusAssigned))
+n, err := open.Count(ctx, db)
+upTo, err := open.CountUpTo(ctx, db, 1000)
+exists, err := open.Exists(ctx, db)
+```
+
+Rows come back as `*T`. `Pick` with columns of the table narrows what is read: the other fields
+stay zero, and keel adds the primary key columns. `Pick` with anything else (an aggregate, a
+column of another table) makes the query a projection, which needs `keel.Into`.
+
+```go
+sh, err := s.Pick(s.ProNumber, s.Status).Where(s.ID.Eq(id)).One(ctx, db) // sh.Total is zero
+```
+
+### Operators
+
+Every clause takes expressions, never strings, and each column offers the operators of its Go
+type. Values are bind parameters.
+
+```go
+since := time.Now().Add(-24 * time.Hour)
+n, err := s.Where(
+    s.Status.In(fleet.StatusNew, fleet.StatusAssigned),
+    s.Priority.Gte(2),
+    s.Weight.Between(10_000, 40_000),
+    s.BillToID.IsNull(),
+    s.ProNumber.HasPrefix("PRO-"),
+    s.Hazmat.IsFalse(),
+    s.Total.Gt(fleet.Money{Cents: 50_000}),
+    s.Labels.Has("expedite"),
+    s.Attributes.Contains(map[string]any{"temperature": "frozen"}),
+    s.Attributes.Text("trailer", "type").Eq("reefer"),
+    s.SearchVector.Matches("dallas reefer"),
+    keel.Or(s.CanceledAt.IsNull(), s.CanceledAt.Gt(since.Unix())),
+    keel.Not(s.Customer().Name.ContainsFold("test")),
+).Count(ctx, db)
+
+st := fleetdb.Stops
+late, err := st.Where(st.ArrivedAt.Gte(since), st.Kind.Eq("delivery")).Count(ctx, db)
+```
+
+| Column type | Operators |
+|---|---|
+| every column | `IsNull`, `IsNotNull`, `EqCol`, `NeCol`, `InQuery`, `NotInQuery`, `Asc`, `Desc`, `Count`, `CountDistinct`, `Min`, `Max`, `Coalesce(v)`, `ToNull`, `ToDefault`, `ToExpr(e)` |
+| `StringCol` | `Eq`, `Ne`, `Gt`, `Gte`, `Lt`, `Lte`, `Between`, `IsDistinctFrom`, `In`, `NotIn`, `To`; `Contains`, `ContainsFold`, `HasPrefix`, `HasPrefixFold`, `HasSuffix` (their argument is escaped, so `%` and `_` match themselves); `Like`, `ILike` (patterns as given); `Match`, `MatchFold` (POSIX regular expressions); `Lower` |
+| `Int64Col`, `Int32Col` | `Eq`, `Ne`, `Gt`, `Gte`, `Lt`, `Lte`, `Between`, `IsDistinctFrom`, `In`, `NotIn`, `To`, `Add`, `Sum`, `Avg` |
+| `Int16Col` | as `Int32Col`, without `Avg` |
+| `Float64Col` | `Eq`, `Ne`, `Gt`, `Gte`, `Lt`, `Lte`, `Between`, `IsDistinctFrom`, `To`, `Add`, `Sum`, `Avg` |
+| `BoolCol` | `Eq`, `IsTrue`, `IsFalse`, `To` |
+| `BytesCol` | `Eq`, `To` |
+| `TimeCol` | `Eq`, `Ne`, `Gt`, `Gte`, `Lt`, `Lte`, `Between`, `To` |
+| `AnyCol` and its wrappers (`MoneyCol`) | `Eq`, `Ne`, `Gt`, `Gte`, `Lt`, `Lte`, `Between`, `IsDistinctFrom`, `In`, `NotIn`, `To`, `Add`, `Sum`, `Avg` |
+| `JSONBCol` | `Contains(v)` (`@>`, `v` encoded as JSON), `HasKey`, `HasAnyKey`, `HasAllKeys`, `Text(path...)` (`#>>`, a `StringExpr`), `To` |
+| `StringArrayCol` | `Has`, `Overlaps`, `ContainsAll`, `ContainedBy`, `Len`, `To` |
+| `Int64ArrayCol` | `Has`, `Overlaps`, `ContainsAll`, `ContainedBy`, `To` |
+| `TSVectorCol` | `Matches(q)` (`@@ websearch_to_tsquery(q)`), `MatchesConfig(config, q)`, `Rank(q)` |
+
+Generated wrappers (`StatusCol`, `IdsIDCol`) take the named type in `Eq`, `Ne`, `Gt`, `Gte`, `Lt`,
+`Lte`, `IsDistinctFrom`, `Between`, `To`, and for string, integer and scanner kinds `In` and
+`NotIn`; the base type's other methods stay available. `In` binds one array parameter
+(`= ANY($1)`), so the statement text does not depend on the number of values. `Lower()` and
+`Text(...)` return a `keel.StringExpr` with `Eq`, `Ne`, `In`, `Like`, `Contains`, `IsNull`, `Asc`
+and `Desc`. `EqCol` and `NeCol` compare with another expression, for joins and correlated
+subqueries. `Col.Excluded()` renders `EXCLUDED.col`; `Conflict.Update` takes columns only, so it has
+no use in keel's upserts today.
+
+Combinators: `keel.And(ps...)` and `keel.Or(ps...)` skip nil predicates (`And` of nothing is
+`TRUE`, `Or` of nothing `FALSE`), `keel.Not(p)`, `keel.True()`. `Where` joins its arguments with
+`AND`.
+
+### Optional filters
+
+`keel.When(cond, p)` returns `p` when `cond` holds and nil otherwise. `Where` and the combinators
+skip nil, so each optional filter is one expression:
+
+```go
+rows, err := s.Where(
+    keel.When(f.Search != "", s.ProNumber.ContainsFold(f.Search)),
+    keel.When(len(f.Statuses) > 0, s.Status.In(f.Statuses...)),
+    keel.When(f.CustomerID != "", s.CustomerID.Eq(f.CustomerID)),
+    keel.When(f.HazmatOnly, s.Hazmat.IsTrue()),
+).Order(s.CreatedAt.Desc()).Limit(50).List(ctx, db)
+```
+
+The predicate is built even when `cond` is false; building one only allocates.
+
+### Raw SQL
+
+`keel.Raw(sql, args...)` is SQL text keel does not understand. Each `?` is replaced by the next
+argument: an expression (a column, a subquery) is written in place with its alias resolved, any
+other value is bound as a parameter. `??` is a literal question mark. The result is both an
+expression and a predicate.
+
+```go
+n, err := s.Where(
+    keel.Raw("length(?) > ?", s.ProNumber, 8),
+    keel.Raw("? ?? 'trailer'", s.Attributes), // jsonb ? operator
+).Count(ctx, db)
+```
+
+Never build the SQL text from values: pass them as arguments, so the statement stays one prepared
+shape and cannot be injected. `keel.Val(v)` binds a value where an expression is expected.
+
+### Relation path filters, Any and None
+
+A relation method returns the handle of the related table on that path. Columns of a belongs-to or
+has-one path join the relation automatically (`LEFT JOIN` in reads, `FROM`/`USING` in bulk writes,
+with the tenant columns in the join). On a to-many path, `Any` and `None` compile to `EXISTS` and
+`NOT EXISTS`; a to-many column outside them is an error.
+
 ```go
 m := s.Moves()
+st := m.Stops()
+
+rows, err := s.Where(
+    s.Customer().Code.Eq("ACME"),
+    keel.Or(s.BillToID.IsNull(), s.BillTo().Code.Ne("ACME")),
+    m.Any(m.Status.Eq(fleet.StatusInTransit), m.Loaded.IsTrue()),
+    m.Any(st.Any(st.Kind.Eq("delivery"), st.Location().City.Eq("Dallas"))),
+    s.Tags().None(s.Tags().Name.Eq("on-hold")),
+).Limit(100).List(ctx, db)
+```
+
+Each path gets its own join: `s.Customer()` and `s.BillTo()` both read `customers`, under the
+aliases `c` and `bt`. A to-many path under another to-many path is filtered inside the outer
+`Any`, as `st` is above. `Any` and `None` with no predicates test whether any row exists. A query
+started from a to-many path has `Any` and `None` too, so `m.Where(m.Loaded.IsTrue()).Any()` works.
+
+Use a path handle (`s.Customer().Code`), not the base handle (`fleetdb.Customers.Code`), to filter
+on a relation: a base handle column must belong to a table of the statement.
+
+### Joins and self-joins
+
+`Join` and `LeftJoin` add a table on predicates; the joined table's tenant columns are compared
+with the scope in the `ON` clause. `As(name)` gives a second reference to a table, for self-joins
+and correlated subqueries. Alias names must match `[a-z_][a-z0-9_]*` and are memoised, so use
+constants.
+
+```go
+w := fleetdb.Workers
+mgr := w.As("mgr")
+reports, err := w.
+    Join(mgr, mgr.ID.EqCol(w.ManagerID)).
+    Where(mgr.LastName.Eq("Hopper")).
+    Order(w.LastName.Asc()).
+    All(ctx, db)
+
+s, c := fleetdb.Shipments, fleetdb.Customers
 rows, err := s.
-    Where(s.Customer().Name.ContainsFold(q)).              // joins customers
-    Where(m.Any(m.Status.Eq(shipment.MoveStatusAssigned))). // EXISTS over moves
-    Load(
-        s.Customer().Pick(s.Customer().Name),               // only these columns
-        m.Where(m.Loaded.IsTrue()).Order(m.Sequence.Asc()),
-        m.Stops().Location(),
-        s.Comments().Order(cmt.CreatedAt.Desc()).Limit(3),  // at most 3 per shipment
-    ).
-    Limit(50).List(ctx, db)
+    LeftJoin(c, c.ID.EqCol(s.BillToID)).
+    Where(keel.Or(c.ID.IsNull(), c.Email.IsNotNull())).
+    Limit(100).
+    List(ctx, db)
 ```
 
-### Pages
+Rows still decode into the query's model; to read the joined table's columns, pick them and use
+`keel.Into`. Every table in a statement gets a short alias derived from its name (`shipments` →
+`s`, `shipment_tags` → `st`) or its relation (`BillTo` → `bt`), numbered when a statement uses it
+twice (`s2`).
+
+### Subqueries
+
+Any query is a subquery. `keel.Exists` and `keel.NotExists` wrap one; `InQuery` and `NotInQuery`
+compare a column with a query that picks one column. A subquery that references the outer table's
+columns is correlated.
 
 ```go
-page, err := s.Where(...).Order(s.CreatedAt.Desc()).
-    Page(ctx, db, keel.After(req.Cursor, req.Size).Total(10_000))
-// page.Items, page.Next ("" on the last page), page.Total, page.TotalCapped
+c, s := fleetdb.Customers, fleetdb.Shipments
+cutoff := time.Now().AddDate(0, -3, 0).Unix()
+
+idle, err := c.Where(keel.NotExists(
+    s.Where(s.CustomerID.EqCol(c.ID), s.CreatedAt.Gte(cutoff)),
+)).All(ctx, db)
+
+hazmatShippers, err := c.Where(
+    c.ID.InQuery(s.Pick(s.CustomerID).Where(s.Hazmat.IsTrue())),
+).Count(ctx, db)
 ```
 
-The order may use columns of the table only; keel appends the primary key so positions are unique,
-and uses a row comparison when it can, which a matching composite index serves.
+Subqueries are scoped like any statement: the tenant predicate is added to each.
 
-### Projections
+### Lateral joins
+
+`LeftJoinLateral(sub)` adds `LEFT JOIN LATERAL (sub) ON TRUE`; `JoinLateral(sub)` adds
+`CROSS JOIN LATERAL (sub)`. Columns of the subquery's table, referenced outside it, read the
+subquery's output. Use them for "the latest row per parent" without a window function:
 
 ```go
-type laneTotal struct {
-    Lane    string
-    Loads   int64
-    Revenue decimal.Decimal
+m := fleetdb.Moves
+last := fleetdb.Stops.As("last_stop")
+
+type moveEnd struct {
+    Move     ids.ID
+    Location ids.ID
+    Sequence int32
 }
-rows, err := keel.Into[laneTotal](ctx, db, s.
-    Group(s.Lane).
-    Pick(s.Lane, keel.Count(), s.Total.Sum()).
-    Having(keel.Count().Gt(10)))
+rows, err := keel.Into[moveEnd](ctx, db, m.
+    LeftJoinLateral(last.
+        Pick(last.LocationID, last.Sequence).
+        Where(last.MoveID.EqCol(m.ID)).
+        Order(last.Sequence.Desc()).
+        Limit(1)).
+    Pick(m.ID, last.LocationID, last.Sequence).
+    Where(m.ShipmentID.Eq("shp_01")))
 ```
 
-### Joins and subqueries
+### Common table expressions
+
+`keel.CTE(name, columns, body)` declares `WITH name (columns) AS (body)`. Declare it on the query
+with `With`, then join it, filter on its columns with `Col(name)` (an `AnyCol`), or read it through
+`Query()`, which returns a `*keel.Query[keel.Row]` to read with `keel.Into`. A query over the CTE
+declares it too.
 
 ```go
-mgr := workerdb.Workers.As("mgr")
-w := workerdb.Workers
-reports, err := w.Join(mgr, mgr.ID.EqCol(w.ManagerID)).Where(mgr.LastName.Eq("Hopper")).All(ctx, db)
+s, c := fleetdb.Shipments, fleetdb.Customers
 
-c := customerdb.Customers
-idle, err := c.Where(keel.NotExists(s.Where(s.CustomerID.EqCol(c.ID), s.CreatedAt.Gte(cutoff)))).All(ctx, db)
+busy := keel.CTE("busy", []string{"customer_id", "loads"},
+    s.Group(s.CustomerID).Pick(s.CustomerID, keel.Count()).Where(s.Status.Eq(fleet.StatusInTransit)))
 
-last := stopdb.Stops.As("last_stop")
-rows, err := keel.Into[moveStop](ctx, db, mv.
-    LeftJoinLateral(last.Pick(last.LocationID).Where(last.MoveID.EqCol(mv.ID)).Order(last.Sequence.Desc()).Limit(1)).
-    Pick(mv.ID, last.LocationID))
+customers, err := c.With(busy).
+    Join(busy, busy.Col("customer_id").EqCol(c.ID)).
+    Where(busy.Col("loads").Gte(10)).
+    Order(c.Name.Asc()).
+    All(ctx, db)
+
+type load struct {
+    Customer ids.ID
+    Loads    int64
+}
+top, err := keel.Into[load](ctx, db, busy.Query().With(busy).
+    Pick(busy.Col("customer_id"), busy.Col("loads")).
+    Order(busy.Col("loads").Desc()).
+    Limit(5))
 ```
 
-## Writing
+`Col` panics for a name that is not one of the CTE's columns.
+
+### Recursive CTEs
+
+`keel.RecursiveCTE(name, columns, base)` declares `WITH RECURSIVE name (columns) AS (base UNION ALL
+step)`; `Recurse(step)` sets the step, which joins the CTE itself to walk a hierarchy. `Distinct()`
+makes it `UNION`, so repeated rows end the recursion.
 
 ```go
-err := s.Create(ctx, db, sh)
-err = s.CreateMany(ctx, db, rows)
-err = s.Save(ctx, db, sh)                   // errors.Is(err, keel.ErrConflict) on a stale version
-err = s.Save(ctx, db, sh, s.Status)         // narrow
-err = s.DeleteRow(ctx, db, sh)
-n, err := s.Where(s.ID.In(ids...)).Update(ctx, db, s.Status.To(shipment.StatusCanceled))
-n, err = s.Where(s.Status.Eq(shipment.StatusCanceled)).Delete(ctx, db)
-ins, err := s.Upsert(ctx, db, rows, keel.OnConflict(s.OrganizationID, s.BusinessUnitID, s.ProNumber).Update(s.Status))
+w := fleetdb.Workers
+
+chain := keel.RecursiveCTE("chain", []string{"id", "depth"},
+    w.Pick(w.ID, keel.Raw("0")).Where(w.ID.Eq("wrk_dispatch_lead")))
+sub := w.As("sub")
+chain.Recurse(sub.
+    Pick(sub.ID, keel.Raw("? + 1", chain.Col("depth"))).
+    Join(chain, chain.Col("id").EqCol(sub.ManagerID)))
+
+type node struct {
+    ID    ids.ID
+    Depth int32
+}
+tree, err := keel.Into[node](ctx, db, chain.Query().With(chain).
+    Pick(chain.Col("id"), chain.Col("depth")).
+    Order(chain.Col("depth").Asc()))
+
+team, err := w.With(chain).Where(w.ID.InQuery(chain.Query().Pick(chain.Col("id")))).All(ctx, db)
 ```
 
-## Transactions
+### Set operations
+
+`keel.Union`, `keel.UnionAll`, `keel.Intersect` and `keel.Except` combine queries that pick the same
+number of expressions into a `keel.Compound`. Read it with `keel.Into`, or use it as a subquery or a
+CTE body:
+
+```go
+codes, err := keel.Into[string](ctx, db, keel.UnionAll(
+    s.Pick(s.ProNumber).Where(s.Hazmat.IsTrue()),
+    c.Pick(c.Code).Where(c.Email.IsNull()),
+))
+
+flagged := keel.CTE("flagged", []string{"customer_id"}, keel.Union(
+    s.Pick(s.CustomerID).Where(s.Hazmat.IsTrue()),
+    s.Pick(s.CustomerID).Where(s.Status.Eq(fleet.StatusCanceled)),
+))
+n, err := c.With(flagged).
+    Where(c.ID.InQuery(flagged.Query().Pick(flagged.Col("customer_id")))).
+    Count(ctx, db)
+```
+
+### Projections and aggregates
+
+`keel.Into[R](ctx, db, q)` runs a query that picks expressions and decodes each row into `R`: the
+picked expressions fill `R`'s exported fields in order, so the counts must match. `R` may be a
+scalar type when one expression is picked. `keel.IntoOne[R]` expects exactly one row
+(`ErrNotFound`, `ErrNotSingular` otherwise).
+
+```go
+type statusTotal struct {
+    Status  fleet.Status
+    Loads   int64
+    Hazmat  int64
+    Revenue fleet.Money
+}
+rows, err := keel.Into[statusTotal](ctx, db, s.
+    Group(s.Status).
+    Pick(s.Status, keel.Count(), keel.Count().Filter(s.Hazmat.IsTrue()), s.Total.Sum()).
+    Having(keel.Count().Gt(10)).
+    Order(keel.Count().Desc()))
+
+heaviest, err := keel.IntoOne[*int64](ctx, db, s.Pick(s.Weight.Max()).Where(s.Status.Eq(fleet.StatusNew)))
+```
+
+Aggregates and functions are `keel.Agg` values: `keel.Count()` (`count(*)`), `keel.Sum(expr)`,
+`keel.RowNumber()`, and the column methods `Count`, `CountDistinct`, `Min`, `Max`, `Sum`, `Avg`,
+`Len` and `Rank`. An `Agg` compares to values (`Eq`, `Ne`, `Gt`, `Gte`, `Lt`, `Lte`), orders (`Asc`,
+`Desc`), restricts its rows with `Filter(pred)` (`FILTER (WHERE …)`), and becomes a window function
+with `Over(partition, order...)`. Use a pointer field for an aggregate that can be NULL (`max` over
+no rows).
+
+### Window functions
+
+```go
+type ranked struct {
+    Customer ids.ID
+    Pro      string
+    Rank     int64
+}
+rows, err := keel.Into[ranked](ctx, db, s.
+    Pick(s.CustomerID, s.ProNumber,
+        keel.RowNumber().Over([]keel.Expr{s.CustomerID}, s.CreatedAt.Desc())).
+    Where(s.Status.Eq(fleet.StatusDelivered)).
+    Limit(500))
+```
+
+`Over(nil, order...)` windows over every row, as a running count does: `keel.Count().Over(nil,
+s.CreatedAt.Asc())`.
+
+### DISTINCT ON
+
+`DistinctOn(es...)` keeps the first row of each group, in the query's order, which must start with
+the same expressions:
+
+```go
+latest, err := s.
+    DistinctOn(s.CustomerID).
+    Order(s.CustomerID.Asc(), s.CreatedAt.Desc()).
+    All(ctx, db)
+```
+
+### Ordering
+
+`col.Asc()` and `col.Desc()` order by a column; `keel.Asc(expr)` and `keel.Desc(expr)` by any
+expression, as do `Agg.Asc` and `StringExpr.Asc` (`s.ProNumber.Lower().Asc()`). `NullsFirst()` and
+`NullsLast()` place NULLs: `s.Weight.Desc().NullsLast()`.
+
+### Locks
+
+`Lock(strength, wait...)` locks the selected rows of the query's own table (`FOR UPDATE OF s`);
+joined relations are not locked. Strengths: `keel.ForUpdate`, `keel.ForNoKeyUpdate`,
+`keel.ForShare`, `keel.ForKeyShare`. Waits: `keel.Wait` (the default), `keel.NoWait`,
+`keel.SkipLocked`. Locks need a transaction to be useful:
 
 ```go
 err := keel.Write(ctx, db, func(ctx context.Context) error {
-    sh, err := s.Where(s.ID.Eq(id)).Lock(keel.ForUpdate, keel.NoWait).One(ctx, db)
+    batch, err := s.
+        Where(s.Status.Eq(fleet.StatusNew)).
+        Order(s.CreatedAt.Asc()).
+        Limit(20).
+        Lock(keel.ForUpdate, keel.SkipLocked).
+        List(ctx, db)
     if err != nil {
         return err
     }
-    sh.Status = shipment.StatusAssigned
-    if err := s.Save(ctx, db, sh); err != nil {
-        return err
-    }
-    keel.AfterCommit(ctx, func(ctx context.Context) { events.Publish(ctx, sh.ID) })
-    return nil
-}, keel.LockTimeout(2*time.Second), keel.Retry(2))
-```
-
-## Hooks
-
-```go
-keel.OnUpdate(db, s, keel.AfterWrite, func(ctx context.Context, m *keel.Mutation[shipment.Shipment]) error {
-    if m.Changed(s.Status) {
-        return audit.Record(ctx, m.Row.ID, "status", m.Old.Status, m.Row.Status)
-    }
-    return nil
-}, keel.Needs(s.Status))
-
-db.Intercept(s, func(ctx context.Context, q *keel.Intercepted) error {
-    if scope, ok := readscope.From(ctx); ok && q.Read {
-        q.Where(s.CustomerID.In(scope.CustomerIDs...))
+    for _, sh := range batch {
+        sh.Status = fleet.StatusAssigned
+        if err := s.Save(ctx, db, sh, s.Status); err != nil {
+            return err
+        }
     }
     return nil
 })
+```
+
+`NoWait` fails with SQLSTATE `55P03` (`keel.Code(err) == "55P03"`) when a row is locked.
+
+### Plans and timeouts
+
+`CustomPlan()` plans one query for its parameter values on every execution, even when the
+connection would reuse a generic plan. Use it for queries whose best plan depends on the values,
+such as a filter whose selectivity differs widely between tenants. keel wraps the statement in
+transaction-local `set_config('plan_cache_mode', …)` calls in the same round trip; outside a
+transaction it opens an implicit one for this.
+
+```go
+rows, err := s.
+    Where(s.Status.Eq(fleet.StatusDelivered), s.CustomerID.Eq("cus_01")).
+    CustomPlan().
+    Order(s.CreatedAt.Desc()).
+    Limit(100).
+    List(ctx, db)
+```
+
+`Timeout(d)` bounds the terminal with a context deadline, relation loads included. When it passes,
+pgx cancels the statement and the error matches `context.DeadlineExceeded`. Inside a transaction a
+canceled statement aborts the transaction.
+
+```go
+n, err := s.Where(s.SearchVector.Matches("reefer")).Timeout(2*time.Second).Count(ctx, db)
+if errors.Is(err, context.DeadlineExceeded) {
+    // the search took too long
+}
+```
+
+### Debugging with ToSQL
+
+`ToSQL(ctx, db)` renders the query's main statement as it would run under `ctx`'s scope, with its
+arguments, for logs, tests and `EXPLAIN`. Relation loads that run as separate statements are not
+included, nor is a page's keyset predicate.
+
+```go
+sql, args, err := s.
+    Pick(s.ID, s.ProNumber).
+    Where(s.Status.In(fleet.StatusNew, fleet.StatusAssigned), s.Customer().Code.Eq("ACME")).
+    Order(s.CreatedAt.Desc()).
+    Limit(20).
+    ToSQL(ctx, db)
+```
+
+```sql
+SELECT s."id", s."pro_number", s."organization_id", s."business_unit_id" FROM "shipments" s
+LEFT JOIN "customers" c ON c."id" = s."customer_id" AND c."organization_id" = $1 AND c."business_unit_id" = $2
+WHERE s."organization_id" = $1 AND s."business_unit_id" = $2 AND s."status" = ANY($3) AND c."code" = $4
+ORDER BY s."created_at" DESC LIMIT 20
+-- args: [org_acme bu_dallas [New Assigned] ACME]
+```
+
+(The statement is one line; it is wrapped here.) An observer sees every statement keel sends; see
+[Observers](#observers).
+
+## Loading relations
+
+`Load` takes relation paths and fills the relation fields of the returned rows:
+
+```go
+s := fleetdb.Shipments
+m := s.Moves()
+cu := s.Customer()
+
+rows, err := s.
+    Where(s.Status.Eq(fleet.StatusInTransit)).
+    Load(
+        cu.Pick(cu.Name, cu.Code),
+        s.BillTo(),
+        m.Where(m.Status.Ne(fleet.StatusCanceled)).
+            Order(m.Sequence.Asc()).
+            Load(m.Stops().Location()),
+        s.Tags(),
+    ).
+    Order(s.CreatedAt.Desc()).
+    Limit(50).
+    List(ctx, db)
+// rows[i].Customer, rows[i].BillTo (nil when bill_to_id is NULL), rows[i].Moves[j].Stops[k].Location, rows[i].Tags
+```
+
+How loads run:
+
+- **Belongs-to and has-one** relations are joined into the parent's statement with `LEFT JOIN`.
+  A nested to-one path (`m.Shipment().Customer()`) joins each level.
+- **Has-many and many-to-many** relations run one statement per relation per level, filtered by
+  `= ANY($1)` over the parents' keys plus the scope's tenant columns. The statements of one level
+  share a round trip, so `Load(s.Customer(), s.Moves().Stops())` costs three round trips: the
+  shipments with their customers, the moves, the stops.
+- A path loads every relation on it: `m.Stops().Location()` loads moves, their stops and the stops'
+  locations.
+
+Narrow a load by starting a query from the relation handle:
+
+| Method | On a to-many load | On a to-one load |
+|---|---|---|
+| `Where` | filters the related rows | becomes part of the join condition: a row that does not match leaves the field nil; the parent is still returned |
+| `Order` | orders each parent's slice | ignored |
+| `Pick` | reads only these columns (keel adds the keys it needs) | same |
+| `Limit(n)` | at most `n` rows per parent | ignored |
+| `Load` | loads relations of the related rows | same |
+
+A column of the related table's base handle also works inside a load:
+`m.Where(fleetdb.Moves.Loaded.IsTrue())` is the same as `m.Where(m.Loaded.IsTrue())`.
+
+### Per-parent limits
+
+A to-many load with `Limit(n)` loads at most `n` rows per parent through
+`unnest($1) … CROSS JOIN LATERAL (… LIMIT n)`, still one statement for all parents:
+
+```go
+rows, err := s.
+    Load(m.Order(m.Sequence.Desc()).Limit(1)). // each shipment's last move
+    Order(s.CreatedAt.Desc()).
+    Limit(50).
+    List(ctx, db)
+```
+
+Many-to-many loads do not take a `Limit`.
+
+### Rules
+
+- A load path must start at the query's table: `s.Load(fleetdb.Moves.Stops())` fails with
+  `load moves.Stops does not start at shipments`; use `s.Load(s.Moves().Stops())`.
+- Interceptors apply to to-many load statements, as to any statement on their table (see
+  [Interceptors](#interceptors)).
+- `AfterLoad` hooks run for every loaded row of every table, once all levels are loaded.
+- Under a system scope, to-many loads need `AllTenants` on the relation: `Load(m.AllTenants())`
+  (see [Tenancy](#tenancy)).
+
+## Pagination
+
+### Keyset pages
+
+`Page(ctx, db, keel.After(cursor, size))` returns the page of `size` rows after `cursor`; an empty
+cursor asks for the first page. `Total(limit)` also counts the matching rows, up to `limit`, in the
+same round trip.
+
+```go
+page, err := s.
+    Where(s.Status.In(fleet.StatusNew, fleet.StatusAssigned)).
+    Load(s.Customer()).
+    Order(s.CreatedAt.Desc()).
+    Page(ctx, db, keel.After(cursor, 50).Total(10_000))
+```
+
+| `keel.Page[T]` field | Meaning |
+|---|---|
+| `Items` | the rows, `[]*T`, with their loads |
+| `Next` | the cursor of the following page; empty on the last page |
+| `Total` | the number of matching rows when the request asked for it, capped at its limit |
+| `TotalCapped` | `Total` stopped at the limit ("10,000+") |
+
+Rules:
+
+- The order may use columns of the query's table only. keel appends every primary key column the
+  order does not already name, in the direction of the order's last term, so each row has a unique
+  position. A query without an order pages by primary key.
+- The cursor is opaque (base64url) and encodes the order values of the page's last row. Pass it only
+  to the query that produced it; a cursor whose number of values does not match the order fails.
+- `size` must be positive.
+
+When every order term sorts the same way, none uses `NullsFirst` or `NullsLast` and no column is
+nullable, keel compares the position as one row, `(created_at, id, …) < ($3, $4, …)`, which a
+matching composite index serves. Otherwise it expands an `OR` chain that places NULLs as the order
+does. See [Performance notes](#performance-notes) for the index.
+
+### Each
+
+`Each(ctx, db, size, fn)` runs the query page by page in keyset order and calls `fn` with each batch
+of at most `size` rows, holding one batch in memory. An error from `fn` stops it.
+
+```go
+ctx := withSystem(context.Background(), "nightly hazmat audit")
+err := s.AllTenants().Where(s.Hazmat.IsTrue()).Each(ctx, db, 500,
+    func(ctx context.Context, batch []*fleet.Shipment) error {
+        for _, sh := range batch {
+            fmt.Println(sh.OrganizationID, sh.ProNumber)
+        }
+        return nil
+    })
+```
+
+Each batch is a separate statement; rows written while `Each` runs may or may not be seen. Run it
+inside `keel.Read(…, keel.RepeatableRead())` to read one snapshot, at the cost of holding a
+connection for the whole run.
+
+### Offsets
+
+`Offset(n)` exists for the rare list that needs it. Prefer `Page` for anything a person scrolls:
+an offset makes Postgres read and discard every skipped row.
+
+## Writing
+
+### Create
+
+`Create` inserts one row. It fills the `autoid` column when empty, the tenant columns from the
+scope, and the `autocreate` and `autoupdate` columns, runs the model hooks and `BeforeWrite` table
+hooks, and reads back `readonly` columns.
+
+```go
+sh := &fleet.Shipment{
+    CustomerID: "cus_01",
+    ProNumber:  "PRO-1001",
+    Status:     fleet.StatusNew,
+    Total:      fleet.Money{Cents: 125_000},
+    Labels:     []string{"expedite"},
+    Attributes: map[string]any{"trailer": map[string]any{"type": "reefer"}},
+}
+if err := fleetdb.Shipments.Create(ctx, db, sh); err != nil {
+    return err
+}
+// sh.ID, sh.OrganizationID, sh.CreatedAt and sh.StageRank (generated) are set
+```
+
+A non-empty `autoid` value is kept, so rows can carry IDs generated earlier. A row whose tenant
+columns differ from the scope's is refused with `ErrTenantMismatch`.
+
+### CreateMany
+
+`CreateMany` inserts many rows in one round trip:
+
+```go
+stops := []*fleet.Stop{
+    {MoveID: "mov_01", LocationID: "loc_chicago", Sequence: 1, Kind: "pickup"},
+    {MoveID: "mov_01", LocationID: "loc_dallas", Sequence: 2, Kind: "delivery"},
+}
+err := fleetdb.Stops.CreateMany(ctx, db, stops)
+```
+
+One row is inserted with `VALUES`. More rows are inserted with `INSERT … SELECT … FROM unnest($1,
+$2, …)`, binding one array per column, in chunks of 10,000 rows that share one statement text, all
+sent in one round trip. keel reads the table's column types from the catalog on the first bulk write
+of a table and caches them per `DB`; call `db.ForgetColumnTypes()` after a migration changes a table
+while the process runs. An empty slice does nothing.
+
+### Save and optimistic locking
+
+`Save` updates a row by its primary key. With a `version` column it compares the stored version,
+increments it, and returns a `*keel.ConflictError` (matching `keel.ErrConflict`) when another writer
+got there first:
+
+```go
+c := fleetdb.Customers
+cust, err := c.Get(ctx, db, "cus_01")
+if err != nil {
+    return err
+}
+cust.Name = "Acme Freight"
+err = c.Save(ctx, db, cust)
+var conflict *keel.ConflictError
+switch {
+case errors.As(err, &conflict):
+    // conflict.Table changed since conflict.Version was read: reload and retry, or tell the user
+case err != nil:
+    return err
+}
+// cust.Version is now the stored version
+```
+
+Without a `version` column, `Save` returns `ErrNotFound` when no row matched. With one, a row that
+was deleted also reports `ErrConflict`. `Save` stamps the `autoupdate` column, runs `BeforeUpdate`,
+`BeforeSave` and `BeforeWrite` hooks, and reads back `readonly` columns and the new version.
+
+Pass columns to write only those (and the `autoupdate` column):
+
+```go
+now := time.Now().Unix()
+sh.Status = fleet.StatusCanceled
+sh.CanceledAt = &now
+err := s.Save(ctx, db, sh, s.Status, s.CanceledAt)
+```
+
+Only updatable columns can be named: not primary key, tenant, `autocreate`, `version` or `readonly`
+columns.
+
+### DeleteRow
+
+`DeleteRow` deletes a row by its primary key and returns `ErrNotFound` when nothing was deleted:
+
+```go
+if err := fleetdb.Stops.DeleteRow(ctx, db, st); errors.Is(err, keel.ErrNotFound) {
+    // already deleted
+}
+```
+
+### Bulk updates and deletes
+
+`Update` and `Delete` on a query write every row it matches and return the number of rows. A query
+without a non-nil `Where` predicate is refused; write `Where(keel.True())` to mean every row (of the
+tenant). Relation path filters work: they become `FROM` in an update and `USING` in a delete.
+
+```go
+now := time.Now().Unix()
+n, err := s.
+    Where(s.Status.Eq(fleet.StatusNew), s.Customer().Code.Eq("ACME")).
+    Update(ctx, db, s.Status.To(fleet.StatusCanceled), s.CanceledAt.To(now), s.Priority.Add(1))
+
+st := fleetdb.Stops
+n, err = st.Where(st.MoveID.Eq("mov_01"), st.ArrivedAt.IsNull()).Delete(ctx, db)
+```
+
+Assignments:
+
+| Assignment | SQL |
+|---|---|
+| `col.To(v)` | `col = $n` |
+| `col.Add(v)` (numeric columns) | `col = col + $n` |
+| `col.ToNull()` | `col = NULL` |
+| `col.ToDefault()` | `col = DEFAULT` |
+| `col.ToExpr(e)` | `col = e`, for example `s.Weight.ToExpr(keel.Raw("? * 2", s.Weight))` |
+
+The `autoupdate` column is stamped and the `version` column incremented unless an assignment names
+them. Assignments must be columns of the query's table. Bulk writes run no model hooks and no
+`BeforeWrite` hooks; see [which hooks run](#which-hooks-run).
+
+### Upsert
+
+`Upsert` inserts rows and updates the existing row on conflict. It reports, per row, whether the row
+was inserted (`true`) or updated (`false`):
+
+```go
+c := fleetdb.Customers
+rows := []*fleet.Customer{
+    {Code: "ACME", Name: "Acme Freight"},
+    {Code: "GLOBEX", Name: "Globex Logistics"},
+}
+inserted, err := c.Upsert(ctx, db, rows,
+    keel.OnConflict(c.OrganizationID, c.BusinessUnitID, c.Code).Update(c.Name))
+```
+
+- `keel.OnConflict(cols...)` names the unique columns; it is required.
+- `Update(cols...)` names the columns a conflicting row takes from the proposed row; without
+  columns, every updatable column. The `autoupdate` column is always taken and the `version`
+  incremented.
+- `Where(preds...)` matches a partial unique index: `ON CONFLICT (…) WHERE …`. Its predicates must
+  not bind values; use constants, as `c.Email.IsNull()` or `keel.Raw("deleted_at IS NULL")` do.
+- Rows that conflict get the stored version and `readonly` columns back. Their primary key keeps the
+  value the row was sent with (a fresh `autoid` value), not the stored one; read the row back by its
+  unique key when you need it.
+
+Many rows go through `unnest`, as in `CreateMany`.
+
+### CreateOrSkip
+
+`CreateOrSkip` inserts rows, skips those that conflict on the given columns (`ON CONFLICT DO
+NOTHING`), and returns how many it inserted:
+
+```go
+n, err := c.CreateOrSkip(ctx, db, rows, c.OrganizationID, c.BusinessUnitID, c.Code)
+```
+
+### InsertFrom
+
+`InsertFrom` inserts the rows of a query: `INSERT INTO t (cols) SELECT …`. The query must pick one
+expression per listed column, in order. Under a tenant scope the tenant columns are filled from the
+scope and must not be listed; under a system scope, list and pick them.
+
+```go
+tg, c := fleetdb.Tags, fleetdb.Customers
+n, err := tg.InsertFrom(ctx, db,
+    c.Pick(keel.Raw("'tag_' || ?", c.ID), c.Name).Where(c.Email.IsNotNull()),
+    tg.ID, tg.Name)
+```
+
+`InsertFrom` does not fill `autoid`, `autocreate` or `autoupdate` columns and runs no hooks: pick
+those values in the query.
+
+### What is read back
+
+After a write keel reads back only what Postgres may have changed: `readonly` columns, and the
+version where it changed it. The values keel filled (IDs, tenant columns, timestamps) are already in
+the struct.
+
+## Transactions
+
+### Read and Write
+
+`keel.Write` runs a function in a read-write transaction, `keel.Read` in a read-only one. The
+transaction lives on the context: every terminal called with that context joins it. Return an error
+to roll back.
+
+```go
+err := keel.Write(ctx, db, func(ctx context.Context) error {
+    sh, err := s.Where(s.ID.Eq("shp_01")).Lock(keel.ForUpdate, keel.NoWait).One(ctx, db)
+    if err != nil {
+        return err
+    }
+    sh.Status = fleet.StatusAssigned
+    if err := s.Save(ctx, db, sh, s.Status); err != nil {
+        return err
+    }
+    mv := &fleet.Move{ShipmentID: sh.ID, Sequence: 1, Status: fleet.StatusAssigned}
+    if err := fleetdb.Moves.Create(ctx, db, mv); err != nil {
+        return err
+    }
+    keel.AfterCommit(ctx, func(ctx context.Context) {
+        log.Printf("shipment %s assigned", sh.ID)
+    })
+    return nil
+}, keel.LockTimeout(2*time.Second))
+```
+
+`keel.ReadValue` and `keel.WriteValue` return a value:
+
+```go
+sh, err := keel.ReadValue(ctx, db, func(ctx context.Context) (*fleet.Shipment, error) {
+    return s.Where(s.ProNumber.Eq("PRO-1001")).Load(s.Customer(), s.Moves()).One(ctx, db)
+})
+
+id, err := keel.WriteValue(ctx, db, func(ctx context.Context) (ids.ID, error) {
+    c := &fleet.Customer{Code: "UMBRELLA", Name: "Umbrella Transport"}
+    if err := fleetdb.Customers.Create(ctx, db, c); err != nil {
+        return "", err
+    }
+    sh := &fleet.Shipment{CustomerID: c.ID, ProNumber: "PRO-2001", Status: fleet.StatusNew}
+    if err := fleetdb.Shipments.Create(ctx, db, sh); err != nil {
+        return "", err
+    }
+    return sh.ID, nil
+}, keel.Serializable(), keel.Retry(3))
+```
+
+How transactions run:
+
+- `BEGIN`, the transaction options and the `OnBegin` statements are sent with the first statement,
+  in one round trip. A transaction that runs no statement costs nothing.
+- The transaction holds one connection from its first statement to its end. Use its context from
+  one goroutine at a time.
+- A `Read` or `Write` inside a `Write` joins it; a `Read` inside a `Read` joins it; a `Write` inside
+  a `Read`, and any write inside a `Read`, returns `ErrReadOnly`. Options of a joined call are
+  ignored.
+- `keel.InTx(ctx, db)` reports whether the context carries a transaction of `db`.
+
+### Implicit transactions
+
+Outside `Read` and `Write`, a terminal runs on a pooled connection. It runs in an implicit
+transaction when `Config.OnBegin` is set, when the table has `AfterWrite` hooks for the write, or
+for `CustomPlan`. A terminal with one statement then sends `BEGIN`, the `OnBegin` statements, the
+statement and `COMMIT` in one round trip; with relation loads, `BEGIN` goes with the first batch and
+`COMMIT` with the last.
+
+### Options
+
+| Option | Effect |
+|---|---|
+| `keel.LockTimeout(d)` | any statement of the transaction waits at most `d` for a lock (`set_config('lock_timeout', …, true)`, sent with `BEGIN`) |
+| `keel.Serializable()` | `ISOLATION LEVEL SERIALIZABLE` |
+| `keel.RepeatableRead()` | `ISOLATION LEVEL REPEATABLE READ` |
+| `keel.Retry(n)` | reruns a top-level transaction up to `n` more times after a serialization failure or deadlock (`keel.IsRetryable`); `fn` must be safe to repeat |
+
+```go
+var open, late int64
+err := keel.Read(ctx, db, func(ctx context.Context) error {
+    var err error
+    if open, err = s.Where(s.Status.Ne(fleet.StatusDelivered)).Count(ctx, db); err != nil {
+        return err
+    }
+    late, err = s.Where(s.Status.Eq(fleet.StatusInTransit), s.Priority.Gte(2)).Count(ctx, db)
+    return err
+}, keel.RepeatableRead())
+```
+
+`Retry` starts each attempt as a new transaction; `AfterCommit` functions of failed attempts are
+dropped. Nested calls never retry on their own.
+
+### Savepoints
+
+`keel.Savepoint` runs a function inside a savepoint of the transaction on the context. An error rolls
+back to the savepoint and is returned, leaving the transaction usable. Outside a transaction it runs
+the function in a new `Write`; inside a `Read` it returns `ErrReadOnly`.
+
+```go
+err := keel.Write(ctx, db, func(ctx context.Context) error {
+    for _, code := range []string{"ACME", "GLOBEX", "ACME"} {
+        err := keel.Savepoint(ctx, db, func(ctx context.Context) error {
+            return c.Create(ctx, db, &fleet.Customer{Code: code, Name: code})
+        })
+        if keel.IsUnique(err, "uq_customers_code") {
+            continue
+        }
+        if err != nil {
+            return err
+        }
+    }
+    return nil
+})
+```
+
+### Advisory locks
+
+`keel.LockKey(ctx, db, key)` takes a transaction-scoped advisory lock on a string key, waiting for
+it, so work without a row to lock is serialised across processes. `keel.TryLockKey` does not wait
+and reports whether it got the lock. Both need a transaction on the context; the lock is released
+when it ends.
+
+```go
+err := keel.Write(ctx, db, func(ctx context.Context) error {
+    if err := keel.LockKey(ctx, db, "invoice-run:org_acme"); err != nil {
+        return err
+    }
+    // only one invoice run per organization at a time
+    return nil
+})
+
+err = keel.Write(ctx, db, func(ctx context.Context) error {
+    got, err := keel.TryLockKey(ctx, db, "rate-refresh")
+    if err != nil {
+        return err
+    }
+    if !got {
+        return nil // another process is refreshing rates
+    }
+    return refreshRates(ctx)
+})
+```
+
+Keys are hashed with `hashtextextended`; namespace them (`"invoice-run:" + orgID`).
+
+### AfterCommit
+
+`keel.AfterCommit(ctx, fn)` runs `fn` after the transaction on the context commits and drops it if
+the transaction rolls back. Outside a transaction `fn` runs at once. Use it to publish events and
+enqueue work that must not happen for a rolled-back write.
+
+## Tenancy
+
+### Scopes
+
+Every statement keel renders runs under the scope of its context:
+
+- **Tenant scope**: `Config.Tenant` returned values for every column of `Config.TenantColumns`.
+  Every statement on a table with `tenant` columns compares them with the scope: reads, joins,
+  relation loads, subqueries, bulk updates and deletes, `Save` and `DeleteRow`. Inserts fill empty
+  tenant columns from the scope and refuse a row of another tenant. Relation joins pin the target's
+  tenant columns to the same constants.
+- **System scope**: `Config.System` returned true, with a reason. Statements on tenant tables must
+  say `AllTenants()`; relation joins compare tenant columns between the two tables. Inserts must
+  carry their tenant columns.
+- **No scope**: statements on tenant tables fail with `ErrNoScope`. Tables without tenant columns
+  (`Plant`) need no scope.
+
+`System` is checked first, so a context with a system scope is never treated as a tenant's.
+
+### Working across tenants
+
+```go
+ctx := withSystem(context.Background(), "purge canceled shipments")
+s := fleetdb.Shipments
+m := s.Moves()
+cutoff := time.Now().AddDate(-1, 0, 0).Unix()
+
+stale, err := s.AllTenants().
+    Where(s.Status.Eq(fleet.StatusCanceled), s.CanceledAt.Lt(cutoff)).
+    Where(m.AllTenants().None(m.Loaded.IsTrue())).
+    Load(s.Customer(), m.AllTenants()).
+    Limit(1000).
+    List(ctx, db)
+
+n, err := s.AllTenants().
+    Where(s.Status.Eq(fleet.StatusCanceled), s.CanceledAt.Lt(cutoff)).
+    Delete(ctx, db)
+```
+
+Under a system scope, `AllTenants` is per statement: a subquery, an `Any` or `None` over a to-many
+path, and a to-many load each need their own (`m.AllTenants().None(…)`, `Load(m.AllTenants())`).
+To-one relations joined into a statement follow that statement. `Save` and `DeleteRow` under a
+system scope write by primary key without `AllTenants`.
+
+### Scope errors
+
+| Error | When |
+|---|---|
+| `keel.ErrNoScope` | a statement on a tenant table without a tenant or system scope |
+| `keel.ErrAllTenantsRequired` | a statement on a tenant table under a system scope that did not say `AllTenants()` |
+| `keel.ErrSystemScopeRequired` | `AllTenants()` without a system scope |
+| `keel.ErrTenantMismatch` | a row's tenant columns differ from the tenant scope (`Create`, `Save`, `DeleteRow`, …) |
+
+The errors are wrapped with the table name; test them with `errors.Is`. An insert under a system
+scope with empty tenant columns fails with a plain error naming the column.
+
+```go
+_, err := s.Query().Limit(10).List(context.Background(), db)           // ErrNoScope
+_, err = s.Query().Limit(10).List(withSystem(ctx, "report"), db)       // ErrAllTenantsRequired
+_, err = s.AllTenants().Limit(10).List(requestContext(), db)           // ErrSystemScopeRequired
+err = fleetdb.Customers.Create(requestContext(), db,
+    &fleet.Customer{OrganizationID: "org_other", BusinessUnitID: "bu_other", Code: "X", Name: "X"}) // ErrTenantMismatch
+plant, err := fleetdb.Plants.Get(context.Background(), db, "DAL1")     // no scope needed
+```
+
+## Hooks, interceptors and observers
+
+| Kind | Registration | Use |
+|---|---|---|
+| model hooks | methods on the model | normalisation and derived fields |
+| table hooks | `keel.OnCreate`, `OnUpdate`, `OnDelete`, `OnWrite` | validation, audit, side effects |
+| interceptors | `db.Intercept(handle, fn)`, `db.InterceptAll(fn)` | add predicates to statements |
+| observers | `Config.Observers` | tracing, metrics, slow-query logs |
+
+### Table hooks
+
+Table hooks are registered per `DB` and table, usually at startup, and run in one of three phases:
+
+| Phase | When | An error |
+|---|---|---|
+| `keel.BeforeWrite` | inside the transaction, before an entity write; may change the row | aborts the write |
+| `keel.AfterWrite` | inside the transaction, after the statement, for entity and bulk writes | rolls the transaction back |
+| `keel.Committed` | after the transaction commits | is dropped; report it from the hook |
+
+```go
+s := fleetdb.Shipments
+
+keel.OnCreate(db, s, keel.BeforeWrite, func(ctx context.Context, m *keel.Mutation[fleet.Shipment]) error {
+    if m.Row.ProNumber == "" {
+        return errors.New("shipment needs a PRO number")
+    }
+    if m.Row.Attributes == nil {
+        m.Row.Attributes = map[string]any{}
+    }
+    return nil
+})
+
+keel.OnUpdate(db, s, keel.AfterWrite, func(ctx context.Context, m *keel.Mutation[fleet.Shipment]) error {
+    if m.Old == nil || !m.Changed(s.Status) || m.Old.Status == m.Row.Status {
+        return nil
+    }
+    log.Printf("shipment %s: %s -> %s", m.Row.ID, m.Old.Status, m.Row.Status)
+    return nil
+}, keel.Needs(s.Status))
+
+keel.OnWrite(db, fleetdb.Customers, keel.Committed, func(ctx context.Context, m *keel.Mutation[fleet.Customer]) error {
+    log.Printf("customer %s %s; refresh the search index", m.Row.ID, m.Op)
+    return nil
+})
+```
+
+`OnCreate`, `OnUpdate` and `OnDelete` register for one operation, `OnWrite` for all three. A hook
+receives a `*keel.Mutation[T]`:
+
+| Field or method | Meaning |
+|---|---|
+| `Op` | `keel.OpCreate`, `keel.OpUpdate` or `keel.OpDelete` (`String()` gives `create`, `update`, `delete`) |
+| `Row` | the row as written: the entity passed to an entity write, or a row returned by a bulk write |
+| `Old` | the previous values of the columns the table's hooks declared with `Needs`, for `Save` and bulk updates; other fields are zero. Nil for creates, deletes and upsert conflicts |
+| `Changed(col)` | whether the write set the column: always true for creates; the written columns for `Save` and bulk updates; false for upsert conflicts |
+
+`keel.Needs(cols...)` reads the previous values in the same statement (`RETURNING old.…`, which
+needs PostgreSQL 18). It is only paid for when the table has `AfterWrite` or `Committed` update
+hooks.
+
+A table with `AfterWrite` hooks for an operation makes those writes transactional: outside `Write`
+they run in an implicit transaction, so a hook error rolls the statement back. `Upsert` and
+`CreateOrSkip` open that transaction only for create hooks; run them inside `keel.Write` when an
+update hook must be able to roll them back. A table without hooks pays nothing.
+
+Bulk writes on a table with `AfterWrite` or `Committed` hooks for their operation return every
+written row through `RETURNING` and call the hooks once per row, which costs memory proportional to
+the rows written.
+
+### Which hooks run
+
+| Write | Model hooks | `BeforeWrite` | `AfterWrite` and `Committed` |
+|---|---|---|---|
+| `Create`, `CreateMany` | `BeforeCreate`, `BeforeSave` | create | create |
+| `Upsert` | `BeforeCreate`, `BeforeSave` on every row | create, on every row | create for inserted rows, update for conflicting rows |
+| `CreateOrSkip` | `BeforeCreate`, `BeforeSave` on every row | create, on every row | create for inserted rows |
+| `Save` | `BeforeUpdate`, `BeforeSave` | update | update, with `Old` |
+| `DeleteRow` | `BeforeDelete` | delete | delete |
+| `Query.Update` | none | none | update per row, with `Old` |
+| `Query.Delete` | none | none | delete per row |
+| `InsertFrom` | none | none | none |
+
+On inserts, keel fills the `autoid`, tenant and timestamp columns before the hooks run, so hooks see
+them. `AfterLoad` runs after reads.
+
+### Interceptors
+
+An interceptor sees a statement before it is rendered and may add predicates to it. `db.Intercept`
+registers one for every statement whose base is a table; `db.InterceptAll` for every table.
+
+```go
+s := fleetdb.Shipments
+db.Intercept(s, func(ctx context.Context, q *keel.Intercepted) error {
+    customers, ok := ctx.Value(portalKey{}).([]ids.ID)
+    if !ok {
+        return nil
+    }
+    if !q.Read {
+        return errors.New("portal users cannot change shipments in bulk")
+    }
+    q.Where(s.CustomerID.In(customers...))
+    return nil
+})
+```
+
+`keel.Intercepted` carries `Op` (`keel.OpRead`, `keel.OpUpdate` or `keel.OpDelete`), `Read`, and
+`Table` (the `*schema.Table`); `Where(preds...)` adds predicates, joined with `AND`. An error aborts
+the statement.
+
+Interceptors run for queries (every terminal, `Count`, `Page`'s total, `keel.Into`, `ToSQL`), to-many
+relation loads, subqueries (`Exists`, `InQuery`, `Any`, `None`, CTE bodies, lateral joins, the source
+of `InsertFrom`) and bulk `Update` and `Delete`. They do not run for `Create`, `CreateMany`, `Save`,
+`DeleteRow`, `Upsert` or `CreateOrSkip`, nor for relations joined into a statement or tables added
+with `Join`. Columns of the table's base handle resolve inside statements built on a relation path
+to the table, so one interceptor covers loads and `Any`.
+
+### Observers
+
+An observer sees every statement keel sends:
+
+```go
+type slowQueryLog struct{ threshold time.Duration }
+
+func (slowQueryLog) BeforeQuery(ctx context.Context, _ *keel.QueryEvent) context.Context {
+    return ctx
+}
+
+func (l slowQueryLog) AfterQuery(_ context.Context, e *keel.QueryEvent) {
+    if e.Duration >= l.threshold {
+        log.Printf("slow %s on %s (%d args, %d rows): %v: %s",
+            e.Op, e.Table, e.Args, e.Rows, e.Duration, e.SQL)
+    }
+}
+```
+
+| `keel.QueryEvent` field | Meaning |
+|---|---|
+| `Op` | `select`, `count`, `insert`, `update`, `delete`, `savepoint` or `lock` |
+| `Table` | the statement's table |
+| `SQL` | the statement text, which never contains values |
+| `Args` | the number of bound arguments |
+| `Start`, `Duration` | when the round trip started and how long it took; statements sent in one round trip share both |
+| `Rows` | rows affected or returned |
+| `Err` | the error of the round trip |
+
+`BeforeQuery` runs for each statement before its round trip and `AfterQuery` after it, observers in
+reverse order. The context `BeforeQuery` returns is not passed on: keep per-statement state keyed by
+the `*QueryEvent`, which is the same pointer in both calls. `BEGIN`, `COMMIT`, `OnBegin` statements
+and plan-mode switches are not reported.
+
+## Errors
+
+| Error | Returned by |
+|---|---|
+| `keel.ErrNotFound` | `Get`, `One`, `First`, `IntoOne` with no row; `DeleteRow` that deleted nothing; `Save` without a version column that matched nothing |
+| `keel.ErrNotSingular` | `One` and `IntoOne` with more than one row |
+| `keel.ErrConflict` | `Save` that found another version; the error is a `*keel.ConflictError` with `Table` and `Version` |
+| `keel.ErrNoScope`, `ErrAllTenantsRequired`, `ErrSystemScopeRequired`, `ErrTenantMismatch` | scope violations; see [Scope errors](#scope-errors) |
+| `keel.ErrUnbounded` | `List` without `Limit` |
+| `keel.ErrReadOnly` | a write, a `Write` or a `Savepoint` inside a `Read` |
+| `migrate.ErrChanged` | `Up` when an applied migration's file changed |
+
+Test them with `errors.Is` (and `errors.As` for `*keel.ConflictError`): keel wraps them with the
+table name. Misuse (an `Update` without `Where`, an `Into` whose struct does not match the picks) is
+reported with plain errors.
+
+Postgres errors pass through as `*pgconn.PgError`. Helpers:
+
+| Helper | Reports |
+|---|---|
+| `keel.IsUnique(err, constraints...)` | a unique violation (`23505`), optionally on one of the named constraints |
+| `keel.IsForeignKey(err, constraints...)` | a foreign key violation (`23503`) |
+| `keel.IsCheck(err, constraints...)` | a check violation (`23514`) |
+| `keel.IsExclusion(err, constraints...)` | an exclusion violation (`23P01`) |
+| `keel.IsNotNull(err)` | a not-null violation (`23502`) |
+| `keel.IsRetryable(err)` | a serialization failure (`40001`) or deadlock (`40P01`) |
+| `keel.Code(err)` | the SQLSTATE, or `""` |
+| `keel.Constraint(err)` | the constraint name, or `""` |
+
+```go
+err := fleetdb.Shipments.Create(ctx, db, sh)
+switch {
+case keel.IsUnique(err, "uq_shipments_pro"):
+    // PRO number already used
+case keel.IsForeignKey(err, "fk_shipments_customer"):
+    // no such customer
+case err != nil:
+    return fmt.Errorf("create shipment (SQLSTATE %s): %w", keel.Code(err), err)
+}
 ```
 
 ## Migrations
 
-```sh
-keel migrate -dsn "$DATABASE_URL" -dir migrations create add_shipment_index notx
-keel migrate -dsn "$DATABASE_URL" -dir migrations up
-keel migrate -dsn "$DATABASE_URL" -dir migrations status
+Migrations are SQL files; keel does not generate them from models.
+
+### Files
+
+```
+migrations/
+  20260101000000_init.up.sql
+  20260101000000_init.down.sql
+  20260102000000_shipment_status_index.notx.up.sql
+  20260102000000_shipment_status_index.notx.down.sql
 ```
 
-Or from Go: `migrate.Open(ctx, dsn, embeddedFS)` then `Up`.
+- A migration is a pair `<version>_<name>.up.sql` and `<version>_<name>.down.sql`. The version is a
+  number; `keel migrate create` uses the UTC time (`20060102150405`). Versions sort numerically and
+  must be unique. The down file is optional; `Down` fails on a migration without one.
+- An up file runs in one transaction together with its bookkeeping row in `keel_migrations`.
+- A `*.notx.up.sql` file runs outside a transaction, statement by statement, for work Postgres
+  refuses inside one (`CREATE INDEX CONCURRENTLY`, `ALTER TYPE … ADD VALUE`). Separate its
+  statements with a line holding only `--keel:split`:
+
+```sql
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_shipments_status ON shipments (organization_id, business_unit_id, status);
+--keel:split
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_workers_manager ON workers (organization_id, business_unit_id, manager_id);
+```
+
+Make non-transactional statements idempotent (`IF NOT EXISTS`): a failure part-way leaves the
+earlier statements applied.
+
+- Runs serialise across processes on an advisory lock, taken by polling: a waiting statement would
+  hold a transaction open, and `CREATE INDEX CONCURRENTLY` in the run that holds the lock waits for
+  every open transaction.
+- keel stores a checksum of each applied up file. When an applied file changes, `Up` stops with
+  `migrate.ErrChanged` before applying anything: add a new migration instead of editing an applied
+  one.
+
+### Command line
+
+```sh
+keel migrate -dir migrations create add_shipment_index        # writes the up and down files
+keel migrate -dir migrations create add_status_index notx     # a .notx pair
+keel migrate -dsn "$DATABASE_URL" -dir migrations up          # apply every pending migration
+keel migrate -dsn "$DATABASE_URL" -dir migrations down        # revert the last applied migration
+keel migrate -dsn "$DATABASE_URL" -dir migrations status      # [x] applied, [ ] pending
+```
+
+`-dsn` defaults to `$DATABASE_URL` and `-dir` to `migrations`.
+
+### Go API
+
+Embed the files and apply them at startup or from a deploy step:
+
+```go
+//go:embed migrations/*.sql
+var migrationFiles embed.FS
+
+dir, err := fs.Sub(migrationFiles, "migrations")
+if err != nil {
+    return err
+}
+m, err := migrate.Open(ctx, os.Getenv("DATABASE_URL"), dir)
+if err != nil {
+    return err
+}
+defer m.Close()
+
+applied, err := m.Up(ctx)
+if errors.Is(err, migrate.ErrChanged) {
+    return errors.New("an applied migration was edited; add a new migration instead")
+}
+status, err := m.Status(ctx) // []migrate.Status: Migration (ID(), NoTx, …), Applied, AppliedAt, Changed
+```
+
+The source is read from its root, so pass the directory itself (`fs.Sub`, or `os.DirFS(dir)`).
+`migrate.New(conn, fsys)` uses a `*pgx.Conn` you own; `m.Down(ctx, n)` reverts the last `n`;
+`migrate.Read(fsys)` parses a source without a database, for a CI check; `migrate.Create(dir, name,
+notx)` writes an empty pair.
+
+## Performance notes
+
+### Prepared statements
+
+- Statement text never contains values, so each query shape is one prepared statement per connection.
+  `In` binds one array, so a list of 3 or 3,000 IDs is the same statement. Keep shapes few: build
+  `Raw` text from constants and pass values as arguments.
+- With `PlanCacheAuto`, Postgres reuses a generic plan when it is no worse than the custom plans of
+  the first executions. When one statement serves tenants of very different sizes, use
+  `CustomPlan()` on that query, or `PlanCacheCustom` for the whole DB.
+- `StatementCacheCapacity` (default 512) should exceed the number of distinct statement shapes a
+  connection runs, or statements are re-prepared.
+
+### Round trips
+
+- A read is one round trip, plus one per level of to-many loads. A page and its total share one.
+- With `OnBegin` set, a lone terminal is still one round trip: `BEGIN`, the `OnBegin` statements,
+  the statement and `COMMIT` are pipelined. Across a network each saved round trip is worth its
+  latency; see [benchmarks.md](benchmarks.md).
+- Inside `Read` or `Write`, each terminal is a round trip; `BEGIN` rides on the first.
+- Belongs-to and has-one loads are joins and cost nothing extra; prefer them to separate queries.
+
+### Bulk writes
+
+- `CreateMany`, `Upsert` and `CreateOrSkip` with many rows send one array per column through
+  `unnest`, 10,000 rows per statement, one statement text for any row count, all chunks in one round
+  trip. A loop of `Create` calls is a round trip per row.
+- Bulk `Update` and `Delete` are one statement whatever the row count, unless hooks need the rows
+  (see [Table hooks](#table-hooks)).
+
+### Indexes
+
+- Lead every index on a tenant table with its tenant columns: every statement compares them with
+  constants.
+- **Keyset pages:** keel orders by the requested columns, then the primary key columns, and compares
+  the position as a row when it can. For `Order(s.CreatedAt.Desc())` on a table whose key is
+  `(id, organization_id, business_unit_id)`, an index on
+  `(organization_id, business_unit_id, created_at DESC, id DESC)` serves both the filter and the
+  order:
+
+```sql
+CREATE INDEX idx_shipments_created ON shipments (organization_id, business_unit_id, created_at DESC, id DESC);
+```
+
+  Keep page orders on non-nullable columns sorted one way, or the keyset expands to an `OR` chain.
+- **To-many loads** filter on the foreign key: index `(tenant columns, fk)`, and add the load's
+  order column when it has one: `(organization_id, business_unit_id, shipment_id, sequence)` for
+  `m.Order(m.Sequence.Asc())`. Many-to-many loads filter the join table on its local key.
+- `CountUpTo` and `Total(limit)` stop counting at the limit; prefer them to an exact `Count` on
+  large tables.
+
+### Decoding
+
+Rows decode straight from pgx's buffers into struct fields through generated accessors, with no
+reflection. Rows of one statement are allocated in slabs, scan plans are cached per connection and
+statement, and enum values and tenant strings are shared instead of allocated per row.
+
+## Testing
+
+### How keel's tests run
+
+keel's integration tests ([main_test.go](../main_test.go)) need a Postgres server:
+
+```sh
+docker run -d --name keelpg -e POSTGRES_USER=keel -e POSTGRES_PASSWORD=keel -e POSTGRES_DB=keel -p 55432:5432 postgres:18-alpine
+go test ./...                      # integration tests skip when Postgres is unreachable
+KEEL_TEST_REQUIRE=1 go test ./...  # fail instead of skipping
+```
+
+- `KEEL_TEST_DSN` names the server (default `postgres://keel:keel@localhost:55432/keel`). On first
+  use the tests create a database with a random name, apply `testdata/migrations` with
+  `migrate.Up`, and open a `keel.DB` on it; `TestMain` drops it with `DROP DATABASE … WITH (FORCE)`.
+- Each test works in a fresh random tenant (`newTenant()`), so tests never see each other's rows and
+  need no cleanup between them.
+- SQL golden tests ([render_test.go](../render_test.go)) open a `DB` on an address nothing listens
+  on: pgxpool connects lazily, so `ToSQL` renders statements without a server.
+- Round-trip tests count statements and round trips with an observer: statements of one round trip
+  share a `Start`.
+
+### Testing an application
+
+The same pattern works for an application:
+
+- In `TestMain` or a `sync.Once`, create a database per test binary, apply the embedded migrations
+  with `migrate.Open(ctx, dsn, dir)` and `Up`, and open the application's `keel.DB` with its real
+  `Config`. Drop the database when the run ends.
+- Give each test its own tenant context. Tenancy keeps tests apart, so they can run with
+  `t.Parallel()` against one database.
+- Test system jobs with a system scope, and assert scope errors with `errors.Is`.
+- Assert SQL with `ToSQL` on a `DB` that never connects, and assert round trips with a recording
+  observer.
+- To exercise `Retry`, return `&pgconn.PgError{Code: "40001"}` from the transaction function.
 
 ## Coming from Bun
 
 | Bun | keel |
 |---|---|
-| `bun.BaseModel \`bun:"table:shipments,alias:sp"\`` | `keel.Table \`db:"shipments"\`` |
+| `bun.BaseModel \`bun:"table:shipments,alias:sp"\`` | `keel.Table \`db:"shipments"\``; aliases are derived |
 | `bun:"id,pk,type:VARCHAR(100),notnull"` | `db:"id,pk,autoid:shp_"` |
-| `bun:"organization_id,pk"` + tenant helpers | `db:"organization_id,pk,tenant"` |
-| `bun:"version,type:BIGINT"` + `Version++` / `Where(version = ?)` / `CheckRowsAffected` | `db:"version,version"` + `Save` |
-| `BeforeAppendModel` setting ID and timestamps | `autoid`, `autocreate`, `autoupdate` |
-| `bun:"rel:belongs-to,join:customer_id=id"` | `db:"belongs:customer_id"` |
-| `bun:"rel:has-many,join:id=shipment_id"` | `db:"many:shipment_id"` |
-| `bun:"rel:m2m:shipment_tags,join:Shipment=Tag"` | `db:"m2m:shipment_tags.shipment_id.tag_id"` |
-| `bun:",scanonly"` (generated column) | `db:",readonly"` (and `noselect` when it should not be read) |
+| `bun:"organization_id,pk"` plus tenant helpers | `db:"organization_id,pk,tenant"` |
+| `bun:"version,type:BIGINT"` plus `Version++`, `Where("version = ?")`, `CheckRowsAffected` | `db:"version,version"` plus `Save` |
+| `BeforeAppendModel` setting IDs and timestamps | `autoid`, `autocreate`, `autoupdate` |
+| `BeforeAppendModel` validation, `AfterUpdate` audit | table hooks: `keel.OnCreate(db, s, keel.BeforeWrite, …)`, `keel.OnUpdate(…, keel.AfterWrite, …, keel.Needs(…))` |
+| `AfterScanRow` | `AfterLoad` |
+| `bun:"type:jsonb"` | `db:"attributes,jsonb"` |
+| `bun:",array"` | nothing; `[]string` and `[]int64` are arrays |
+| `bun:",nullzero"` | a pointer field; keel writes the value in the struct |
+| `bun:",scanonly"` (generated column) | `db:"stage_rank,readonly"`, plus `noselect` when it should not be read |
 | `bun:",default:..."` | nothing; set the value in Go |
-| `db.NewSelect().Model(&rows).Where("sp.status = ?", s)` | `s.Where(s.Status.Eq(st)).List(ctx, db)` |
+| `bun:"-"` | `db:"-"` |
+| `bun:",soft_delete"` | not built in; an interceptor that adds `deleted_at IS NULL` |
+| `bun:"rel:belongs-to,join:customer_id=id"` | `db:"belongs:customer_id"` |
+| `bun:"rel:has-one,join:id=worker_id"` | `db:"one:worker_id"` |
+| `bun:"rel:has-many,join:id=shipment_id"` | `db:"many:shipment_id"` |
+| `bun:"m2m:shipment_tags,join:Shipment=Tag"` | `db:"m2m:shipment_tags.shipment_id.tag_id"` |
+| `db.NewSelect().Model(&sh).WherePK().Scan(ctx)` | `s.Get(ctx, db, id)` |
+| `db.NewSelect().Model(&rows).Where("sp.status = ?", st).Scan(ctx)` | `s.Where(s.Status.Eq(st)).Limit(n).List(ctx, db)` |
 | `WhereGroup(" AND ", func(q) {... ScopeTenant ...})` | nothing; the scope applies the tenant |
+| `.WhereOr(...)` | `keel.Or(...)` |
+| `.Where("sp.pro_number ILIKE ?", "%"+q+"%")` | `s.ProNumber.ContainsFold(q)` (escaped) |
+| `bun.In(ids)` | `col.In(ids...)` |
+| `.Order("sp.created_at DESC")` | `.Order(s.CreatedAt.Desc())` |
+| `.Limit(n).Offset(m)`, `ScanAndCount` | `Page(ctx, db, keel.After(cursor, n).Total(cap))` (one round trip) |
+| `.Count(ctx)`, `.Exists(ctx)` | `Count`, `CountUpTo`, `Exists` |
+| `.Join("JOIN customers AS c ON c.id = sp.customer_id")` | a relation path filter (`s.Customer().Code.Eq(…)`) or `Join(c, c.ID.EqCol(s.CustomerID))` |
 | `.Relation("Customer").Relation("Moves.Stops")` | `.Load(s.Customer(), s.Moves().Stops())` |
 | `.Relation("Moves", func(q) { return q.Order("sm.sequence") })` | `.Load(m.Order(m.Sequence.Asc()))` |
-| `db.NewUpdate().Model((*T)(nil)).Set("status = ?", v).Where(...)` | `s.Where(...).Update(ctx, db, s.Status.To(v))` |
-| `.On("CONFLICT (...) DO UPDATE").Set("x = EXCLUDED.x")` | `s.Upsert(ctx, db, rows, keel.OnConflict(...).Update(s.X))` |
-| `ScanAndCount` | `Page(...Total(n))` (one round trip) |
-| `bun.In(ids)` | `col.In(ids...)` |
-| `.For("UPDATE NOWAIT")` | `.Lock(keel.ForUpdate, keel.NoWait)` |
+| `.Relation("Customer", func(q) { return q.Column("name") })` | `.Load(cu.Pick(cu.Name))` |
+| `.Where("EXISTS (SELECT 1 FROM moves …)")` | `m.Any(…)`, `keel.Exists(q)` |
+| `.ColumnExpr("count(*)").Group("status")` scanned into a struct | `keel.Into[R](ctx, db, s.Group(s.Status).Pick(s.Status, keel.Count()))` |
 | `ColumnExpr("count(*) FILTER (WHERE ...)")` | `keel.Count().Filter(pred)` |
-| `NewRaw` / string fragments | `keel.Raw("…?…", col, value)` |
+| `.DistinctOn("customer_id")` | `.DistinctOn(s.CustomerID)` |
+| `.With("busy", q).Table("busy")` | `keel.CTE("busy", cols, q)` plus `With(busy)` |
+| `.Union(q)`, `.UnionAll(q)` | `keel.Union(q1, q2)`, `keel.UnionAll(q1, q2)` |
+| `.For("UPDATE NOWAIT")` | `.Lock(keel.ForUpdate, keel.NoWait)` |
+| `db.NewInsert().Model(sh).Exec(ctx)` | `s.Create(ctx, db, sh)` |
+| `db.NewInsert().Model(&rows).Exec(ctx)` | `s.CreateMany(ctx, db, rows)` |
+| `.Returning("*")` | nothing; keel reads back `readonly` columns and the version |
+| `db.NewUpdate().Model(sh).WherePK().Exec(ctx)` | `s.Save(ctx, db, sh)` |
+| `db.NewUpdate().Model(sh).Column("status").WherePK()` | `s.Save(ctx, db, sh, s.Status)` |
+| `db.NewUpdate().Model((*T)(nil)).Set("status = ?", v).Where(...)` | `s.Where(...).Update(ctx, db, s.Status.To(v))` |
+| `db.NewDelete().Model(sh).WherePK().Exec(ctx)` | `s.DeleteRow(ctx, db, sh)` |
+| `db.NewDelete().Model((*T)(nil)).Where(...)` | `s.Where(...).Delete(ctx, db)` |
+| `.On("CONFLICT (...) DO UPDATE").Set("x = EXCLUDED.x")` | `s.Upsert(ctx, db, rows, keel.OnConflict(...).Update(s.X))` |
+| `.On("CONFLICT DO NOTHING")` | `s.CreateOrSkip(ctx, db, rows, cols...)` |
+| `INSERT … SELECT` through `NewInsert().Table(...)` | `s.InsertFrom(ctx, db, q, cols...)` |
+| `db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {...})` | `keel.Write(ctx, db, func(ctx context.Context) error {...})`; pass `ctx`, not a `tx` |
+| `bun.IDB` parameters to share a transaction | nothing; the transaction travels on the context |
+| `NewRaw` / string fragments | `keel.Raw("…?…", col, value)`; `db.Pool()` for what keel cannot express (unscoped) |
+| `bun.Ident`, `bun.Safe` | an expression argument of `keel.Raw` |
+| `sql.ErrNoRows` | `keel.ErrNotFound` |
+| `pgdriver.Error` with `IntegrityViolation()` | `keel.IsUnique`, `IsForeignKey`, `IsCheck`, `Constraint` |
+| `bun.QueryHook` | `keel.Observer` |
