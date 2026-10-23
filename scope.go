@@ -1,0 +1,37 @@
+package keel
+
+import "context"
+
+// scopeState is the scope of one terminal call, resolved once from the context.
+type scopeState struct {
+	tenant  []any
+	system  bool
+	reason  string
+	columns []string
+}
+
+func (db *DB) resolveScope(ctx context.Context) *scopeState {
+	st := &scopeState{columns: db.cfg.TenantColumns}
+	if db.cfg.System != nil {
+		if reason, ok := db.cfg.System(ctx); ok {
+			st.system = true
+			st.reason = reason
+			return st
+		}
+	}
+	if db.cfg.Tenant != nil {
+		if values, ok := db.cfg.Tenant(ctx); ok && len(values) == len(db.cfg.TenantColumns) {
+			st.tenant = values
+		}
+	}
+	return st
+}
+
+func (s *scopeState) tenantPos(column string) int {
+	for i, c := range s.columns {
+		if c == column {
+			return i
+		}
+	}
+	return -1
+}

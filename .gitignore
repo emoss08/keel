@@ -1,0 +1,4 @@
+/keel
+*.test
+*.out
+/bench/*.prof
