@@ -150,12 +150,13 @@ func build() (*env, error) {
 		return nil, err
 	}
 	dsn := dsnFor(dbName)
-	m, err := migrate.Open(ctx, dsn, os.DirFS("../testdata/migrations"))
+	m, err := migrate.Open(ctx, dsn, migrate.Sources(migrate.Source{Name: "testdata", FS: os.DirFS("../testdata/migrations")}),
+		migrate.Options{})
 	if err != nil {
 		return nil, err
 	}
 	defer m.Close()
-	if _, err := m.Up(ctx); err != nil {
+	if _, err := m.Up(ctx, migrate.UpOptions{}); err != nil {
 		return nil, err
 	}
 

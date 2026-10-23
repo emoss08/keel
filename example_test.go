@@ -1133,25 +1133,43 @@ func Example_migrations() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	m, err := migrate.Open(ctx, os.Getenv("DATABASE_URL"), dir)
+	sources := migrate.Sources(migrate.Source{Name: "core", FS: dir})
+	m, err := migrate.Open(ctx, os.Getenv("KEEL_DSN"), sources, migrate.Options{
+		After: []string{"ANALYZE"},
+		Observer: func(e migrate.Event) {
+			switch e.Kind {
+			case migrate.Retry:
+				log.Printf("%s: lock timeout, attempt %d, blocked by %v", e.Migration.ID(), e.Attempt, e.Blockers)
+			case migrate.MigrationEnd:
+				log.Printf("%s in %s", e.Migration.ID(), e.Duration)
+			}
+		},
+	})
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer m.Close()
 
-	applied, err := m.Up(ctx)
-	if errors.Is(err, migrate.ErrChanged) {
+	res, err := m.Up(ctx, migrate.UpOptions{})
+	switch {
+	case errors.Is(err, migrate.ErrChanged):
 		log.Fatal("an applied migration was edited; add a new migration instead")
-	} else if err != nil {
+	case errors.Is(err, migrate.ErrOutOfOrder):
+		log.Fatal("a migration is older than the newest applied one; give it a newer version")
+	case err != nil:
 		log.Fatal(err)
 	}
-	fmt.Println("applied", applied)
+	fmt.Println("applied", len(res.Applied))
 
 	status, err := m.Status(ctx)
 	if err != nil {
 		log.Fatal(err)
 	}
 	for _, s := range status {
-		fmt.Println(s.ID(), s.Applied, s.NoTx)
+		fmt.Println(s.ID(), s.State, s.Directives.NoTx)
+	}
+
+	if err := migrate.Require(ctx, m.Conn(), sources.Version()); errors.Is(err, migrate.ErrBehind) {
+		log.Fatal(err)
 	}
 }
