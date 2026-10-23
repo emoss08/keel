@@ -13,11 +13,11 @@ import (
 // by the order arguments are bound, so a clause written early keeps its numbers when the
 // statement is assembled.
 type render struct {
-	buf    []byte
-	args   []any
-	err    error
-	sc     *scope
-	nalias int
+	buf     []byte
+	args    []any
+	err     error
+	sc      *scope
+	aliases []string
 
 	scope    *scopeState
 	tenantPH [8]int
@@ -78,7 +78,8 @@ func (r *render) recycle() {
 	r.args = r.args[:0]
 	r.err = nil
 	r.sc = nil
-	r.nalias = 0
+	clear(r.aliases)
+	r.aliases = r.aliases[:0]
 	r.scope = nil
 	r.tenantPH = [8]int{}
 	r.ctx = nil
@@ -95,21 +96,44 @@ func (r *render) argsCopy() []any {
 	return append(make([]any, 0, len(r.args)), r.args...)
 }
 
-var aliasNames = func() [64]string {
-	var a [64]string
-	for i := range a {
-		a[i] = "t" + strconv.Itoa(i)
+// newAlias returns base as an alias, or base followed by a number when the statement already
+// uses it. Aliases depend only on the statement's shape, so equal shapes render equal text.
+func (r *render) newAlias(base string) string {
+	for _, u := range r.aliases {
+		if u == base {
+			n := 2
+			for {
+				cand := base + strconv.Itoa(n)
+				if !r.aliasUsed(cand) {
+					r.aliases = append(r.aliases, cand)
+					return cand
+				}
+				n++
+			}
+		}
 	}
-	return a
-}()
+	r.aliases = append(r.aliases, base)
+	return base
+}
 
-func (r *render) newAlias() string {
-	n := r.nalias
-	r.nalias++
-	if n < len(aliasNames) {
-		return aliasNames[n]
+func (r *render) aliasUsed(a string) bool {
+	for _, u := range r.aliases {
+		if u == a {
+			return true
+		}
 	}
-	return "t" + strconv.Itoa(n)
+	return false
+}
+
+// aliasBase is the alias a reference asks for: its As name, its relation's alias or its table's.
+func aliasBase(ref *Ref) string {
+	switch {
+	case ref.alias != "":
+		return ref.alias
+	case ref.parent != nil:
+		return ref.relation().Alias
+	}
+	return ref.Table.Alias
 }
 
 func (r *render) fail(err error) {
@@ -156,7 +180,7 @@ func (r *render) release(bufs ...[]byte) {
 }
 
 func (r *render) push(base *Ref, mode joinMode, allTenants bool) (*scope, string) {
-	alias := r.newAlias()
+	alias := r.newAlias(aliasBase(base))
 	sc := &scope{parent: r.sc, joinMode: mode, allTenants: allTenants}
 	sc.refs = append(sc.refs, scoped{ref: base, alias: alias})
 	r.sc = sc
@@ -182,14 +206,14 @@ func (r *render) alias(ref *Ref) string {
 			}
 		}
 		r.fail(fmt.Errorf("keel: %s is not part of this query", ref.name()))
-		return "t0"
+		return "_"
 	}
 	rel := ref.relation()
 	if rel.Kind.ToMany() {
 		r.fail(fmt.Errorf(
 			"keel: %s is a to-many relation; filter it with Any or None", ref.name(),
 		))
-		return "t0"
+		return "_"
 	}
 	parentAlias := r.alias(ref.parent)
 	sc := r.scopeOf(ref.parent)
@@ -198,7 +222,7 @@ func (r *render) alias(ref *Ref) string {
 	}
 	if sc.joinMode == joinNone {
 		r.fail(fmt.Errorf("keel: %s cannot be joined here", ref.name()))
-		return "t0"
+		return "_"
 	}
 	return r.addJoin(sc, ref, parentAlias, false)
 }
@@ -234,7 +258,7 @@ func (r *render) addJoin(sc *scope, ref *Ref, parentAlias string, selected bool)
 			return j.alias
 		}
 	}
-	alias := r.newAlias()
+	alias := r.newAlias(aliasBase(ref))
 	sc.joins = append(sc.joins, &join{
 		ref: ref, alias: alias, parentAlias: parentAlias, selected: selected,
 	})

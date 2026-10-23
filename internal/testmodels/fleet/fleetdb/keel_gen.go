@@ -17,6 +17,7 @@ import (
 var customersTable = schema.Table{
 	Name:   "customers",
 	Quoted: `"customers"`,
+	Alias:  "c",
 	Model:  "fleet.Customer",
 	Columns: []schema.Column{
 		{Name: "id", Quoted: `"id"`, Field: "ID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagAutoID},
@@ -169,6 +170,7 @@ func valueCustomer(p unsafe.Pointer, c int32) any {
 var locationsTable = schema.Table{
 	Name:   "locations",
 	Quoted: `"locations"`,
+	Alias:  "l",
 	Model:  "fleet.Location",
 	Columns: []schema.Column{
 		{Name: "id", Quoted: `"id"`, Field: "ID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagAutoID},
@@ -286,6 +288,7 @@ func valueLocation(p unsafe.Pointer, c int32) any {
 var movesTable = schema.Table{
 	Name:   "moves",
 	Quoted: `"moves"`,
+	Alias:  "m",
 	Model:  "fleet.Move",
 	Columns: []schema.Column{
 		{Name: "id", Quoted: `"id"`, Field: "ID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagAutoID},
@@ -298,8 +301,8 @@ var movesTable = schema.Table{
 		{Name: "created_at", Quoted: `"created_at"`, Field: "CreatedAt", Kind: schema.KindInt64, Flags: schema.FlagAutoCreate},
 	},
 	Relations: []schema.Relation{
-		{Name: "Shipment", Kind: schema.BelongsTo, Local: []int32{3}, Remote: []int32{0}},
-		{Name: "Stops", Kind: schema.HasMany, Local: []int32{0}, Remote: []int32{3}},
+		{Name: "Shipment", Alias: "s", Kind: schema.BelongsTo, Local: []int32{3}, Remote: []int32{0}},
+		{Name: "Stops", Alias: "s", Kind: schema.HasMany, Local: []int32{0}, Remote: []int32{3}},
 	},
 	PK:         []int32{0, 1, 2},
 	Tenant:     []int32{1, 2},
@@ -444,6 +447,7 @@ func attachMove(p unsafe.Pointer, rel int32, child unsafe.Pointer) {
 var plantsTable = schema.Table{
 	Name:   "plants",
 	Quoted: `"plants"`,
+	Alias:  "p",
 	Model:  "fleet.Plant",
 	Columns: []schema.Column{
 		{Name: "code", Quoted: `"code"`, Field: "Code", Kind: schema.KindString, Flags: schema.FlagPK},
@@ -533,6 +537,7 @@ func valuePlant(p unsafe.Pointer, c int32) any {
 var shipmentsTable = schema.Table{
 	Name:   "shipments",
 	Quoted: `"shipments"`,
+	Alias:  "s",
 	Model:  "fleet.Shipment",
 	Columns: []schema.Column{
 		{Name: "id", Quoted: `"id"`, Field: "ID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagAutoID},
@@ -556,10 +561,10 @@ var shipmentsTable = schema.Table{
 		{Name: "updated_at", Quoted: `"updated_at"`, Field: "UpdatedAt", Kind: schema.KindInt64, Flags: schema.FlagAutoUpdate},
 	},
 	Relations: []schema.Relation{
-		{Name: "Customer", Kind: schema.BelongsTo, Local: []int32{3}, Remote: []int32{0}},
-		{Name: "BillTo", Kind: schema.BelongsTo, Local: []int32{4}, Remote: []int32{0}},
-		{Name: "Moves", Kind: schema.HasMany, Local: []int32{0}, Remote: []int32{3}},
-		{Name: "Tags", Kind: schema.ManyToMany, Local: []int32{0}, Remote: []int32{0}, JoinTable: "shipment_tags", JoinLocal: []string{`shipment_id`}, JoinRemote: []string{`tag_id`}, JoinQuoted: `"shipment_tags"`, JoinLocalQ: []string{`"shipment_id"`}, JoinRemoteQ: []string{`"tag_id"`}},
+		{Name: "Customer", Alias: "c", Kind: schema.BelongsTo, Local: []int32{3}, Remote: []int32{0}},
+		{Name: "BillTo", Alias: "bt", Kind: schema.BelongsTo, Local: []int32{4}, Remote: []int32{0}},
+		{Name: "Moves", Alias: "m", Kind: schema.HasMany, Local: []int32{0}, Remote: []int32{3}},
+		{Name: "Tags", Alias: "t", Kind: schema.ManyToMany, Local: []int32{0}, Remote: []int32{0}, JoinAlias: "st", JoinTable: "shipment_tags", JoinLocal: []string{`shipment_id`}, JoinRemote: []string{`tag_id`}, JoinQuoted: `"shipment_tags"`, JoinLocalQ: []string{`"shipment_id"`}, JoinRemoteQ: []string{`"tag_id"`}},
 	},
 	PK:         []int32{0, 1, 2},
 	Tenant:     []int32{1, 2},
@@ -810,6 +815,7 @@ func attachShipment(p unsafe.Pointer, rel int32, child unsafe.Pointer) {
 var stopsTable = schema.Table{
 	Name:   "stops",
 	Quoted: `"stops"`,
+	Alias:  "s",
 	Model:  "fleet.Stop",
 	Columns: []schema.Column{
 		{Name: "id", Quoted: `"id"`, Field: "ID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagAutoID},
@@ -822,7 +828,7 @@ var stopsTable = schema.Table{
 		{Name: "arrived_at", Quoted: `"arrived_at"`, Field: "ArrivedAt", Kind: schema.KindTime, Flags: schema.FlagNullable},
 	},
 	Relations: []schema.Relation{
-		{Name: "Location", Kind: schema.BelongsTo, Local: []int32{4}, Remote: []int32{0}},
+		{Name: "Location", Alias: "l", Kind: schema.BelongsTo, Local: []int32{4}, Remote: []int32{0}},
 	},
 	PK:         []int32{0, 1, 2},
 	Tenant:     []int32{1, 2},
@@ -965,6 +971,7 @@ func attachStop(p unsafe.Pointer, rel int32, child unsafe.Pointer) {
 var tagsTable = schema.Table{
 	Name:   "tags",
 	Quoted: `"tags"`,
+	Alias:  "t",
 	Model:  "fleet.Tag",
 	Columns: []schema.Column{
 		{Name: "id", Quoted: `"id"`, Field: "ID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagAutoID},
@@ -1070,6 +1077,7 @@ func valueTag(p unsafe.Pointer, c int32) any {
 var workersTable = schema.Table{
 	Name:   "workers",
 	Quoted: `"workers"`,
+	Alias:  "w",
 	Model:  "fleet.Worker",
 	Columns: []schema.Column{
 		{Name: "id", Quoted: `"id"`, Field: "ID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagAutoID},
@@ -1082,7 +1090,7 @@ var workersTable = schema.Table{
 		{Name: "hired_at", Quoted: `"hired_at"`, Field: "HiredAt", Kind: schema.KindTime, Flags: schema.FlagAutoCreate},
 	},
 	Relations: []schema.Relation{
-		{Name: "Manager", Kind: schema.BelongsTo, Local: []int32{3}, Remote: []int32{0}},
+		{Name: "Manager", Alias: "m", Kind: schema.BelongsTo, Local: []int32{3}, Remote: []int32{0}},
 	},
 	PK:         []int32{0, 1, 2},
 	Tenant:     []int32{1, 2},

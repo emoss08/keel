@@ -167,7 +167,7 @@ func (q *query) renderSelect(r *render, sn *lnode, o selectOpts) *selectPlan {
 
 	lateral := make([]string, len(q.joins))
 	for i, j := range q.joins {
-		a := r.newAlias()
+		a := r.newAlias(aliasBase(j.ref))
 		lateral[i] = a
 		sc.refs = append(sc.refs, scoped{ref: j.ref, alias: a})
 	}
@@ -434,7 +434,7 @@ func (q *query) writeSubquery(r *render, existsOnly bool) {
 	o := selectOpts{selectOne: existsOnly, exact: true}
 	switch {
 	case rel != nil && rel.Kind == schema.ManyToMany:
-		jalias := r.newAlias()
+		jalias := r.newAlias(rel.JoinAlias)
 		target := rel.Target
 		o.extraJoin = func(r *render, alias string) {
 			r.s(" JOIN ")

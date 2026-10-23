@@ -268,7 +268,7 @@ func loadStmt(ctx context.Context, run *runner, w pending) (*stmt, *selectPlan, 
 
 // m2mOpts reads a many-to-many relation through its join table, returning the parent key first.
 func m2mOpts(r *render, rel *schema.Relation, target *schema.Table, remote int32, ix *parentIndex) selectOpts {
-	jalias := r.newAlias()
+	jalias := r.newAlias(rel.JoinAlias)
 	return selectOpts{
 		keyColumn: func(r *render) {
 			r.s(jalias)
@@ -303,7 +303,7 @@ func m2mOpts(r *render, rel *schema.Relation, target *schema.Table, remote int32
 // lateralSelect loads at most q.limit rows per parent key:
 // SELECT … FROM unnest($1) k CROSS JOIN LATERAL (SELECT … WHERE fk = k.k … LIMIT n).
 func lateralSelect(r *render, q *query, n *lnode, ix *parentIndex, remote int32) *selectPlan {
-	keyAlias := r.newAlias()
+	keyAlias := r.newAlias("k")
 	var plan *selectPlan
 	body := r.section(func() {
 		plan = q.renderSelect(r, n, selectOpts{extraWhere: func(r *render, alias string) {
@@ -315,7 +315,7 @@ func lateralSelect(r *render, q *query, n *lnode, ix *parentIndex, remote int32)
 			r.s(".k")
 		}})
 	})
-	outer := r.newAlias()
+	outer := r.newAlias("lat")
 	r.s("SELECT ")
 	r.s(outer)
 	r.s(".* FROM unnest(")

@@ -69,6 +69,9 @@ func Path[H any](parent *Ref, rel int32, build func(*Ref) H) H {
 // self-joins and correlated subqueries. Generated As methods call it. Aliases are memoised, so
 // alias names should be constants.
 func Alias[H any](ref *Ref, alias string, build func(*Ref) H) H {
+	if !validAlias(alias) {
+		panic("keel: alias " + alias + " must match [a-z_][a-z0-9_]*")
+	}
 	return memoized(memoKey{ref: ref, rel: -1, alias: alias}, func() H {
 		return build(&Ref{Table: ref.Table, alias: alias})
 	})
@@ -89,4 +92,17 @@ func memoized[H any](key memoKey, build func() H) H {
 	h := build()
 	memo.m[key] = h
 	return h
+}
+
+func validAlias(a string) bool {
+	if a == "" || (a[0] >= '0' && a[0] <= '9') {
+		return false
+	}
+	for i := 0; i < len(a); i++ {
+		c := a[i]
+		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '_' {
+			return false
+		}
+	}
+	return true
 }

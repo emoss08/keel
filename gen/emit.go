@@ -274,8 +274,8 @@ func (e *emitter) emitPackage(p *pkgModels) ([]byte, error) {
 
 		w("// %s is the schema of %s.\n", tblVar, model)
 		w("var %s = %s.Table{\n", tblVar, sch)
-		w("\tName: %q,\n\tQuoted: %s,\n\tModel: %q,\n", m.table, lit(schema.Quote(m.table)),
-			m.pkg.name+"."+m.name)
+		w("\tName: %q,\n\tQuoted: %s,\n\tAlias: %q,\n\tModel: %q,\n", m.table, lit(schema.Quote(m.table)),
+			schema.AliasFor(m.table), m.pkg.name+"."+m.name)
 		w("\tColumns: []%s.Column{\n", sch)
 		for i, c := range m.columns {
 			w("\t\t{Name: %q, Quoted: %s, Field: %q, Kind: %s.%s, Flags: %s},\n",
@@ -286,9 +286,10 @@ func (e *emitter) emitPackage(p *pkgModels) ([]byte, error) {
 		if len(m.rels) > 0 {
 			w("\tRelations: []%s.Relation{\n", sch)
 			for _, r := range m.rels {
-				w("\t\t{Name: %q, Kind: %s.%s, Local: %s, Remote: %s", r.field, sch, relKindName(r.kind),
-					ints(r.local), ints(r.remote))
+				w("\t\t{Name: %q, Alias: %q, Kind: %s.%s, Local: %s, Remote: %s", r.field,
+					schema.AliasFor(schema.Snake(r.field)), sch, relKindName(r.kind), ints(r.local), ints(r.remote))
 				if r.kind == schema.ManyToMany {
+					w(", JoinAlias: %q", schema.AliasFor(r.tag.JoinTable))
 					w(", JoinTable: %q, JoinLocal: %s, JoinRemote: %s, JoinQuoted: %s, JoinLocalQ: %s, JoinRemoteQ: %s",
 						r.tag.JoinTable, strs([]string{r.tag.JoinLocal}), strs([]string{r.tag.JoinRemote}),
 						lit(schema.Quote(r.tag.JoinTable)), strs([]string{schema.Quote(r.tag.JoinLocal)}),

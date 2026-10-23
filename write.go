@@ -266,7 +266,9 @@ func insertStmts(t *schema.Table, rows []unsafe.Pointer, spec *insertSpec) []*st
 		r := newRender(nil, nil, nil)
 		r.s("INSERT INTO ")
 		r.s(t.Quoted)
-		r.s(" AS t0 (")
+		r.s(" AS ")
+		r.s(t.Alias)
+		r.s(" (")
 		for i, c := range t.Insert {
 			if i > 0 {
 				r.s(", ")
@@ -300,7 +302,8 @@ func insertStmts(t *schema.Table, rows []unsafe.Pointer, spec *insertSpec) []*st
 					r.s(", ")
 				}
 				first = false
-				r.s("t0.")
+				r.s(t.Alias)
+				r.b('.')
 				r.s(t.Columns[c].Quoted)
 			}
 		}
@@ -474,7 +477,9 @@ func (db *DB) upsert(ctx context.Context, ref *Ref, rows []unsafe.Pointer, c Con
 			q := t.Columns[t.Version].Quoted
 			r.s(", ")
 			r.s(q)
-			r.s(" = t0.")
+			r.s(" = ")
+			r.s(t.Alias)
+			r.b('.')
 			r.s(q)
 			r.s(" + 1")
 		}
@@ -549,7 +554,9 @@ func (db *DB) save(ctx context.Context, ref *Ref, row unsafe.Pointer, cols []int
 	defer r.recycle()
 	r.s("UPDATE ")
 	r.s(t.Quoted)
-	r.s(" t0 SET ")
+	r.b(' ')
+	r.s(t.Alias)
+	r.s(" SET ")
 	for i, c := range update {
 		if i > 0 {
 			r.s(", ")
@@ -565,21 +572,25 @@ func (db *DB) save(ctx context.Context, ref *Ref, row unsafe.Pointer, cols []int
 		q := t.Columns[t.Version].Quoted
 		r.s(", ")
 		r.s(q)
-		r.s(" = t0.")
+		r.s(" = ")
+		r.s(t.Alias)
+		r.b('.')
 		r.s(q)
 		r.s(" + 1")
 	}
 	r.s(" WHERE ")
 	pkWhere(r, t, row)
 	if t.Version >= 0 {
-		r.s(" AND t0.")
+		r.s(" AND ")
+		r.s(t.Alias)
+		r.b('.')
 		r.s(t.Columns[t.Version].Quoted)
 		r.s(" = ")
 		r.arg(oldVersion)
 	}
 	if t.HasTenant() && !run.sc.system {
 		r.s(" AND ")
-		r.tenantPred(t, "t0", false)
+		r.tenantPred(t, t.Alias, false)
 	}
 	ret := append([]int32(nil), t.Returning...)
 	if t.Version >= 0 {
@@ -597,7 +608,8 @@ func (db *DB) save(ctx context.Context, ref *Ref, row unsafe.Pointer, cols []int
 				r.s(", ")
 			}
 			first = false
-			r.s("t0.")
+			r.s(t.Alias)
+			r.b('.')
 			r.s(t.Columns[c].Quoted)
 		}
 		if old != nil {
@@ -698,7 +710,8 @@ func pkWhere(r *render, t *schema.Table, row unsafe.Pointer) {
 		if i > 0 {
 			r.s(" AND ")
 		}
-		r.s("t0.")
+		r.s(t.Alias)
+		r.b('.')
 		r.s(t.Columns[c].Quoted)
 		r.s(" = ")
 		r.arg(t.Value(row, c))
@@ -757,11 +770,13 @@ func (db *DB) deleteRow(ctx context.Context, t *schema.Table, row unsafe.Pointer
 	defer r.recycle()
 	r.s("DELETE FROM ")
 	r.s(t.Quoted)
-	r.s(" t0 WHERE ")
+	r.b(' ')
+	r.s(t.Alias)
+	r.s(" WHERE ")
 	pkWhere(r, t, row)
 	if t.HasTenant() && !run.sc.system {
 		r.s(" AND ")
-		r.tenantPred(t, "t0", false)
+		r.tenantPred(t, t.Alias, false)
 	}
 	if r.err != nil {
 		return run.close(ctx, r.err)

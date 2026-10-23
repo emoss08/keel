@@ -71,12 +71,14 @@ func (k RelKind) ToMany() bool { return k == HasMany || k == ManyToMany }
 // Relation links a model to another model.
 type Relation struct {
 	Name   string
+	Alias  string
 	Kind   RelKind
 	Target *Table
 	Local  []int32
 	Remote []int32
 
 	JoinTable   string
+	JoinAlias   string
 	JoinLocal   []string
 	JoinRemote  []string
 	JoinQuoted  string
@@ -91,6 +93,7 @@ type Hook func(ctx context.Context, row unsafe.Pointer) error
 type Table struct {
 	Name   string
 	Quoted string
+	Alias  string
 	Model  string
 
 	Columns   []Column
@@ -194,10 +197,19 @@ func Derive(t *Table) {
 	if t.Quoted == "" {
 		t.Quoted = Quote(t.Name)
 	}
+	if t.Alias == "" {
+		t.Alias = AliasFor(t.Name)
+	}
 	for i := range t.Relations {
 		r := &t.Relations[i]
+		if r.Alias == "" {
+			r.Alias = AliasFor(Snake(r.Name))
+		}
 		if r.Kind != ManyToMany {
 			continue
+		}
+		if r.JoinAlias == "" {
+			r.JoinAlias = AliasFor(r.JoinTable)
 		}
 		r.JoinQuoted = Quote(r.JoinTable)
 		r.JoinLocalQ = quoteAll(r.JoinLocal)
@@ -225,4 +237,62 @@ func Quote(name string) string {
 	}
 	b = append(b, '"')
 	return string(b)
+}
+
+// AliasFor derives a short alias from a snake_case name: the first letter of each word
+// (shipment_moves → sm). An alias that is a reserved word gets a trailing underscore.
+func AliasFor(name string) string {
+	b := make([]byte, 0, 4)
+	start := true
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if c == '_' {
+			start = true
+			continue
+		}
+		if start {
+			if c >= 'A' && c <= 'Z' {
+				c += 'a' - 'A'
+			}
+			if (c >= 'a' && c <= 'z') || (len(b) > 0 && c >= '0' && c <= '9') {
+				b = append(b, c)
+			}
+			start = false
+		}
+	}
+	if len(b) == 0 {
+		b = append(b, 't')
+	}
+	a := string(b)
+	if reserved[a] {
+		a += "_"
+	}
+	return a
+}
+
+// Snake turns a Go identifier into snake_case (BillTo → bill_to, HTTPServer → http_server).
+func Snake(name string) string {
+	b := make([]byte, 0, len(name)+4)
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		upper := c >= 'A' && c <= 'Z'
+		if upper {
+			prevLower := i > 0 && name[i-1] >= 'a' && name[i-1] <= 'z'
+			nextLower := i+1 < len(name) && name[i+1] >= 'a' && name[i+1] <= 'z'
+			prevUpper := i > 0 && name[i-1] >= 'A' && name[i-1] <= 'Z'
+			if i > 0 && (prevLower || (prevUpper && nextLower)) {
+				b = append(b, '_')
+			}
+			c += 'a' - 'A'
+		}
+		b = append(b, c)
+	}
+	return string(b)
+}
+
+// reserved holds the PostgreSQL reserved key words short enough to be derived aliases.
+var reserved = map[string]bool{
+	"all": true, "and": true, "any": true, "as": true, "asc": true, "by": true, "do": true,
+	"end": true, "for": true, "in": true, "is": true, "not": true, "of": true, "off": true,
+	"on": true, "or": true, "to": true, "add": true, "if": true, "at": true, "set": true,
 }

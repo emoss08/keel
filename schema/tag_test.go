@@ -128,3 +128,19 @@ func TestQuote(t *testing.T) {
 		t.Fatal(Quote(`a"b`))
 	}
 }
+
+func TestAliasFor(t *testing.T) {
+	for in, want := range map[string]string{
+		"shipments": "s", "shipment_moves": "sm", "business_units": "bu", "do_items": "di",
+		"delivery_orders": "do_", "a2b_links": "al", "": "t",
+	} {
+		if got := AliasFor(in); got != want {
+			t.Errorf("AliasFor(%q) = %q, want %q", in, got, want)
+		}
+	}
+	for in, want := range map[string]string{"BillTo": "bill_to", "HTTPServer": "http_server", "Moves": "moves", "ID": "id"} {
+		if got := Snake(in); got != want {
+			t.Errorf("Snake(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
