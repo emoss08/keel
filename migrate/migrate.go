@@ -40,6 +40,9 @@ type Migration struct {
 	Down    string
 	NoTx    bool
 	Sum     string
+
+	hasUp   bool
+	hasDown bool
 }
 
 // ID is the migration's version and name.
@@ -125,17 +128,19 @@ func Read(fsys fs.FS) ([]Migration, error) {
 			byID[base] = mg
 		}
 		if dir == "up" {
+			mg.hasUp = true
 			mg.Up = string(body)
 			mg.NoTx = notx
 			sum := sha256.Sum256(body)
 			mg.Sum = hex.EncodeToString(sum[:])
 		} else {
+			mg.hasDown = true
 			mg.Down = string(body)
 		}
 	}
 	out := make([]Migration, 0, len(byID))
 	for id, mg := range byID {
-		if mg.Up == "" {
+		if !mg.hasUp {
 			return nil, fmt.Errorf("migrate: %s has a down file but no up file", id)
 		}
 		out = append(out, *mg)
@@ -157,19 +162,47 @@ func Read(fsys fs.FS) ([]Migration, error) {
 	return out, nil
 }
 
+// ensureTable creates the bookkeeping table. Concurrent creators serialise on a transaction-scoped
+// advisory lock, since CREATE TABLE IF NOT EXISTS is not safe against itself.
 func (m *Migrator) ensureTable(ctx context.Context) error {
-	_, err := m.conn.Exec(ctx, `CREATE TABLE IF NOT EXISTS `+Table+` (
+	tx, err := m.conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", int64(lockKey)+1); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `CREATE TABLE IF NOT EXISTS `+Table+` (
 	version text PRIMARY KEY,
 	name text NOT NULL,
 	checksum text NOT NULL,
 	applied_at timestamptz NOT NULL DEFAULT now()
-)`)
-	return err
+)`); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
+// lock takes the session-level migration lock. It polls pg_try_advisory_lock rather than waiting
+// in pg_advisory_lock: a waiting statement holds a transaction open, and CREATE INDEX
+// CONCURRENTLY in the runner that holds the lock waits for every open transaction to finish.
 func (m *Migrator) lock(ctx context.Context) (func(), error) {
-	if _, err := m.conn.Exec(ctx, "SELECT pg_advisory_lock($1)", int64(lockKey)); err != nil {
-		return nil, fmt.Errorf("migrate: lock: %w", err)
+	wait := 20 * time.Millisecond
+	for {
+		var got bool
+		if err := m.conn.QueryRow(ctx, "SELECT pg_try_advisory_lock($1)", int64(lockKey)).Scan(&got); err != nil {
+			return nil, fmt.Errorf("migrate: lock: %w", err)
+		}
+		if got {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("migrate: lock: %w", ctx.Err())
+		case <-time.After(wait):
+		}
+		wait = min(wait*2, time.Second)
 	}
 	return func() {
 		_, _ = m.conn.Exec(context.WithoutCancel(ctx), "SELECT pg_advisory_unlock($1)", int64(lockKey))
@@ -252,6 +285,11 @@ func (m *Migrator) Up(ctx context.Context) ([]string, error) {
 }
 
 func (m *Migrator) apply(ctx context.Context, mg Migration) error {
+	if strings.TrimSpace(mg.Up) == "" {
+		_, err := m.conn.Exec(ctx, "INSERT INTO "+Table+" (version, name, checksum) VALUES ($1, $2, $3)",
+			mg.Version, mg.Name, mg.Sum)
+		return err
+	}
 	if mg.NoTx {
 		for _, s := range Split(mg.Up) {
 			if _, err := m.conn.Exec(ctx, s); err != nil {
@@ -297,7 +335,7 @@ func (m *Migrator) Down(ctx context.Context, n int) ([]string, error) {
 		if _, ok := done[mg.Version]; !ok {
 			continue
 		}
-		if mg.Down == "" {
+		if !mg.hasDown {
 			return out, fmt.Errorf("migrate: %s has no down file", mg.ID())
 		}
 		if err := m.revert(ctx, mg); err != nil {
@@ -309,6 +347,10 @@ func (m *Migrator) Down(ctx context.Context, n int) ([]string, error) {
 }
 
 func (m *Migrator) revert(ctx context.Context, mg Migration) error {
+	if strings.TrimSpace(mg.Down) == "" {
+		_, err := m.conn.Exec(ctx, "DELETE FROM "+Table+" WHERE version = $1", mg.Version)
+		return err
+	}
 	if mg.NoTx {
 		for _, s := range Split(mg.Down) {
 			if _, err := m.conn.Exec(ctx, s); err != nil {
