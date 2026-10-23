@@ -105,7 +105,7 @@ func intoItem[R any](p Projection, want cardinality, set func(rows []R)) BatchIt
 				for i, f := range layout.fields {
 					dst := reflect.NewAt(f.typ, unsafe.Add(base, f.offset)).Interface()
 					if plans[i] == nil {
-						plans[i] = m.PlanScan(fds[i].DataTypeOID, fds[i].Format, dst)
+						plans[i] = planScan(m, fds[i].DataTypeOID, fds[i].Format, dst)
 					}
 					if err := plans[i].Scan(raw[i], dst); err != nil {
 						return errf("scan %s field %d: %w", layout.typ, i, err)

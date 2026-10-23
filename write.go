@@ -369,7 +369,7 @@ func returningScanner(t *schema.Table, rows []unsafe.Pointer, cols []int32, flag
 			for j, c := range cols {
 				dst := t.Ptr(rows[i], c)
 				if plans[j+off] == nil {
-					plans[j+off] = m.PlanScan(fds[j+off].DataTypeOID, fds[j+off].Format, dst)
+					plans[j+off] = planScan(m, fds[j+off].DataTypeOID, fds[j+off].Format, dst)
 				}
 				if err := plans[j+off].Scan(raw[j+off], dst); err != nil {
 					return fmt.Errorf("keel: scan %s.%s: %w", t.Name, t.Columns[c].Name, err)
@@ -735,7 +735,7 @@ func scanInto(rows pgx.Rows, t *schema.Table, row unsafe.Pointer, ret []int32, o
 	i := 0
 	for _, c := range ret {
 		dst := t.Ptr(row, c)
-		if err := m.PlanScan(fds[i].DataTypeOID, fds[i].Format, dst).Scan(raw[i], dst); err != nil {
+		if err := planScan(m, fds[i].DataTypeOID, fds[i].Format, dst).Scan(raw[i], dst); err != nil {
 			return fmt.Errorf("keel: scan %s.%s: %w", t.Name, t.Columns[c].Name, err)
 		}
 		i++
@@ -745,7 +745,7 @@ func scanInto(rows pgx.Rows, t *schema.Table, row unsafe.Pointer, ret []int32, o
 	}
 	for _, c := range needs {
 		dst := t.Ptr(old, c)
-		if err := m.PlanScan(fds[i].DataTypeOID, fds[i].Format, dst).Scan(raw[i], dst); err != nil {
+		if err := planScan(m, fds[i].DataTypeOID, fds[i].Format, dst).Scan(raw[i], dst); err != nil {
 			return fmt.Errorf("keel: scan old %s.%s: %w", t.Name, t.Columns[c].Name, err)
 		}
 		i++

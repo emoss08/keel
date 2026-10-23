@@ -144,11 +144,6 @@ type pending struct {
 	parents []unsafe.Pointer
 }
 
-// loadLevel loads the to-many nodes under a statement's plan.
-func loadLevel(ctx context.Context, run *runner, parentPlan *selectPlan, many []*lnode) error {
-	return loadPending(ctx, run, pendingOf(parentPlan, many))
-}
-
 func pendingOf(plan *selectPlan, many []*lnode) []pending {
 	var work []pending
 	for _, n := range many {
