@@ -63,6 +63,17 @@ func (r *runner) acquire(ctx context.Context) (*pgxpool.Conn, error) {
 	return conn, nil
 }
 
+// started returns the runner's connection with its transaction, if it has one, begun, for a
+// statement that cannot join a batch, such as COPY.
+func (r *runner) started(ctx context.Context) (*pgxpool.Conn, error) {
+	if r.tx != nil {
+		if err := r.tx.begin(ctx); err != nil {
+			return nil, err
+		}
+	}
+	return r.acquire(ctx)
+}
+
 // batch sends stmts in one round trip. last marks the runner's final batch: an implicit
 // transaction commits in the same round trip.
 func (r *runner) batch(ctx context.Context, stmts []*stmt, last bool) error {
