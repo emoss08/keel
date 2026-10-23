@@ -102,6 +102,7 @@ type DB struct {
 	cfg   Config
 	hooks hooks
 	icpt  interceptors
+	types columnTypes
 }
 
 // Open connects to Postgres.

@@ -14,8 +14,6 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const maxParams = 65535
-
 // Create inserts row. The autoid column, the tenant columns and the autocreate and autoupdate
 // columns are filled first; readonly columns are read back.
 func (h Handle[T]) Create(ctx context.Context, db *DB, row *T) error {
@@ -140,10 +138,10 @@ func (db *DB) writeRunner(ctx context.Context, th *tableHooks, op Op) (*runner, 
 
 // prepareInsert fills the autoid, tenant and timestamp columns of row and runs the Before hooks.
 func (db *DB) prepareInsert(ctx context.Context, sc *scopeState, t *schema.Table, th *tableHooks,
-	row unsafe.Pointer, now time.Time,
+	row unsafe.Pointer, st stamps,
 ) error {
 	if t.AutoID >= 0 {
-		if isZero(t.Value(row, t.AutoID)) {
+		if zeroAt(t, row, t.AutoID) {
 			if db.cfg.NewID == nil {
 				return errf("%s.%s is autoid but Config.NewID is not set", t.Name,
 					t.Columns[t.AutoID].Name)
@@ -157,14 +155,12 @@ func (db *DB) prepareInsert(ctx context.Context, sc *scopeState, t *schema.Table
 		return err
 	}
 	if t.AutoCreate >= 0 {
-		if err := assign(t.Ptr(row, t.AutoCreate), stampValue(t.Columns[t.AutoCreate].Kind,
-			now)); err != nil {
+		if err := assign(t.Ptr(row, t.AutoCreate), st.created); err != nil {
 			return err
 		}
 	}
 	if t.AutoUpdate >= 0 {
-		if err := assign(t.Ptr(row, t.AutoUpdate), stampValue(t.Columns[t.AutoUpdate].Kind,
-			now)); err != nil {
+		if err := assign(t.Ptr(row, t.AutoUpdate), st.updated); err != nil {
 			return err
 		}
 	}
@@ -188,7 +184,7 @@ func fillTenant(sc *scopeState, t *schema.Table, row unsafe.Pointer) error {
 	}
 	if sc.system {
 		for _, ci := range t.Tenant {
-			if isZero(t.Value(row, ci)) {
+			if zeroAt(t, row, ci) {
 				return errf("%s.%s is empty; a system scope must set tenant columns", t.Name,
 					t.Columns[ci].Name)
 			}
@@ -204,14 +200,13 @@ func fillTenant(sc *scopeState, t *schema.Table, row unsafe.Pointer) error {
 			return errf("tenant column %s.%s is not in Config.TenantColumns", t.Name,
 				t.Columns[ci].Name)
 		}
-		cur := t.Value(row, ci)
-		if isZero(cur) {
+		if zeroAt(t, row, ci) {
 			if err := assign(t.Ptr(row, ci), sc.tenant[pos]); err != nil {
 				return err
 			}
 			continue
 		}
-		if normalize(cur) != normalize(sc.tenant[pos]) {
+		if !equalAt(t, row, ci, sc.tenant[pos]) {
 			return fmt.Errorf("%w: %s.%s", ErrTenantMismatch, t.Name, t.Columns[ci].Name)
 		}
 	}
@@ -224,13 +219,16 @@ func (db *DB) insert(ctx context.Context, t *schema.Table, rows []unsafe.Pointer
 	if err != nil {
 		return err
 	}
-	now := db.now()
+	st := db.stampsFor(t)
 	for _, row := range rows {
-		if err := db.prepareInsert(ctx, run.sc, t, th, row, now); err != nil {
+		if err := db.prepareInsert(ctx, run.sc, t, th, row, st); err != nil {
 			return run.close(ctx, err)
 		}
 	}
-	stmts := insertStmts(t, rows, &insertSpec{})
+	stmts, err := db.insertStmts(ctx, t, rows, &insertSpec{inserted: make([]bool, len(rows))})
+	if err != nil {
+		return run.close(ctx, err)
+	}
 	err = run.batch(ctx, stmts, !th.has(OpCreate, AfterWrite))
 	if err == nil {
 		err = db.afterWrite(ctx, run, th, OpCreate, rows, nil, nil)
@@ -247,9 +245,16 @@ type insertSpec struct {
 	keys     map[string]bool
 }
 
-// insertStmts splits rows into INSERT statements under the parameter limit.
-func insertStmts(t *schema.Table, rows []unsafe.Pointer, spec *insertSpec) []*stmt {
-	per := max(maxParams/max(len(t.Insert), 1), 1)
+// insertStmts builds the INSERT statements of a write. One row is inserted with VALUES; more rows
+// are inserted through unnest with one array per column, in chunks that share one statement text.
+func (db *DB) insertStmts(ctx context.Context, t *schema.Table, rows []unsafe.Pointer, spec *insertSpec) ([]*stmt, error) {
+	var types []string
+	if len(rows) > 1 {
+		var err error
+		if types, err = db.columnTypes(ctx, t); err != nil {
+			return nil, err
+		}
+	}
 	var ret []int32
 	switch {
 	case spec.skip:
@@ -259,10 +264,9 @@ func insertStmts(t *schema.Table, rows []unsafe.Pointer, spec *insertSpec) []*st
 	default:
 		ret = t.Returning
 	}
-	var stmts []*stmt
-	for start := 0; start < len(rows); start += per {
-		end := min(start+per, len(rows))
-		chunk := rows[start:end]
+	stmts := make([]*stmt, 0, (len(rows)+unnestChunk-1)/unnestChunk)
+	for start := 0; start < len(rows); start += unnestChunk {
+		chunk := rows[start:min(start+unnestChunk, len(rows))]
 		r := newRender(nil, nil, nil)
 		r.s("INSERT INTO ")
 		r.s(t.Quoted)
@@ -275,19 +279,19 @@ func insertStmts(t *schema.Table, rows []unsafe.Pointer, spec *insertSpec) []*st
 			}
 			r.s(t.Columns[c].Quoted)
 		}
-		r.s(") VALUES ")
-		for ri, row := range chunk {
-			if ri > 0 {
-				r.s(", ")
-			}
-			r.b('(')
+		r.s(") ")
+		if types == nil {
+			r.s("VALUES (")
 			for i, c := range t.Insert {
 				if i > 0 {
 					r.s(", ")
 				}
-				r.arg(t.Value(row, c))
+				r.arg(t.Value(chunk[0], c))
 			}
 			r.b(')')
+		} else if err := db.writeUnnestSource(r, t, types, chunk); err != nil {
+			r.recycle()
+			return nil, err
 		}
 		r.s(spec.suffix)
 		if spec.upsert || len(ret) > 0 {
@@ -320,7 +324,7 @@ func insertStmts(t *schema.Table, rows []unsafe.Pointer, spec *insertSpec) []*st
 		}
 		stmts = append(stmts, s)
 	}
-	return stmts
+	return stmts, nil
 }
 
 // returningCols are the columns read back after an insert: readonly columns, and on upserts the
@@ -417,9 +421,9 @@ func (db *DB) upsert(ctx context.Context, ref *Ref, rows []unsafe.Pointer, c Con
 	if err != nil {
 		return nil, err
 	}
-	now := db.now()
+	st := db.stampsFor(t)
 	for _, row := range rows {
-		if err := db.prepareInsert(ctx, run.sc, t, th, row, now); err != nil {
+		if err := db.prepareInsert(ctx, run.sc, t, th, row, st); err != nil {
 			return nil, run.close(ctx, err)
 		}
 	}
@@ -493,7 +497,10 @@ func (db *DB) upsert(ctx context.Context, ref *Ref, rows []unsafe.Pointer, c Con
 		spec.keys = make(map[string]bool, len(rows))
 	}
 	inserted := spec.inserted
-	stmts := insertStmts(t, rows, spec)
+	stmts, err := db.insertStmts(ctx, t, rows, spec)
+	if err != nil {
+		return nil, run.close(ctx, err)
+	}
 	err = run.batch(ctx, stmts, !th.has(OpCreate, AfterWrite) && !th.has(OpUpdate, AfterWrite))
 	if err == nil && c.nothing {
 		for i, row := range rows {
@@ -698,7 +705,7 @@ func checkTenant(sc *scopeState, t *schema.Table, row unsafe.Pointer) error {
 		if pos < 0 {
 			continue
 		}
-		if normalize(t.Value(row, ci)) != normalize(sc.tenant[pos]) {
+		if !equalAt(t, row, ci, sc.tenant[pos]) {
 			return fmt.Errorf("%w: %s.%s", ErrTenantMismatch, t.Name, t.Columns[ci].Name)
 		}
 	}
@@ -890,6 +897,53 @@ func (db *DB) afterWrite(ctx context.Context, run *runner, th *tableHooks, op Op
 	}
 	fire(ctx)
 	return nil
+}
+
+// stamps are the autocreate and autoupdate values of one write, boxed once for all its rows.
+type stamps struct {
+	created any
+	updated any
+}
+
+func (db *DB) stampsFor(t *schema.Table) stamps {
+	now := db.now()
+	var st stamps
+	if t.AutoCreate >= 0 {
+		st.created = stampValue(t.Columns[t.AutoCreate].Kind, now)
+	}
+	if t.AutoUpdate >= 0 {
+		st.updated = stampValue(t.Columns[t.AutoUpdate].Kind, now)
+	}
+	return st
+}
+
+// zeroAt reports whether a column of row holds its zero value, reading through the field pointer
+// so nothing is boxed.
+func zeroAt(t *schema.Table, row unsafe.Pointer, col int32) bool {
+	switch p := t.Ptr(row, col).(type) {
+	case *string:
+		return *p == ""
+	case *int64:
+		return *p == 0
+	case *int32:
+		return *p == 0
+	case **string:
+		return *p == nil || **p == ""
+	}
+	return isZero(t.Value(row, col))
+}
+
+// equalAt reports whether a column of row equals v, a normalised scope value.
+func equalAt(t *schema.Table, row unsafe.Pointer, col int32, v any) bool {
+	switch p := t.Ptr(row, col).(type) {
+	case *string:
+		s, ok := v.(string)
+		return ok && *p == s
+	case *int64:
+		n, ok := v.(int64)
+		return ok && *p == n
+	}
+	return normalize(t.Value(row, col)) == v
 }
 
 func stampValue(k schema.Kind, t time.Time) any {
