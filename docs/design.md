@@ -18,11 +18,13 @@ that is wrong in the same change. [guide.md](guide.md) shows how to use keel;
   lone statement runs as one pipelined `BEGIN; …; COMMIT`, and independent statements of one read
   share a round trip.
 - **No reflection on the hot path.** `keel gen` writes field accessors for every model; rows decode
-  straight from pgx's buffers into struct fields through pgx scan plans chosen once per result.
+  straight from pgx's buffers into struct fields through pgx scan plans cached per connection and
+  statement.
 - **Tenancy by construction.** The tenant comes from the context and is applied to every statement
   on a tenant table: reads, joins, relation loads, subqueries, updates, deletes and inserts.
-- **Bounded by default.** `List` needs a limit, keyset pagination is built in, bulk writes stay
-  under Postgres's parameter limit and share a round trip.
+- **Bounded by default.** `List` needs a limit, keyset pagination is built in, and bulk inserts
+  send one array per column through `unnest`, in chunks that share one statement text and one round
+  trip.
 - **Cheap to compile.** Generated code is static data plus small non-generic functions. Generic
   types appear only where a typed result needs them (`Query[T]`, `Handle[T]`) and are reachable only
   from data-access packages.
@@ -66,8 +68,11 @@ type Shipment struct {
 }
 ```
 
-Table aliases are keel's business: every table in a statement is named `t0`, `t1`, …; a handle's
-`As("name")` gives a second reference to a table for self-joins.
+Table aliases are keel's business: each table in a statement gets a short alias derived from its
+name (`shipments` → `s`, `shipment_moves` → `sm`) or, on a relation path, from the relation's name
+(`BillTo` → `bt`), numbered when a statement uses it twice (`s2`). Aliases depend only on the
+statement's shape, so equal shapes render equal text. A handle's `As("name")` gives a second
+reference to a table, under that alias, for self-joins.
 
 ### Column options
 
@@ -79,7 +84,7 @@ Table aliases are keel's business: every table in a statement is named `t0`, `t1
 | `autocreate` / `autoupdate` | stamped on insert / on insert and every update, bulk updates included; `int64` means Unix seconds, `time.Time` a timestamp |
 | `version` | optimistic locking: `Save` compares and increments it, bulk updates and upserts increment it; must be `int64` |
 | `readonly` | never written (generated or trigger-maintained columns); read back after writes |
-| `noselect` | not selected by default (a `tsvector`); usable in predicates. A generated `noselect` column is also `readonly` |
+| `noselect` | not selected by default (a `tsvector`); usable in predicates. A generated `noselect` column must also be tagged `readonly` |
 | `jsonb` | the value is encoded as JSON; a nil map or slice in a non-pointer field is written as `{}` or `[]` |
 | `tsvector` | the column gets the full-text operators |
 
@@ -88,9 +93,10 @@ the Go type (a pointer, or a `sql.Scanner` named `Null…`). The value in the st
 written: keel never substitutes `DEFAULT` for a zero value. A nil slice in a non-pointer array field
 is written as an empty array.
 
-Column kinds follow the Go type: strings, `int64`, `int32`, `int16`, `float64`, `bool`, `[]byte`,
-`time.Time`, `[]string`, `[]int64`, named types with those underlying types (enums, IDs), and any
-type implementing `sql.Scanner` (a decimal). Plain `int` is refused: its width is not portable.
+Column kinds follow the Go type: strings, `int64`, `int32`, `int16`, `float64`, `float32` (a
+`Float64Col`), `bool`, `[]byte`, `time.Time`, `[]string`, `[]int64`, named types with those
+underlying types (enums, IDs), and any type implementing `sql.Scanner` (a decimal). Plain `int` is
+refused: its width is not portable.
 
 ### Relations
 
@@ -101,9 +107,10 @@ type implementing `sql.Scanner` (a decimal). Plain `int` is refused: its width i
 | `many:<fk>` | the target's `<fk>` references this table's primary key |
 | `m2m:<join_table>.<local_fk>.<remote_fk>` | rows linked through a join table |
 
-The primary key of a related table, besides its tenant columns, must be a single column. When both
-sides have tenant columns, keel adds them to the join: as constants from the scope under a tenant
-scope, as column equalities under a system scope.
+The primary key of a related table, besides its tenant columns, must be a single column, and the
+keys of to-many relations must be string or integer columns. When both sides have tenant columns,
+keel adds them to the join: as constants from the scope under a tenant scope, as column equalities
+under a system scope.
 
 ### Model hooks
 
@@ -127,9 +134,10 @@ func (s *Shipment) AfterLoad(ctx context.Context) error    // every loaded row, 
   accessor functions (`New`, `Ptr` for scanning, `Value` for binding, `Attach` for relations) plus
   hook trampolines;
 - a handle type `ShipmentsTable` embedding `keel.Handle[shipment.Shipment]`, with one field per
-  column, one method per relation, `As`, and a typed `Get` by primary key;
-- a package variable `Shipments` built statically, and `BuildShipments`, which relation and alias
-  methods use;
+  column, one method per relation, `As`, and a typed `Get` by primary key when the key, besides its
+  tenant columns, is one non-pointer column;
+- a package variable `Shipments` built statically, `BuildShipments`, which relation and alias
+  methods use, and `ShipmentsSchema`, which returns the table;
 - a column type per named Go type (`StatusCol`), so `Status.In(...)` accepts only
   `shipment.Status`. Types declared outside model packages (`pulid.ID`) get their column type in a
   shared package (`-kinds`).
@@ -161,8 +169,9 @@ page, err := s.
 ### Builder methods
 
 `Where`, `Pick`, `Load`, `Order`, `Group`, `Having`, `Limit`, `Offset`, `Lock`, `Join`,
-`LeftJoin`, `JoinLateral`, `LeftJoinLateral`, `DistinctOn`, `AllTenants`, `Timeout`, `CustomPlan`.
-Builders are mutable and chainable; `Clone` copies one. `ToSQL` renders the main statement.
+`LeftJoin`, `JoinLateral`, `LeftJoinLateral`, `DistinctOn`, `With`, `AllTenants`, `Timeout`,
+`CustomPlan`; `Any` and `None` turn a query into a predicate. Builders are mutable and chainable;
+`Clone` copies one. `ToSQL` renders the main statement.
 
 ### Terminal methods
 
@@ -185,12 +194,15 @@ Every clause takes expressions, never strings. Columns are typed by their Go kin
 | Kind | Operators |
 |---|---|
 | every column | `IsNull`, `IsNotNull`, `EqCol`, `NeCol`, `InQuery`, `NotInQuery`, `Asc`, `Desc`, `ToNull`, `ToDefault`, `ToExpr`, `Excluded`, `Count`, `CountDistinct`, `Min`, `Max`, `Coalesce` |
-| typed values | `Eq`, `Ne`, `Gt`, `Gte`, `Lt`, `Lte`, `Between`, `IsDistinctFrom`, `In`, `NotIn`, `To` |
-| numbers | `Add`, `Sum`, `Avg` |
+| string, integer, scanner (`AnyCol`) | `Eq`, `Ne`, `Gt`, `Gte`, `Lt`, `Lte`, `Between`, `IsDistinctFrom`, `In`, `NotIn`, `To` |
+| float | as above without `In` and `NotIn` |
+| time | `Eq`, `Ne`, `Gt`, `Gte`, `Lt`, `Lte`, `Between`, `To` |
+| numbers | `Add`, `Sum`, and `Avg` except on `smallint` |
 | string | `Contains`, `HasPrefix`, `HasSuffix` (escaped), `ContainsFold`, `HasPrefixFold`, `Like`, `ILike`, `Match`, `MatchFold`, `Lower` |
-| bool | `IsTrue`, `IsFalse` |
-| jsonb | `Contains`, `HasKey`, `HasAnyKey`, `HasAllKeys`, `Text(path...)` |
-| array | `Has`, `Overlaps`, `ContainsAll`, `ContainedBy`, `Len` |
+| bool | `Eq`, `IsTrue`, `IsFalse`, `To` |
+| bytea | `Eq`, `To` |
+| jsonb | `Contains`, `HasKey`, `HasAnyKey`, `HasAllKeys`, `Text(path...)`, `To` |
+| array | `Has`, `Overlaps`, `ContainsAll`, `ContainedBy`, `To`; `Len` on text arrays |
 | tsvector | `Matches`, `MatchesConfig`, `Rank` |
 
 Combinators: `keel.And`, `keel.Or`, `keel.Not`, `keel.When`, `keel.Exists`, `keel.NotExists`,
@@ -210,13 +222,15 @@ path to that table.
 Belongs-to and has-one segments are joined into the parent's statement. Has-many and many-to-many
 segments run one statement per relation per level, filtered by `= ANY($1)` over the parent keys
 plus the scope's tenant columns; statements of one level share a round trip. A to-many load with a
-`Limit` loads at most that many rows per parent through `unnest … CROSS JOIN LATERAL`.
+`Limit` loads at most that many rows per parent through `unnest … CROSS JOIN LATERAL`; many-to-many
+loads take no `Limit`. On a to-one load, `Where` becomes part of the join condition, so a row that
+does not match leaves the relation nil without filtering the parent.
 
 ## Writes
 
 ```go
 err := s.Create(ctx, db, sh)                       // autoid, timestamps, tenant columns filled
-err = s.CreateMany(ctx, db, rows)                  // statements under 65,535 parameters, one round trip
+err = s.CreateMany(ctx, db, rows)                  // unnest of one array per column, 10,000 rows per statement, one round trip
 err = s.Save(ctx, db, sh)                          // compare-and-increment version, ErrConflict on mismatch
 err = s.Save(ctx, db, sh, s.Status, s.CanceledAt)  // only these columns (and the autoupdate column)
 err = s.DeleteRow(ctx, db, sh)                     // ErrNotFound when nothing was deleted
@@ -228,7 +242,11 @@ n, err = s.InsertFrom(ctx, db, src.Pick(...), s.Name, s.Code)
 ```
 
 After a write keel reads back only what Postgres may have changed: `readonly` columns, and the
-version where it changed it. `Upsert` reports per row whether it inserted (`xmax = 0`).
+version where it changed it. `Upsert` reports per row whether it inserted (`xmax = 0`); a row that
+conflicted keeps the primary key it was sent with. An `OnConflict(...).Where` predicate must not bind
+values. One row is inserted with `VALUES`; more rows through `INSERT … SELECT … FROM unnest(…)` with
+one typed array per column (column types read from the catalog once per `DB`), 10,000 rows per
+statement, every statement sharing one text and one round trip.
 
 ## Transactions and scope
 
@@ -243,7 +261,7 @@ v, err := keel.ReadValue(ctx, db, func(ctx context.Context) (T, error) { ... })
   row-level security `set_config`) are sent with the first statement. A transaction that runs no
   statement costs nothing.
 - Outside a transaction a terminal runs its statements in an implicit transaction when `OnBegin` is
-  set or a hook needs one; a terminal with a single statement sends `BEGIN`, the `OnBegin`
+  set, an `AfterWrite` hook needs one, or the query uses `CustomPlan`; a terminal with a single statement sends `BEGIN`, the `OnBegin`
   statements, the statement and `COMMIT` in one round trip.
 - `Config.Tenant` returns the tenant values from the context, in the order of
   `Config.TenantColumns`. `Config.System` reports a system scope and its reason. A statement on a
@@ -255,6 +273,8 @@ v, err := keel.ReadValue(ctx, db, func(ctx context.Context) (T, error) { ... })
   outside one.
 - `keel.Retry(n)` retries serialization failures and deadlocks for a top-level transaction.
   `keel.Serializable()` and `keel.RepeatableRead()` set the isolation level.
+- `keel.Savepoint` runs a function inside a savepoint; `keel.LockKey` and `keel.TryLockKey` take
+  transaction-scoped advisory locks on string keys.
 
 ### Statement preparation
 
@@ -287,8 +307,9 @@ Table hook phases:
 - `Committed` runs after the transaction commits.
 
 Bulk writes on a table with `AfterWrite` or `Committed` hooks return their rows through `RETURNING`,
-with the previous values of the columns hooks declared with `Needs` through `RETURNING old.…`
-(PostgreSQL 18). Hooks are resolved per table when registered; a table without hooks pays nothing.
+with, for updates, the previous values of the columns hooks declared with `Needs` through
+`RETURNING old.…` (PostgreSQL 18). `Mutation.Old` is filled for `Save` and bulk updates; deletes
+carry the deleted row in `Mutation.Row`. Hooks are resolved per table when registered; a table without hooks pays nothing.
 
 Observers receive the statement text (never values), the number of bound arguments, duration, rows
 and error; statements sent in one round trip share a start time and a duration.
