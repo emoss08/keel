@@ -2,6 +2,7 @@ package keel
 
 import (
 	"time"
+	"unsafe"
 )
 
 // Col references one column of a table. Generated code builds every column statically; the typed
@@ -102,7 +103,11 @@ func (c Col) Coalesce(v any) Expr {
 		r.s("coalesce(")
 		r.col(c)
 		r.s(", ")
-		writeOperand(r, v)
+		if e, ok := v.(Expr); ok {
+			e.writeSQL(r)
+		} else {
+			r.argCol(v, c, "coalesce")
+		}
 		r.b(')')
 	})
 }
@@ -122,8 +127,18 @@ func cmp(e Expr, op string, v any) Pred {
 	return predExpr{e: func(r *render) {
 		e.writeSQL(r)
 		r.s(op)
-		r.arg(v)
+		operand(r, e, op, v)
 	}}
+}
+
+// operand binds v as the operand of e op v. Compared with a column, it shares the placeholder of
+// an equal value compared with the same column through the same operator.
+func operand(r *render, e Expr, op string, v any) {
+	if c, ok := e.(Col); ok {
+		r.argCol(v, c, op)
+		return
+	}
+	r.arg(v)
 }
 
 func binExpr(a Expr, op string, b Expr) Pred {
@@ -138,9 +153,9 @@ func between(e Expr, lo, hi any) Pred {
 	return predExpr{e: func(r *render) {
 		e.writeSQL(r)
 		r.s(" BETWEEN ")
-		r.arg(lo)
+		operand(r, e, " BETWEEN ", lo)
 		r.s(" AND ")
-		r.arg(hi)
+		operand(r, e, " BETWEEN ", hi)
 	}}
 }
 
@@ -382,7 +397,7 @@ func (c JSONBCol) Text(path ...string) StringExpr {
 		r.b('(')
 		r.col(c.Col)
 		r.s(" #>> ")
-		r.arg(path)
+		r.argSlot(path, unsafe.Pointer(unsafe.SliceData(path)), " #>> ")
 		r.b(')')
 	})}
 }
@@ -396,7 +411,7 @@ type StringArrayCol struct{ Col }
 // Has reports whether the array holds v.
 func (c StringArrayCol) Has(v string) Pred {
 	return predExpr{e: func(r *render) {
-		r.arg(v)
+		r.argCol(v, c.Col, "= ANY")
 		r.s(" = ANY(")
 		r.col(c.Col)
 		r.b(')')
@@ -409,7 +424,7 @@ func (c StringArrayCol) ContainedBy(vs ...string) Pred { return cmp(c.Col, " <@ 
 func (c StringArrayCol) To(vs []string) Assignment     { return set(c.Col, vs) }
 
 // Len is cardinality(col).
-func (c StringArrayCol) Len() Agg { return Agg{fn: "cardinality", arg: c.Col, scalar: true} }
+func (c StringArrayCol) Len() Agg { return Agg{fn: "cardinality", arg: c.Col} }
 
 // Int64ArrayCol is a bigint[] column.
 type Int64ArrayCol struct{ Col }
@@ -417,7 +432,7 @@ type Int64ArrayCol struct{ Col }
 // Has reports whether the array holds v.
 func (c Int64ArrayCol) Has(v int64) Pred {
 	return predExpr{e: func(r *render) {
-		r.arg(v)
+		r.argCol(v, c.Col, "= ANY")
 		r.s(" = ANY(")
 		r.col(c.Col)
 		r.b(')')
@@ -438,7 +453,7 @@ func (c TSVectorCol) Matches(q string) Pred {
 	return predExpr{e: func(r *render) {
 		r.col(c.Col)
 		r.s(" @@ websearch_to_tsquery(")
-		r.arg(q)
+		r.argCol(q, c.Col, "tsquery")
 		r.b(')')
 	}}
 }
@@ -448,20 +463,20 @@ func (c TSVectorCol) MatchesConfig(config, q string) Pred {
 	return predExpr{e: func(r *render) {
 		r.col(c.Col)
 		r.s(" @@ websearch_to_tsquery(")
-		r.arg(config)
+		r.argTyped(config, "regconfig")
 		r.s("::regconfig, ")
-		r.arg(q)
+		r.argCol(q, c.Col, "tsquery")
 		r.b(')')
 	}}
 }
 
 // Rank is ts_rank(col, websearch_to_tsquery(q)).
 func (c TSVectorCol) Rank(q string) Agg {
-	return Agg{fn: "ts_rank", scalar: true, custom: func(r *render) {
+	return Agg{fn: "ts_rank", custom: func(r *render) {
 		r.s("ts_rank(")
 		r.col(c.Col)
 		r.s(", websearch_to_tsquery(")
-		r.arg(q)
+		r.argCol(q, c.Col, "tsquery")
 		r.s("))")
 	}}
 }

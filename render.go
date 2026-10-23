@@ -3,8 +3,11 @@ package keel
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strconv"
 	"sync"
+	"time"
+	"unsafe"
 
 	"github.com/emoss08/keel/schema"
 )
@@ -26,7 +29,33 @@ type render struct {
 	bare     bool
 	excluded bool
 	free     [][]byte
+
+	shared    []sharedArg
+	sharedMap map[argKey]int
 }
+
+// argKey identifies a bind that may share its placeholder with an earlier one. Postgres infers a
+// parameter's type from its first use, so two binds share only when both uses are known to infer
+// the same type: the same bound value of the same expression (slot), an equal value compared with
+// the same column through the same operator (t, col, ctx), or an equal value under the same
+// explicit cast (ctx).
+type argKey struct {
+	v    any
+	slot unsafe.Pointer
+	t    *schema.Table
+	col  int32
+	ctx  string
+}
+
+// sharedArg is a bind that later binds may share: its key and its placeholder number.
+type sharedArg struct {
+	key argKey
+	pos int
+}
+
+// sharedScan is the number of shareable binds looked up by a linear scan; a statement with more
+// switches to a map.
+const sharedScan = 16
 
 // scope is one query level: the base table, the tables joined to it and the paths opened by
 // Any/None. Column references resolve to the innermost scope that knows their Ref.
@@ -86,6 +115,13 @@ func (r *render) recycle() {
 	r.ctx = nil
 	r.db = nil
 	r.bare = false
+	clear(r.shared)
+	r.shared = r.shared[:0]
+	if len(r.sharedMap) > 4*sharedScan {
+		r.sharedMap = nil
+	} else if r.sharedMap != nil {
+		clear(r.sharedMap)
+	}
 	renderPool.Put(r)
 }
 
@@ -153,6 +189,105 @@ func (r *render) arg(v any) {
 	r.args = append(r.args, v)
 	r.buf = append(r.buf, '$')
 	r.buf = strconv.AppendInt(r.buf, int64(len(r.args)), 10)
+}
+
+// argCol binds v compared with column c through op, sharing the placeholder of an equal value
+// bound in the same place earlier in the statement.
+func (r *render) argCol(v any, c Col, op string) {
+	if !shareable(v) {
+		r.arg(v)
+		return
+	}
+	r.argShared(argKey{v: v, t: c.Ref.Table, col: c.Index, ctx: op}, v)
+}
+
+// argTyped binds v under an explicit cast to typ, which the caller writes after the placeholder,
+// sharing the placeholder of an equal value bound under the same cast.
+func (r *render) argTyped(v any, typ string) {
+	if !shareable(v) {
+		r.arg(v)
+		return
+	}
+	r.argShared(argKey{v: v, ctx: typ}, v)
+}
+
+// argSlot binds v, the value stored at slot inside an expression whose text around the value is
+// ctx, sharing the placeholder of an earlier bind of the same slot in the same text: an
+// expression written twice (in Pick and Group, in a CTE body and the main query) binds its
+// values once. ctx keeps apart two expressions built over one shared argument slice.
+func (r *render) argSlot(v any, slot unsafe.Pointer, ctx string) {
+	if slot == nil {
+		r.arg(v)
+		return
+	}
+	r.argShared(argKey{slot: slot, ctx: ctx}, v)
+}
+
+// argShared writes the placeholder of the earlier bind with key k, or binds v under k.
+func (r *render) argShared(k argKey, v any) {
+	if r.bare {
+		r.arg(v)
+		return
+	}
+	pos := 0
+	if len(r.shared) <= sharedScan {
+		for i := range r.shared {
+			if r.shared[i].key == k {
+				pos = r.shared[i].pos
+				break
+			}
+		}
+	} else {
+		pos = r.sharedMap[k]
+	}
+	if pos == 0 {
+		r.args = append(r.args, v)
+		pos = len(r.args)
+		r.remember(k, pos)
+	}
+	r.b('$')
+	r.int(int64(pos))
+}
+
+// remember records a shareable bind. Past sharedScan records the lookups move to a map.
+func (r *render) remember(k argKey, pos int) {
+	r.shared = append(r.shared, sharedArg{key: k, pos: pos})
+	switch n := len(r.shared); {
+	case n == sharedScan+1:
+		if r.sharedMap == nil {
+			r.sharedMap = make(map[argKey]int, 4*sharedScan)
+		}
+		for _, a := range r.shared {
+			r.sharedMap[a.key] = a.pos
+		}
+	case n > sharedScan+1:
+		r.sharedMap[k] = pos
+	}
+}
+
+// shareable reports whether binds of v may share a placeholder by value: v is a string, integer,
+// boolean, time or a named type of one of those, or a float other than zero (-0 and 0 compare
+// equal) and NaN (which equals nothing). Slices, maps and other structs never share by value.
+func shareable(v any) bool {
+	switch x := v.(type) {
+	case nil:
+		return false
+	case string, int64, int32, int16, int8, int, uint64, uint32, uint16, uint8, uint, bool, time.Time:
+		return true
+	case float64:
+		return x != 0 && x == x
+	case float32:
+		return x != 0 && x == x
+	}
+	switch reflect.TypeOf(v).Kind() {
+	case reflect.String, reflect.Bool, reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32,
+		reflect.Int64, reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return true
+	case reflect.Float32, reflect.Float64:
+		f := reflect.ValueOf(v).Float()
+		return f != 0 && f == f
+	}
+	return false
 }
 
 // section runs fn with an empty buffer and returns what it wrote. The buffer comes from the
