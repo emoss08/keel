@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"time"
-	"unsafe"
 )
 
 // Handle is embedded in every generated table type. It starts queries and runs writes for model T.
@@ -299,64 +298,51 @@ func (q *Query[T]) None(ps ...Pred) Pred { return q.any(ps, true) }
 
 // One returns the only matching row: ErrNotFound when none matches, ErrNotSingular when more do.
 func (q *Query[T]) One(ctx context.Context, db *DB) (*T, error) {
-	saved := q.q.limit
-	q.q.limit = 2
-	rows, err := fetchAll[T](ctx, db, &q.q, &fetchOpts{sizeHint: 1})
-	q.q.limit = saved
-	if err != nil {
-		return nil, err
-	}
-	switch len(rows) {
-	case 0:
-		return nil, ErrNotFound
-	case 1:
-		return rows[0], nil
-	}
-	return nil, ErrNotSingular
+	var row *T
+	err := Batch(ctx, db, OneInto(q, &row))
+	return row, err
 }
 
 // First returns the first row in the query's order, or ErrNotFound.
 func (q *Query[T]) First(ctx context.Context, db *DB) (*T, error) {
-	saved := q.q.limit
-	q.q.limit = 1
-	rows, err := fetchAll[T](ctx, db, &q.q, nil)
-	q.q.limit = saved
-	if err != nil {
-		return nil, err
-	}
-	if len(rows) == 0 {
-		return nil, ErrNotFound
-	}
-	return rows[0], nil
+	var row *T
+	err := Batch(ctx, db, FirstInto(q, &row))
+	return row, err
 }
 
 // List returns the matching rows. The query must have a Limit.
 func (q *Query[T]) List(ctx context.Context, db *DB) ([]*T, error) {
-	if q.q.limit <= 0 {
-		return nil, ErrUnbounded
-	}
-	return fetchAll[T](ctx, db, &q.q, nil)
+	var rows []*T
+	err := Batch(ctx, db, ListInto(q, &rows))
+	return rows, err
 }
 
 // All returns every matching row. Use it only for sets known to be small.
 func (q *Query[T]) All(ctx context.Context, db *DB) ([]*T, error) {
-	return fetchAll[T](ctx, db, &q.q, nil)
+	var rows []*T
+	err := Batch(ctx, db, AllInto(q, &rows))
+	return rows, err
 }
 
 // Count returns the number of matching rows.
 func (q *Query[T]) Count(ctx context.Context, db *DB) (int64, error) {
-	return q.q.count(ctx, db, 0)
+	var n int64
+	err := Batch(ctx, db, CountInto(q, &n))
+	return n, err
 }
 
 // CountUpTo counts matching rows, stopping at limit.
 func (q *Query[T]) CountUpTo(ctx context.Context, db *DB, limit int64) (int64, error) {
-	return q.q.count(ctx, db, limit)
+	var n int64
+	err := Batch(ctx, db, CountUpToInto(q, limit, &n))
+	return n, err
 }
 
 // Exists reports whether any row matches.
 func (q *Query[T]) Exists(ctx context.Context, db *DB) (bool, error) {
-	n, err := q.q.count(ctx, db, 1)
-	return n > 0, err
+	var ok bool
+	err := Batch(ctx, db, ExistsInto(q, &ok))
+	return ok, err
 }
 
 // Update sets columns on every matching row and returns the number of rows changed. The
@@ -368,20 +354,6 @@ func (q *Query[T]) Update(ctx context.Context, db *DB, sets ...Assignment) (int6
 // Delete deletes every matching row and returns the number of rows deleted.
 func (q *Query[T]) Delete(ctx context.Context, db *DB) (int64, error) {
 	return q.q.delete(ctx, db)
-}
-
-func fetchAll[T any](ctx context.Context, db *DB, q *query, fo *fetchOpts) ([]*T, error) {
-	var out []*T
-	switch {
-	case fo != nil && fo.sizeHint > 0:
-		out = make([]*T, 0, fo.sizeHint)
-	case q.limit > 0 && q.limit <= maxSlab:
-		out = make([]*T, 0, q.limit)
-	}
-	err := q.fetch(ctx, db, fo, func(p unsafe.Pointer) {
-		out = append(out, (*T)(p))
-	})
-	return out, err
 }
 
 func relExists(ref *Ref, ps []Pred, not bool) Pred {

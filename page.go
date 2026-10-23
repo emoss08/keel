@@ -42,52 +42,57 @@ type Page[T any] struct {
 // unique position.
 func (q *Query[T]) Page(ctx context.Context, db *DB, p PageRequest) (Page[T], error) {
 	var out Page[T]
+	err := Batch(ctx, db, PageInto(q, p, &out))
+	return out, err
+}
+
+// pageRead prepares the read of one keyset page, with its capped count when p asks for one; its
+// finish fills dst.
+func pageRead[T any](ctx context.Context, run *runner, q *query, p PageRequest, dst *Page[T]) (*read, error) {
 	if p.size <= 0 {
-		return out, errf("Page needs a positive size")
+		return nil, errf("Page needs a positive size")
 	}
-	order, err := q.q.keysetOrder()
+	order, err := q.keysetOrder()
 	if err != nil {
-		return out, err
+		return nil, err
 	}
 	var after []any
 	if p.after != "" {
 		after, err = decodeCursor(p.after)
 		if err != nil {
-			return out, err
+			return nil, err
 		}
 		if len(after) != len(order) {
-			return out, errf("cursor does not match the query's order")
+			return nil, errf("cursor does not match the query's order")
 		}
 	}
-	saved := q.q.order
-	q.q.order = order
-	defer func() { q.q.order = saved }()
+	saved := q.order
+	q.order = order
+	defer func() { q.order = saved }()
 
 	extra := make([]int32, len(order))
 	for i, o := range order {
 		extra[i] = o.col.Index
 	}
-	fo := &fetchOpts{extraCols: extra, limit: int64(p.size) + 1}
+	var total int64
+	fo := fetchOpts{extraCols: extra, limit: int64(p.size) + 1}
 	if after != nil {
 		fo.keyset = func(r *render) { writeKeyset(r, order, after) }
 	}
 	if p.total > 0 {
 		fo.countCap = p.total
-		fo.count = &out.Total
+		fo.count = &total
 	}
-	items := make([]*T, 0, p.size+1)
-	err = q.q.fetch(ctx, db, fo, func(row unsafe.Pointer) { items = append(items, (*T)(row)) })
-	if err != nil {
-		return out, err
-	}
-	if len(items) > p.size {
-		items = items[:p.size]
-		last := unsafe.Pointer(items[len(items)-1])
-		out.Next = encodeCursor(q.q.ref.Table, order, last)
-	}
-	out.Items = items
-	out.TotalCapped = p.total > 0 && out.Total >= p.total
-	return out, nil
+	table := q.ref.Table
+	return fetchInto(ctx, run, q, fo, anyRows, func(items []*T) {
+		out := Page[T]{Total: total, TotalCapped: p.total > 0 && total >= p.total}
+		if len(items) > p.size {
+			items = items[:p.size]
+			out.Next = encodeCursor(table, order, unsafe.Pointer(items[len(items)-1]))
+		}
+		out.Items = items
+		*dst = out
+	})
 }
 
 // keysetOrder returns the query's order ending with the primary key.

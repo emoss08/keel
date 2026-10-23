@@ -53,77 +53,71 @@ func (q *Query[T]) pickCount() int { return len(q.q.exprs) }
 //	}
 //	rows, err := keel.Into[statusCount](ctx, db, s.Group(s.Status).Pick(s.Status, keel.Count()))
 func Into[R any](ctx context.Context, db *DB, p Projection) ([]R, error) {
-	run, err := db.newRunner(ctx, false)
-	if err != nil {
-		return nil, err
-	}
-	r := newRender(run.sc, ctx, db)
-	defer r.recycle()
-	info := p.writeProjection(r)
-	if r.err != nil {
-		return nil, run.close(ctx, r.err)
-	}
-	if info.exprs == 0 {
-		return nil, run.close(ctx, errf("Into needs Pick"))
-	}
-	layout, err := layoutOf(reflect.TypeFor[R](), info.exprs)
-	if err != nil {
-		return nil, run.close(ctx, err)
-	}
-	if info.timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, info.timeout)
-		defer cancel()
-	}
 	var out []R
-	if info.limit > 0 && info.limit <= 1024 {
-		out = make([]R, 0, info.limit)
-	}
-	s := &stmt{sql: string(r.buf), args: r.argsCopy(), op: "select", table: info.table,
-		customPlan: info.customPlan}
-	s.scan = func(rows pgx.Rows) error {
-		m := rows.Conn().TypeMap()
-		fds := rows.FieldDescriptions()
-		if len(fds) != len(layout.fields) {
-			return errf("projection returned %d columns, %s has %d fields", len(fds),
-				layout.typ, len(layout.fields))
-		}
-		plans := make([]pgtype.ScanPlan, len(fds))
-		for rows.Next() {
-			var v R
-			base := unsafe.Pointer(&v)
-			raw := rows.RawValues()
-			for i, f := range layout.fields {
-				dst := reflect.NewAt(f.typ, unsafe.Add(base, f.offset)).Interface()
-				if plans[i] == nil {
-					plans[i] = m.PlanScan(fds[i].DataTypeOID, fds[i].Format, dst)
-				}
-				if err := plans[i].Scan(raw[i], dst); err != nil {
-					return errf("scan %s field %d: %w", layout.typ, i, err)
-				}
-			}
-			out = append(out, v)
-		}
-		return nil
-	}
-	err = run.one(ctx, s, true)
-	return out, run.close(ctx, err)
+	err := Batch(ctx, db, IntoSlice(p, &out))
+	return out, err
 }
 
 // IntoOne is Into for a projection that returns exactly one row, such as an aggregate.
 func IntoOne[R any](ctx context.Context, db *DB, p Projection) (R, error) {
-	var zero R
-	rows, err := Into[R](ctx, db, p)
-	if err != nil {
-		return zero, err
-	}
-	switch len(rows) {
-	case 0:
-		return zero, ErrNotFound
-	case 1:
-		return rows[0], nil
-	}
-	return zero, ErrNotSingular
+	var out R
+	err := Batch(ctx, db, IntoValue(p, &out))
+	return out, err
+}
+
+// intoItem runs a projection that must return want rows, decodes its rows into R and hands them
+// to set.
+func intoItem[R any](p Projection, want cardinality, set func(rows []R)) BatchItem {
+	return BatchItem{prepare: func(ctx context.Context, run *runner) (*read, error) {
+		r := newRender(run.sc, ctx, run.db)
+		defer r.recycle()
+		info := p.writeProjection(r)
+		if r.err != nil {
+			return nil, r.err
+		}
+		if info.exprs == 0 {
+			return nil, errf("Into needs Pick")
+		}
+		layout, err := layoutOf(reflect.TypeFor[R](), info.exprs)
+		if err != nil {
+			return nil, err
+		}
+		var out []R
+		if info.limit > 0 && info.limit <= 1024 {
+			out = make([]R, 0, info.limit)
+		}
+		s := &stmt{sql: string(r.buf), args: r.argsCopy(), op: "select", table: info.table,
+			customPlan: info.customPlan}
+		rd := &read{stmts: []*stmt{s}, timeout: info.timeout, want: want}
+		rd.finish = func() { set(out) }
+		s.scan = func(rows pgx.Rows) error {
+			m := rows.Conn().TypeMap()
+			fds := rows.FieldDescriptions()
+			if len(fds) != len(layout.fields) {
+				return errf("projection returned %d columns, %s has %d fields", len(fds),
+					layout.typ, len(layout.fields))
+			}
+			plans := make([]pgtype.ScanPlan, len(fds))
+			for rows.Next() {
+				var v R
+				base := unsafe.Pointer(&v)
+				raw := rows.RawValues()
+				for i, f := range layout.fields {
+					dst := reflect.NewAt(f.typ, unsafe.Add(base, f.offset)).Interface()
+					if plans[i] == nil {
+						plans[i] = m.PlanScan(fds[i].DataTypeOID, fds[i].Format, dst)
+					}
+					if err := plans[i].Scan(raw[i], dst); err != nil {
+						return errf("scan %s field %d: %w", layout.typ, i, err)
+					}
+				}
+				out = append(out, v)
+			}
+			rd.rows = len(out)
+			return nil
+		}
+		return rd, nil
+	}}
 }
 
 type intoField struct {
