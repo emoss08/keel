@@ -301,7 +301,7 @@ func (q *Query[T]) None(ps ...Pred) Pred { return q.any(ps, true) }
 func (q *Query[T]) One(ctx context.Context, db *DB) (*T, error) {
 	saved := q.q.limit
 	q.q.limit = 2
-	rows, err := fetchAll[T](ctx, db, &q.q)
+	rows, err := fetchAll[T](ctx, db, &q.q, &fetchOpts{sizeHint: 1})
 	q.q.limit = saved
 	if err != nil {
 		return nil, err
@@ -319,7 +319,7 @@ func (q *Query[T]) One(ctx context.Context, db *DB) (*T, error) {
 func (q *Query[T]) First(ctx context.Context, db *DB) (*T, error) {
 	saved := q.q.limit
 	q.q.limit = 1
-	rows, err := fetchAll[T](ctx, db, &q.q)
+	rows, err := fetchAll[T](ctx, db, &q.q, nil)
 	q.q.limit = saved
 	if err != nil {
 		return nil, err
@@ -335,12 +335,12 @@ func (q *Query[T]) List(ctx context.Context, db *DB) ([]*T, error) {
 	if q.q.limit <= 0 {
 		return nil, ErrUnbounded
 	}
-	return fetchAll[T](ctx, db, &q.q)
+	return fetchAll[T](ctx, db, &q.q, nil)
 }
 
 // All returns every matching row. Use it only for sets known to be small.
 func (q *Query[T]) All(ctx context.Context, db *DB) ([]*T, error) {
-	return fetchAll[T](ctx, db, &q.q)
+	return fetchAll[T](ctx, db, &q.q, nil)
 }
 
 // Count returns the number of matching rows.
@@ -370,12 +370,15 @@ func (q *Query[T]) Delete(ctx context.Context, db *DB) (int64, error) {
 	return q.q.delete(ctx, db)
 }
 
-func fetchAll[T any](ctx context.Context, db *DB, q *query) ([]*T, error) {
+func fetchAll[T any](ctx context.Context, db *DB, q *query, fo *fetchOpts) ([]*T, error) {
 	var out []*T
-	if q.limit > 0 && q.limit <= 1024 {
+	switch {
+	case fo != nil && fo.sizeHint > 0:
+		out = make([]*T, 0, fo.sizeHint)
+	case q.limit > 0 && q.limit <= maxSlab:
 		out = make([]*T, 0, q.limit)
 	}
-	err := q.fetch(ctx, db, nil, func(p unsafe.Pointer) {
+	err := q.fetch(ctx, db, fo, func(p unsafe.Pointer) {
 		out = append(out, (*T)(p))
 	})
 	return out, err

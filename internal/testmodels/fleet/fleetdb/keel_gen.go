@@ -41,6 +41,8 @@ var customersTable = schema.Table{
 	AutoUpdate: 8,
 	IDPrefix:   "cus_",
 	New:        newCustomer,
+	NewN:       newNCustomer,
+	Size:       unsafe.Sizeof(fleet.Customer{}),
 	Ptr:        ptrCustomer,
 	Value:      valueCustomer,
 }
@@ -105,6 +107,10 @@ func (t *CustomersTable) Get(ctx context.Context, db *keel.DB, key ids.ID) (*fle
 }
 
 func newCustomer() unsafe.Pointer { return unsafe.Pointer(new(fleet.Customer)) }
+
+func newNCustomer(n int) unsafe.Pointer {
+	return unsafe.Pointer(unsafe.SliceData(make([]fleet.Customer, n)))
+}
 
 func ptrCustomer(p unsafe.Pointer, c int32) any {
 	r := (*fleet.Customer)(p)
@@ -183,6 +189,8 @@ var locationsTable = schema.Table{
 	AutoUpdate: -1,
 	IDPrefix:   "loc_",
 	New:        newLocation,
+	NewN:       newNLocation,
+	Size:       unsafe.Sizeof(fleet.Location{}),
 	Ptr:        ptrLocation,
 	Value:      valueLocation,
 }
@@ -235,6 +243,10 @@ func (t *LocationsTable) Get(ctx context.Context, db *keel.DB, key ids.ID) (*fle
 }
 
 func newLocation() unsafe.Pointer { return unsafe.Pointer(new(fleet.Location)) }
+
+func newNLocation(n int) unsafe.Pointer {
+	return unsafe.Pointer(unsafe.SliceData(make([]fleet.Location, n)))
+}
 
 func ptrLocation(p unsafe.Pointer, c int32) any {
 	r := (*fleet.Location)(p)
@@ -301,6 +313,8 @@ var movesTable = schema.Table{
 	AutoUpdate: -1,
 	IDPrefix:   "mov_",
 	New:        newMove,
+	NewN:       newNMove,
+	Size:       unsafe.Sizeof(fleet.Move{}),
 	Ptr:        ptrMove,
 	Value:      valueMove,
 	Attach:     attachMove,
@@ -367,6 +381,8 @@ func (t *MovesTable) Get(ctx context.Context, db *keel.DB, key ids.ID) (*fleet.M
 }
 
 func newMove() unsafe.Pointer { return unsafe.Pointer(new(fleet.Move)) }
+
+func newNMove(n int) unsafe.Pointer { return unsafe.Pointer(unsafe.SliceData(make([]fleet.Move, n))) }
 
 func ptrMove(p unsafe.Pointer, c int32) any {
 	r := (*fleet.Move)(p)
@@ -445,6 +461,8 @@ var plantsTable = schema.Table{
 	AutoUpdate: -1,
 	IDPrefix:   "",
 	New:        newPlant,
+	NewN:       newNPlant,
+	Size:       unsafe.Sizeof(fleet.Plant{}),
 	Ptr:        ptrPlant,
 	Value:      valuePlant,
 }
@@ -486,6 +504,8 @@ func (t *PlantsTable) Get(ctx context.Context, db *keel.DB, key string) (*fleet.
 }
 
 func newPlant() unsafe.Pointer { return unsafe.Pointer(new(fleet.Plant)) }
+
+func newNPlant(n int) unsafe.Pointer { return unsafe.Pointer(unsafe.SliceData(make([]fleet.Plant, n))) }
 
 func ptrPlant(p unsafe.Pointer, c int32) any {
 	r := (*fleet.Plant)(p)
@@ -553,6 +573,8 @@ var shipmentsTable = schema.Table{
 	AutoUpdate: 18,
 	IDPrefix:   "shp_",
 	New:        newShipment,
+	NewN:       newNShipment,
+	Size:       unsafe.Sizeof(fleet.Shipment{}),
 	Ptr:        ptrShipment,
 	Value:      valueShipment,
 	Attach:     attachShipment,
@@ -660,6 +682,10 @@ func (t *ShipmentsTable) Get(ctx context.Context, db *keel.DB, key ids.ID) (*fle
 }
 
 func newShipment() unsafe.Pointer { return unsafe.Pointer(new(fleet.Shipment)) }
+
+func newNShipment(n int) unsafe.Pointer {
+	return unsafe.Pointer(unsafe.SliceData(make([]fleet.Shipment, n)))
+}
 
 func ptrShipment(p unsafe.Pointer, c int32) any {
 	r := (*fleet.Shipment)(p)
@@ -810,6 +836,8 @@ var stopsTable = schema.Table{
 	AutoUpdate: -1,
 	IDPrefix:   "stp_",
 	New:        newStop,
+	NewN:       newNStop,
+	Size:       unsafe.Sizeof(fleet.Stop{}),
 	Ptr:        ptrStop,
 	Value:      valueStop,
 	Attach:     attachStop,
@@ -873,6 +901,8 @@ func (t *StopsTable) Get(ctx context.Context, db *keel.DB, key ids.ID) (*fleet.S
 }
 
 func newStop() unsafe.Pointer { return unsafe.Pointer(new(fleet.Stop)) }
+
+func newNStop(n int) unsafe.Pointer { return unsafe.Pointer(unsafe.SliceData(make([]fleet.Stop, n))) }
 
 func ptrStop(p unsafe.Pointer, c int32) any {
 	r := (*fleet.Stop)(p)
@@ -954,6 +984,8 @@ var tagsTable = schema.Table{
 	AutoUpdate: -1,
 	IDPrefix:   "tag_",
 	New:        newTag,
+	NewN:       newNTag,
+	Size:       unsafe.Sizeof(fleet.Tag{}),
 	Ptr:        ptrTag,
 	Value:      valueTag,
 }
@@ -1001,6 +1033,8 @@ func (t *TagsTable) Get(ctx context.Context, db *keel.DB, key ids.ID) (*fleet.Ta
 }
 
 func newTag() unsafe.Pointer { return unsafe.Pointer(new(fleet.Tag)) }
+
+func newNTag(n int) unsafe.Pointer { return unsafe.Pointer(unsafe.SliceData(make([]fleet.Tag, n))) }
 
 func ptrTag(p unsafe.Pointer, c int32) any {
 	r := (*fleet.Tag)(p)
@@ -1062,6 +1096,8 @@ var workersTable = schema.Table{
 	AutoUpdate: -1,
 	IDPrefix:   "wrk_",
 	New:        newWorker,
+	NewN:       newNWorker,
+	Size:       unsafe.Sizeof(fleet.Worker{}),
 	Ptr:        ptrWorker,
 	Value:      valueWorker,
 	Attach:     attachWorker,
@@ -1127,6 +1163,10 @@ func (t *WorkersTable) Get(ctx context.Context, db *keel.DB, key ids.ID) (*fleet
 }
 
 func newWorker() unsafe.Pointer { return unsafe.Pointer(new(fleet.Worker)) }
+
+func newNWorker(n int) unsafe.Pointer {
+	return unsafe.Pointer(unsafe.SliceData(make([]fleet.Worker, n)))
+}
 
 func ptrWorker(p unsafe.Pointer, c int32) any {
 	r := (*fleet.Worker)(p)

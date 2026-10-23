@@ -3,7 +3,6 @@ package keel
 import (
 	"slices"
 	"strings"
-	"unsafe"
 
 	"github.com/emoss08/keel/schema"
 )
@@ -132,21 +131,6 @@ func (n *lnode) selectedColumns(extra []int32) []int32 {
 		need(c)
 	}
 	return cols
-}
-
-// selectPlan is the decoding layout of one statement.
-type selectPlan struct {
-	keyed   bool
-	nodes   []*lnode
-	cols    []lcol
-	parents []int
-	keep    []bool
-	rows    [][]unsafe.Pointer
-}
-
-type lcol struct {
-	node int
-	col  int32
 }
 
 type selectOpts struct {

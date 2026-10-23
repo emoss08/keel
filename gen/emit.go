@@ -308,7 +308,8 @@ func (e *emitter) emitPackage(p *pkgModels) ([]byte, error) {
 		}
 		w("\tVersion: %d,\n\tAutoID: %d,\n\tAutoCreate: %d,\n\tAutoUpdate: %d,\n\tIDPrefix: %q,\n",
 			d.Version, d.AutoID, d.AutoCreate, d.AutoUpdate, idPrefix)
-		w("\tNew: new%s,\n\tPtr: ptr%s,\n\tValue: value%s,\n", m.name, m.name, m.name)
+		w("\tNew: new%s,\n\tNewN: newN%s,\n\tSize: %s.Sizeof(%s{}),\n\tPtr: ptr%s,\n\tValue: value%s,\n",
+			m.name, m.name, unsafePkg, model, m.name, m.name)
 		if len(m.rels) > 0 {
 			w("\tAttach: attach%s,\n", m.name)
 		}
@@ -374,6 +375,8 @@ func (e *emitter) emitPackage(p *pkgModels) ([]byte, error) {
 		}
 
 		w("func new%s() %s.Pointer { return %s.Pointer(new(%s)) }\n\n", m.name, unsafePkg, unsafePkg, model)
+		w("func newN%s(n int) %s.Pointer { return %s.Pointer(%s.SliceData(make([]%s, n))) }\n\n",
+			m.name, unsafePkg, unsafePkg, unsafePkg, model)
 
 		w("func ptr%s(p %s.Pointer, c int32) any {\n\tr := (*%s)(p)\n\tswitch c {\n", m.name, unsafePkg, model)
 		for _, c := range m.columns {

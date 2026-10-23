@@ -110,6 +110,8 @@ type Table struct {
 	IDPrefix   string
 
 	New    func() unsafe.Pointer
+	NewN   func(n int) unsafe.Pointer
+	Size   uintptr
 	Ptr    func(row unsafe.Pointer, col int32) any
 	Value  func(row unsafe.Pointer, col int32) any
 	Attach func(row unsafe.Pointer, rel int32, child unsafe.Pointer)
