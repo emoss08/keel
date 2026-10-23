@@ -56,7 +56,7 @@ type Shipment struct {
 	Hazmat         bool           `db:"hazmat"`
 	Labels         []string       `db:"labels"`
 	Attributes     map[string]any `db:"attributes,jsonb"`
-	SearchVector   string         `db:"search_vector,noselect,tsvector"`
+	SearchVector   string         `db:"search_vector,noselect,readonly,tsvector"`
 	StageRank      int16          `db:"stage_rank,readonly"`
 	CanceledAt     *int64         `db:"canceled_at"`
 	Version        int64          `db:"version,version"`

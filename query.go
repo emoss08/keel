@@ -36,6 +36,42 @@ func (h Handle[T]) Group(es ...Expr) *Query[T] { return h.Query().Group(es...) }
 // AllTenants starts a query that crosses tenants. It needs a system scope.
 func (h Handle[T]) AllTenants() *Query[T] { return h.Query().AllTenants() }
 
+// Join starts a query with an INNER JOIN of another table.
+func (h Handle[T]) Join(t interface{ TableRef() *Ref }, on ...Pred) *Query[T] {
+	return h.Query().Join(t, on...)
+}
+
+// LeftJoin starts a query with a LEFT JOIN of another table.
+func (h Handle[T]) LeftJoin(t interface{ TableRef() *Ref }, on ...Pred) *Query[T] {
+	return h.Query().LeftJoin(t, on...)
+}
+
+// LeftJoinLateral starts a query with LEFT JOIN LATERAL (sub) ON TRUE.
+func (h Handle[T]) LeftJoinLateral(sub interface {
+	subquery
+	TableRef() *Ref
+},
+) *Query[T] {
+	return h.Query().LeftJoinLateral(sub)
+}
+
+// JoinLateral starts a query with CROSS JOIN LATERAL (sub).
+func (h Handle[T]) JoinLateral(sub interface {
+	subquery
+	TableRef() *Ref
+},
+) *Query[T] {
+	return h.Query().JoinLateral(sub)
+}
+
+// Lock starts a query that locks the rows it selects.
+func (h Handle[T]) Lock(strength LockStrength, wait ...LockWait) *Query[T] {
+	return h.Query().Lock(strength, wait...)
+}
+
+// DistinctOn starts a DISTINCT ON query.
+func (h Handle[T]) DistinctOn(es ...Expr) *Query[T] { return h.Query().DistinctOn(es...) }
+
 // Any is true when at least one row of the relation path matches ps: EXISTS (…).
 func (h Handle[T]) Any(ps ...Pred) Pred { return relExists(h.Ref, ps, false) }
 

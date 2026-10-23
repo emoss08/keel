@@ -442,7 +442,34 @@ func (q *query) writeSubquery(r *render, existsOnly bool) {
 	}
 	sn := newRoot(q)
 	o := selectOpts{selectOne: existsOnly, exact: true}
-	if rel != nil {
+	switch {
+	case rel != nil && rel.Kind == schema.ManyToMany:
+		jalias := r.newAlias()
+		target := rel.Target
+		o.extraJoin = func(r *render, alias string) {
+			r.s(" JOIN ")
+			r.s(rel.JoinQuoted)
+			r.b(' ')
+			r.s(jalias)
+			r.s(" ON ")
+			r.s(jalias)
+			r.b('.')
+			r.s(rel.JoinRemoteQ[0])
+			r.s(" = ")
+			r.s(alias)
+			r.b('.')
+			r.s(target.Columns[rel.Remote[0]].Quoted)
+		}
+		o.extraWhere = func(r *render, alias string) {
+			r.s(jalias)
+			r.b('.')
+			r.s(rel.JoinLocalQ[0])
+			r.s(" = ")
+			r.s(parentAlias)
+			r.b('.')
+			r.s(parentTable.Columns[rel.Local[0]].Quoted)
+		}
+	case rel != nil:
 		o.extraWhere = func(r *render, alias string) {
 			r.relCondNoTenant(parentTable, rel, parentAlias, alias)
 		}
