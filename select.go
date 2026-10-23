@@ -232,6 +232,9 @@ func (q *query) renderSelect(r *render, sn *lnode, o selectOpts) *selectPlan {
 			}
 			return
 		}
+		if q.distinct && sn.spec == q {
+			r.s("DISTINCT ")
+		}
 		if len(q.distinctOn) > 0 && sn.spec == q {
 			r.s("DISTINCT ON (")
 			for i, e := range q.distinctOn {
@@ -284,17 +287,11 @@ func (q *query) renderSelect(r *render, sn *lnode, o selectOpts) *selectPlan {
 		}
 	})
 
-	var group, having, order []byte
+	var group, having, windows, order []byte
 	if sn.spec == q {
-		group = r.section(func() {
-			for i, e := range q.group {
-				if i > 0 {
-					r.s(", ")
-				}
-				e.writeSQL(r)
-			}
-		})
+		group = r.section(func() { writeExprs(r, q.group) })
 		having = r.section(func() { r.preds(q.having, false) })
+		windows = r.section(func() { writeWindows(r, q.windows) })
 	}
 	if !o.countOnly && sn.spec != nil {
 		order = r.section(func() {
@@ -373,6 +370,10 @@ func (q *query) renderSelect(r *render, sn *lnode, o selectOpts) *selectPlan {
 		r.s(" HAVING ")
 		r.buf = append(r.buf, having...)
 	}
+	if len(windows) > 0 {
+		r.s(" WINDOW ")
+		r.buf = append(r.buf, windows...)
+	}
 	if len(order) > 0 {
 		r.s(" ORDER BY ")
 		r.buf = append(r.buf, order...)
@@ -400,7 +401,7 @@ func (q *query) renderSelect(r *render, sn *lnode, o selectOpts) *selectPlan {
 		r.s(alias)
 		r.s(wait)
 	}
-	r.release(with, sel, from, where, group, having, order)
+	r.release(with, sel, from, where, group, having, windows, order)
 	return plan
 }
 

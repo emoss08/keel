@@ -32,6 +32,15 @@ func (h Handle[T]) Limit(n int) *Query[T] { return h.Query().Limit(n) }
 // Group starts a grouped query.
 func (h Handle[T]) Group(es ...Expr) *Query[T] { return h.Query().Group(es...) }
 
+// GroupingSets starts a query grouped by GROUPING SETS.
+func (h Handle[T]) GroupingSets(sets ...[]Expr) *Query[T] { return h.Query().GroupingSets(sets...) }
+
+// Rollup starts a query grouped by ROLLUP.
+func (h Handle[T]) Rollup(es ...Expr) *Query[T] { return h.Query().Rollup(es...) }
+
+// Cube starts a query grouped by CUBE.
+func (h Handle[T]) Cube(es ...Expr) *Query[T] { return h.Query().Cube(es...) }
+
 // AllTenants starts a query that crosses tenants. It needs a system scope.
 func (h Handle[T]) AllTenants() *Query[T] { return h.Query().AllTenants() }
 
@@ -116,6 +125,8 @@ type query struct {
 	timeout    time.Duration
 	customPlan bool
 	ctes       []*CTETable
+	windows    []namedWindow
+	distinct   bool
 }
 
 type joinClause struct {
@@ -155,6 +166,35 @@ func (q *Query[T]) Order(os ...Order) *Query[T] {
 // Group adds GROUP BY expressions.
 func (q *Query[T]) Group(es ...Expr) *Query[T] {
 	q.q.group = append(q.q.group, es...)
+	return q
+}
+
+// GroupingSets groups by each of sets in turn, in one statement: GROUP BY GROUPING SETS ((a, b),
+// (a), ()). Each set yields its own rows, with the expressions it does not group by NULL; an empty
+// set is the grand total. Grouping tells the rows of each set apart. Group expressions added
+// before or after are grouped in every set.
+func (q *Query[T]) GroupingSets(sets ...[]Expr) *Query[T] {
+	q.q.group = append(q.q.group, groupingSets(sets))
+	return q
+}
+
+// Rollup groups by es and by each prefix of es down to the grand total: ROLLUP (a, b) is
+// GROUPING SETS ((a, b), (a), ()), the rows with their subtotals and total.
+func (q *Query[T]) Rollup(es ...Expr) *Query[T] {
+	q.q.group = append(q.q.group, rollup(es))
+	return q
+}
+
+// Cube groups by every subset of es: CUBE (a, b) is GROUPING SETS ((a, b), (a), (b), ()).
+func (q *Query[T]) Cube(es ...Expr) *Query[T] {
+	q.q.group = append(q.q.group, cube(es))
+	return q
+}
+
+// Window declares a named window (WINDOW name AS (…)) that window functions of the query use
+// through NamedWindow. name must match [a-z_][a-z0-9_]*.
+func (q *Query[T]) Window(name string, w Window) *Query[T] {
+	q.q.windows = append(q.q.windows, namedWindow{name: name, w: w})
 	return q
 }
 
@@ -277,6 +317,7 @@ func (q *Query[T]) Clone() *Query[T] {
 	c.q.joins = append([]joinClause(nil), q.q.joins...)
 	c.q.distinctOn = append([]Expr(nil), q.q.distinctOn...)
 	c.q.ctes = append([]*CTETable(nil), q.q.ctes...)
+	c.q.windows = append([]namedWindow(nil), q.q.windows...)
 	return c
 }
 
