@@ -36,7 +36,7 @@ soft delete, an identity map or a session cache.
 
 | Package | Role |
 |---|---|
-| `keel` | the public API: `DB`, transactions, scope, `Handle[T]`, `Query[T]`, expressions, columns, writes, hooks, errors |
+| `keel` | the public API: `DB`, transactions, scope, `Handle[T]`, `Query[T]`, expressions, columns, writes, hooks, errors, dynamic queries (`DynQuery`, `DynResult`) |
 | `keel/schema` | runtime table metadata, written as static literals by the generator; the `db` tag parser |
 | `keel/gen`, `cmd/keel` | the generator: loads packages with `go/packages`, finds models, writes one `<pkg>db` package per model package |
 | `keel/migrate` | the SQL-file migration runner |
@@ -168,10 +168,11 @@ page, err := s.
 
 ### Builder methods
 
-`Where`, `Pick`, `Load`, `Order`, `Group`, `Having`, `Limit`, `Offset`, `Lock`, `Join`,
-`LeftJoin`, `JoinLateral`, `LeftJoinLateral`, `DistinctOn`, `With`, `AllTenants`, `Timeout`,
-`CustomPlan`; `Any` and `None` turn a query into a predicate. Builders are mutable and chainable;
-`Clone` copies one. `ToSQL` renders the main statement.
+`Where`, `Pick`, `Load`, `Order`, `Group`, `GroupingSets`, `Rollup`, `Cube`, `Having`, `Window`,
+`Limit`, `Offset`, `Lock`, `Join`, `LeftJoin`, `JoinLateral`, `LeftJoinLateral`, `DistinctOn`,
+`With`, `AllTenants`, `Timeout`, `CustomPlan`; `Any` and `None` turn a query into a predicate.
+Builders are mutable and chainable; `Clone` copies one. `ToSQL` renders the main statement and
+`Explain` returns its plan.
 
 ### Terminal methods
 
@@ -187,6 +188,7 @@ page, err := s.
 | `Update`, `Delete` | bulk writes over the query's filter; rows affected. A query without `Where` is refused |
 | `keel.Into[R]`, `keel.IntoOne[R]` | projections: the picked expressions fill `R`'s exported fields in order |
 | `keel.Batch(ctx, db, items...)` | independent reads in one round trip: `ListInto`, `AllInto`, `OneInto`, `FirstInto`, `PageInto`, `CountInto`, `CountUpToInto`, `ExistsInto`, `IntoSlice`, `IntoValue` each pair a query with a typed destination and keep their terminal's checks; the relation loads of all items share one round trip per level; destinations are filled only when every item succeeded. The terminals above are one-item batches |
+| `Explain(ctx, db, opts)` | the main statement's plan: total cost, estimated rows and EXPLAIN's JSON; with `Analyze`, actual rows and timings from `EXPLAIN (ANALYZE, BUFFERS)` run in a transaction (or savepoint) that is rolled back |
 
 ### Expressions
 
@@ -207,13 +209,22 @@ Every clause takes expressions, never strings. Columns are typed by their Go kin
 | tsvector | `Matches`, `MatchesConfig`, `Rank` |
 
 Combinators: `keel.And`, `keel.Or`, `keel.Not`, `keel.When`, `keel.Exists`, `keel.NotExists`,
-`keel.True`, `keel.Raw`, `keel.Val`. Aggregates: `keel.Count()`, `keel.Sum`, `keel.RowNumber`,
-`.Filter(pred)`, `.Over(partition, order...)`. Relation paths: belongs-to and has-one columns join
-automatically (`LEFT JOIN` in reads, `FROM`/`USING` in bulk writes); `Any` and `None` on a to-many
-path compile to `EXISTS` and `NOT EXISTS`.
+`keel.True`, `keel.Raw`, `keel.Val`. Aggregates: `keel.Count()`, `keel.CountOf`, `keel.Sum`,
+`keel.Avg`, `keel.Min`, `keel.Max`, `keel.Grouping` (`GROUPING()` of `GroupingSets`, `Rollup` and
+`Cube`), `.Filter(pred)`. Window functions: `RowNumber`, `Rank`, `DenseRank`, `PercentRank`,
+`CumeDist`, `Ntile`, `Lag`, `Lead`, `FirstValue`, `LastValue`, `NthValue`, and every aggregate with
+`.Over(partition, order...)` or `.OverWindow(w)`, where a `Window` has a partition, an order, a
+`ROWS`, `RANGE` or `GROUPS` frame between bound offsets, an exclusion, or the name of a window the
+query declares. Relation paths: belongs-to and has-one columns join automatically (`LEFT JOIN` in
+reads, `FROM`/`USING` in bulk writes); `Any` and `None` on a to-many path compile to `EXISTS` and
+`NOT EXISTS`.
 
 Values are bind parameters. `In` binds one array parameter (`= ANY($1)`), so the statement text does
-not depend on the number of values. A column resolves to the innermost statement that references
+not depend on the number of values. Two binds share a placeholder only when they provably get the
+same parameter type, since Postgres infers it from the first use: the same value of the same
+expression written twice (an expression in `Pick` and `Group` renders identically), equal
+comparable values compared with the same column through the same operator, and equal values under
+the same explicit cast. Writes never share. A column resolves to the innermost statement that references
 its table; a column of a table's base handle also resolves inside a statement built on a relation
 path to that table.
 
@@ -226,6 +237,34 @@ plus the scope's tenant columns; statements of one level share a round trip. A t
 `Limit` loads at most that many rows per parent through `unnest … CROSS JOIN LATERAL`; many-to-many
 loads take no `Limit`. On a to-one load, `Where` becomes part of the join condition, so a row that
 does not match leaves the relation nil without filtering the parent.
+
+## Dynamic queries
+
+`keel.DynQuery` is the runtime-typed counterpart of `Query[T]` for code that chooses tables,
+columns, relations and expressions at run time: report compilers, data tables with user-chosen
+columns, exports. It starts from a `*schema.Table` (`DynFrom`) or a name in a `Registry` of
+generated tables and is not generic.
+
+- **One renderer.** A dynamic query holds the same `query` a typed one does and renders through
+  `renderSelect` and the render scope. Tenancy, interceptors, aliases, parameter sharing and
+  statement preparation are the typed ones; nothing is reimplemented.
+- **Identifiers from the schema only.** Columns and relations are resolved by name against the
+  schema and written from its quoted names. Result columns are `c1…cN` in SQL and keep their labels
+  in Go; CTEs and pre-aggregations get generated names; `DynFunc` calls an allow-list; `Cast` takes
+  a `ValueType`. A name that does not resolve makes an expression that carries an error.
+- **To-many relations are read as the caller chooses**: `Any`/`None` (`EXISTS`, nested per to-many
+  hop), or `PreAggregate`: a grouped CTE keyed by the parent and filtered to the parents the query
+  selects (`PreAggCTE`: one pass over the child table), or a `LEFT JOIN LATERAL` (`PreAggLateral`:
+  one probe per parent). Keys include the tenant columns; a parent without rows reads NULL with
+  both.
+- **Columnar results.** `DynResult` holds one typed vector per column and a null bitmap, decoded
+  from pgx's raw values by a decoder chosen once per column: no per-row map, no boxing.
+  Variable-length values are slices of arenas that are never reused. numeric is `keel.Decimal`, its
+  exact text, formatted by keel from the binary format. Types without a vector decode through
+  their pgx codec into JSON.
+- **Pages and streams.** `Page` wraps the query and applies the keyset to its output columns, adding
+  hidden order columns and, on an ungrouped table query, the primary key. `Stream` decodes batches
+  while the rows arrive and cancels the query when the consumer stops outside a transaction.
 
 ## Writes
 
@@ -363,3 +402,4 @@ an applied file whose content changed stops `Up` with `ErrChanged`.
   render.
 - No `sync.Map` and no generic type with methods in any type reachable from `schema.Table`.
 - Statement text never contains values.
+- Dynamic results allocate per batch and per column, never per row or per value.

@@ -22,6 +22,7 @@ tenant (see [Tenancy](#tenancy)).
 - [Loading relations](#loading-relations)
 - [Pagination](#pagination)
 - [Batching reads](#batching-reads)
+- [Dynamic queries](#dynamic-queries)
 - [Writing](#writing)
 - [Transactions](#transactions)
 - [Tenancy](#tenancy)
@@ -790,14 +791,56 @@ rows, err := keel.Into[statusTotal](ctx, db, s.
 heaviest, err := keel.IntoOne[*int64](ctx, db, s.Pick(s.Weight.Max()).Where(s.Status.Eq(fleet.StatusNew)))
 ```
 
-Aggregates and functions are `keel.Agg` values: `keel.Count()` (`count(*)`), `keel.Sum(expr)`,
-`keel.RowNumber()`, and the column methods `Count`, `CountDistinct`, `Min`, `Max`, `Sum`, `Avg`,
-`Len` and `Rank`. An `Agg` compares to values (`Eq`, `Ne`, `Gt`, `Gte`, `Lt`, `Lte`), orders (`Asc`,
-`Desc`), restricts its rows with `Filter(pred)` (`FILTER (WHERE …)`), and becomes a window function
-with `Over(partition, order...)`. Use a pointer field for an aggregate that can be NULL (`max` over
-no rows).
+Aggregates and functions are `keel.Agg` values: `keel.Count()` (`count(*)`), `keel.CountOf(expr)`,
+`keel.Sum(expr)`, `keel.Avg(expr)`, `keel.Min(expr)`, `keel.Max(expr)`, the window functions below,
+and the column methods `Count`, `CountDistinct`, `Min`, `Max`, `Sum`, `Avg`, `Len` and `Rank`. An
+`Agg` compares to values (`Eq`, `Ne`, `Gt`, `Gte`, `Lt`, `Lte`), orders (`Asc`, `Desc`), restricts its
+rows with `Filter(pred)` (`FILTER (WHERE …)`), and becomes a window function with `Over` or
+`OverWindow`. Use a pointer field for an aggregate that can be NULL (`max` over no rows).
+
+### Grouping sets, rollups and cubes
+
+Subtotals and grand totals come from the same statement, and the same snapshot, as the detail rows.
+`Rollup(a, b)` groups by `(a, b)`, then `(a)`, then nothing; `Cube(a, b)` by every subset;
+`GroupingSets(sets...)` by exactly the sets given, `nil` being the grand total. They mix with
+`Group`: `Group(s.Hazmat).Rollup(s.Status)` groups by hazmat in every set. In a row of a set that
+does not group by an expression, that expression is NULL.
+
+`keel.Grouping(es...)` is `GROUPING(…)`: a bit mask with a 1 for each of `es` the row's set does not
+group by, the leftmost expression being the highest bit. It tells a detail row (0) from a subtotal
+or the total, in `Pick`, `Having` and `Order`. Pass the expressions exactly as they are grouped.
+
+```go
+code := s.Customer().Code
+level := keel.Grouping(code, s.Status)
+type line struct {
+    Customer *string       // NULL on the grand total
+    Status   *fleet.Status // NULL on subtotals and the total
+    Loads    int64
+    Revenue  fleet.Money
+    Level    int32 // 0 detail, 1 customer subtotal, 3 grand total
+}
+rows, err := keel.Into[line](ctx, db, s.
+    Pick(code, s.Status, keel.Count(), s.Total.Sum(), level).
+    Rollup(code, s.Status).
+    Order(level.Asc(), code.Asc(), s.Status.Asc()))
+
+totals, err := keel.Into[line](ctx, db, s.
+    Pick(code, s.Status, keel.Count(), s.Total.Sum(), level).
+    GroupingSets([]keel.Expr{code}, []keel.Expr{s.Status}, nil).
+    Having(level.Gt(0)))
+```
+
+`Count` on a grouped query counts the rows it returns, subtotals included.
+
 
 ### Window functions
+
+A window function computes a value for each row from the rows around it, without collapsing them.
+`Agg.Over(partition, order...)` is the short form; `Agg.OverWindow(w)` takes a `keel.Window` with a
+partition, an order and a frame. Build one with `keel.PartitionBy(es...)`, `keel.OrderBy(os...)` or
+`keel.NamedWindow(name)`; its methods return a changed copy, so a base window can be shared. The
+zero `keel.Window{}` is `OVER ()`: every row of the result.
 
 ```go
 type ranked struct {
@@ -812,8 +855,59 @@ rows, err := keel.Into[ranked](ctx, db, s.
     Limit(500))
 ```
 
-`Over(nil, order...)` windows over every row, as a running count does: `keel.Count().Over(nil,
-s.CreatedAt.Asc())`.
+Frames bound the rows a function sees, relative to the current row:
+
+| Frame | Offsets count |
+|---|---|
+| `w.Rows(start, end)` | rows |
+| `w.Range(start, end)` | distance in the value of the single order expression (a number, or a `time.Duration` for a timestamp) |
+| `w.Groups(start, end)` | peer groups (rows that tie in the order) |
+
+Bounds are `keel.UnboundedPreceding`, `keel.Preceding(n)`, `keel.CurrentRow`, `keel.Following(n)`
+and `keel.UnboundedFollowing`; offsets are bound as parameters. `w.Exclude(x)` removes
+`keel.ExcludeCurrentRow`, `keel.ExcludeGroup` (the row and its peers) or `keel.ExcludeTies` (its
+peers) from the frame.
+
+```go
+byDay := keel.PartitionBy(s.CustomerID).OrderBy(s.CreatedAt.Asc())
+type trend struct {
+    Pro     string
+    Running fleet.Money  // running total per customer
+    Moving  float64      // average of this and the two previous shipments
+    Share   float64      // percent of all revenue
+    Rank    int64        // rank by revenue within the customer
+    Change  *fleet.Money // change from the previous shipment; NULL on the first
+}
+rows, err := keel.Into[trend](ctx, db, s.Pick(
+    s.ProNumber,
+    keel.Sum(s.Total).OverWindow(byDay.Rows(keel.UnboundedPreceding, keel.CurrentRow)),
+    keel.Avg(s.Total).OverWindow(byDay.Rows(keel.Preceding(2), keel.CurrentRow)),
+    keel.Raw("? * 100.0 / ?", s.Total, keel.Sum(s.Total).OverWindow(keel.Window{})),
+    keel.Rank().OverWindow(keel.PartitionBy(s.CustomerID).OrderBy(s.Total.Desc())),
+    keel.Raw("? - ?", s.Total, keel.Lag(s.Total, 1, nil).OverWindow(byDay)),
+).Order(s.CustomerID.Asc(), s.CreatedAt.Asc()).Limit(1000))
+```
+
+Window functions: `RowNumber`, `Rank`, `DenseRank`, `PercentRank`, `CumeDist`, `Ntile(n)`,
+`Lag(e, offset, default)`, `Lead(e, offset, default)`, `FirstValue(e)`, `LastValue(e)` and
+`NthValue(e, n)`; every aggregate (`Sum`, `Avg`, `Min`, `Max`, `Count`, `CountOf`, the column
+methods, with or without `Filter`) is a running or moving aggregate over a window. `LastValue` reads
+the frame's last row, which by default is the current row's last peer: give it a frame that reaches
+`UnboundedFollowing` to read the partition's last row. Windows apply after grouping, so a window
+over an aggregate gives each group's share of the total:
+`keel.Sum(s.Total.Sum()).OverWindow(keel.Window{})`.
+
+`Query.Window(name, w)` declares a named window (`WINDOW name AS (…)`) that functions use with
+`keel.NamedWindow(name)`; a function may add an order, when the named window has none, and a frame:
+
+```go
+q := s.Pick(s.ProNumber,
+    keel.RowNumber().OverWindow(keel.NamedWindow("per_customer")),
+    keel.Sum(s.Total).OverWindow(keel.NamedWindow("per_customer").Rows(keel.UnboundedPreceding, keel.CurrentRow))).
+    Window("per_customer", keel.PartitionBy(s.CustomerID).OrderBy(s.CreatedAt.Asc()))
+```
+
+Window names match `[a-z_][a-z0-9_]*`.
 
 ### DISTINCT ON
 
@@ -916,6 +1010,67 @@ ORDER BY s."created_at" DESC LIMIT 20
 
 (The statement is one line; it is wrapped here.) An observer sees every statement keel sends; see
 [Observers](#observers).
+
+### Shared parameters
+
+An expression written twice in a statement binds its values once, so it renders identically
+wherever it appears. Postgres matches GROUP BY, GROUPING and ORDER BY expressions by their text, and
+`date_trunc($1, …)` in SELECT does not match `date_trunc($2, …)` in GROUP BY even when both
+parameters hold `'month'`:
+
+```go
+month := keel.Raw("date_trunc(?, to_timestamp(?))", "month", s.CreatedAt)
+rows, err := keel.Into[monthly](ctx, db, s.
+    Pick(month, s.Total.Sum()).
+    Group(month).
+    Order(keel.Asc(month)))
+```
+
+```sql
+SELECT date_trunc($3, to_timestamp(s."created_at")), sum(s."total") FROM "shipments" s
+WHERE s."organization_id" = $1 AND s."business_unit_id" = $2
+GROUP BY date_trunc($3, to_timestamp(s."created_at")) ORDER BY date_trunc($3, to_timestamp(s."created_at")) ASC
+```
+
+keel shares a parameter only between binds it knows get the same type, because Postgres infers a
+parameter's type from its first use: one `$1` compared with a `date` column and a `timestamptz`
+column fails with "inconsistent types deduced for parameter", and one compared with an enum and a
+text column with "operator does not exist". So two binds share a placeholder when they are:
+
+- the same value of the same expression value: one `Raw`, `Val`, JSON path, window offset or
+  dynamic literal written in several places (`Pick(month).Group(month)`; two separately built `Raw`
+  expressions keep their own placeholders, so build a repeated expression once and reuse it);
+- equal values (strings, integers, booleans, times, named types of those, non-zero floats) compared
+  with the same column through the same operator (`s.Status.Eq(x)` twice);
+- equal values under the same explicit cast (`keel.DynLit(v).Cast(keel.TypeDate)` twice).
+
+Writes keep one parameter per value. The lookup is a scan of at most 16 entries, then a map, both
+reused across statements, so sharing costs no allocation.
+
+### Explain
+
+`q.Explain(ctx, db, opts)` returns the plan of a typed or dynamic query's main statement, rendered
+as `ToSQL` renders it and run with its parameters, so the plan is the one Postgres picks for these
+values: `TotalCost` (in the planner's cost units), `Rows` (the estimated row count) and `JSON`, the
+whole `EXPLAIN (FORMAT JSON)` output. A guard can refuse a report whose cost or row estimate is over
+a limit before running it.
+
+```go
+plan, err := s.Where(s.Status.Eq(fleet.StatusNew)).Order(s.CreatedAt.Desc()).Limit(50).
+    Explain(ctx, db, keel.ExplainOptions{})
+if err == nil && plan.TotalCost > 100_000 {
+    // too expensive for an interactive request
+}
+
+analyzed, err := s.Where(s.Status.Eq(fleet.StatusNew)).Limit(50).
+    Explain(ctx, db, keel.ExplainOptions{Analyze: true})
+// analyzed.ActualRows, ActualTime, PlanningTime, ExecutionTime; buffer counts in analyzed.JSON
+```
+
+`Analyze` runs `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)`, which executes the statement, inside a
+transaction that is rolled back: an implicit read-only one with the `OnBegin` statements, or,
+when the context carries a transaction, a savepoint rolled back to in the same round trip, so the
+statement sees the transaction's own writes and a failure leaves the transaction usable.
 
 ## Loading relations
 
@@ -1108,6 +1263,272 @@ How a batch runs:
   items does nothing.
 
 The terminals are one-item batches, so a batch costs nothing beyond the statements it sends.
+
+## Dynamic queries
+
+Typed queries cover code that knows its tables at compile time. Report builders, data tables with
+user-chosen columns and filters, and generic exports choose tables, columns, relations and
+expressions at run time; they use `keel.DynQuery`. It is non-generic, resolves every identifier
+against the generated schema, binds every value, and renders through the same machinery as typed
+queries, so tenancy, interceptors, parameter sharing and statement preparation work the same way.
+Its result is a typed columnar `DynResult`.
+
+### Starting a dynamic query
+
+A `keel.Registry` finds tables by their SQL name. Build it once from the generated tables and share
+it; `DynFrom(table)` starts from a `*schema.Table` directly.
+
+```go
+reg, err := keel.NewRegistry(fleetdb.ShipmentsSchema(), fleetdb.CustomersSchema(),
+    fleetdb.MovesSchema(), fleetdb.StopsSchema(), fleetdb.TagsSchema(), fleetdb.LocationsSchema())
+
+q := reg.Query("shipments") // an unknown name makes a query whose terminals fail
+```
+
+### Columns and paths
+
+`q.Path(segments...)` resolves a column: the last segment names the column (its SQL name or Go
+field name), the segments before it to-one relations followed from the base table (the relation's
+Go name or its snake_case form). The relations are LEFT JOINed with their tenant condition when the
+expression is used, exactly as typed relation paths are. A path through a to-many relation is
+refused; use `Rel` (below).
+
+```go
+pro := q.Path("pro_number")
+customer := q.Path("customer", "name") // LEFT JOIN customers c ON … tenant …
+q.Select(pro, customer, q.Path("status"), q.Path("total")).
+    Where(q.Path("status").In([]string{"New", "Assigned"}), customer.ContainsFold(search)).
+    Order(pro.Desc()).
+    Limit(100)
+res, err := q.Run(ctx, db)
+```
+
+Each selected expression becomes a result column named by its label: the path
+(`"customer.name"`), or the name given with `As(label)`. Labels stay in Go and never reach the SQL,
+where result columns are `c1`, `c2`, …; a label selected twice is an error. Without `Select`, a
+table query returns the table's default columns.
+
+### Expressions
+
+A `keel.DynExpr` is an expression, and a predicate, so `Where`, `Having`, `keel.And`, `keel.Or` and
+`Filter` take it. Operands are other expressions or values, which are always bound as parameters:
+
+| Kind | Methods and functions |
+|---|---|
+| comparisons | `Eq`, `Ne`, `Gt`, `Gte`, `Lt`, `Lte`, `IsDistinctFrom`, `Between`, `In(slice)`, `NotIn(slice)` (one array parameter), `IsNull`, `IsNotNull`, `IsTrue`, `IsFalse` |
+| text | `Like`, `ILike`, `Contains`, `ContainsFold`, `HasPrefix`, `HasSuffix` (the last four escape `%` and `_`), `Concat` |
+| arithmetic | `Add`, `Sub`, `Mul`, `Div`, `Mod`, `Neg`, `Coalesce`, `NullIf` |
+| logic | `And`, `Or`, `Not` |
+| literals | `keel.DynLit(v)`, `Cast(keel.TypeNumeric)` and the other value types |
+| CASE | `keel.DynCase().When(cond, then).Else(v)` or `.End()` |
+| functions | `keel.DynFunc(name, args...)` from an allow-list |
+| aggregates | `Sum`, `Avg`, `Min`, `Max`, `Count`, `CountDistinct`, `keel.DynCount()`, `Filter(pred)`, `Over(window)` |
+| typed expressions | `keel.DynOf(e)`: a generated column, `keel.Rank()`, `keel.Lag(…)`, `keel.Grouping(…)`, a `Raw` |
+
+`DynFunc` calls only functions of keel's allow-list: `abs`, `ceil`, `floor`, `round`, `trunc`,
+`sign`, `sqrt`, `power`, `mod`, `greatest`, `least`, `coalesce`, `nullif`, `lower`, `upper`,
+`initcap`, `trim`, `ltrim`, `rtrim`, `btrim`, `length`, `substr`, `left`, `right`, `replace`,
+`concat`, `concat_ws`, `strpos`, `split_part`, `lpad`, `rpad`, `md5`, `to_char`, `date_trunc`,
+`date_part`, `date_bin`, `age`, `to_timestamp`, `timezone`, `make_date`, `now`,
+`jsonb_extract_path_text`, `jsonb_typeof`, `jsonb_array_length`, `cardinality`,
+`array_to_string`, and the aggregates `sum`, `avg`, `min`, `max`, `count`, `bool_and`, `bool_or`,
+`string_agg`, `stddev`, `stddev_samp`, `stddev_pop`, `variance`, `var_samp` and `var_pop`. `Cast`
+takes a `keel.ValueType`, never a type name. An unresolved name, an unknown function or a `Filter`
+on something that is not an aggregate makes an expression that carries an error: `Err()` reports it
+at once, and a query that uses it fails with it, so a compiler can validate a definition before
+running it.
+
+A literal's type comes from where Postgres sees it; cast it where nothing fixes it (both sides of an
+operator, a CASE result compared with something else). Integer division truncates: cast one side to
+`keel.TypeNumeric` or `keel.TypeFloat64`, and guard a divisor that can be zero with `NullIf(0)`.
+
+```go
+revenue := q.Path("total").Sum()
+miles := q.Path("weight").Sum()
+rpm := keel.DynFunc("round", revenue.Div(miles.Cast(keel.TypeNumeric).NullIf(0)), 2).As("rpm")
+bucket := keel.DynCase().
+    When(q.Path("priority").Gte(2), "urgent").
+    When(q.Path("priority").Eq(1), "normal").
+    Else("low").As("priority")
+month := keel.DynFunc("date_trunc", "month", keel.DynFunc("to_timestamp", q.Path("created_at"))).As("month")
+```
+
+### Grouping, windows and subtotals
+
+Dynamic queries have `Group`, `GroupingSets`, `Rollup`, `Cube`, `Having`, `Window` and `Distinct`
+with the typed meaning. Write a grouped expression once and reuse the value in `Select`, `Group` and
+`Order`: its parameters are bound once, so the clauses match.
+
+```go
+code := q.Path("customer", "code")
+level := keel.DynOf(keel.Grouping(code, month))
+q.Select(code, month, revenue.As("revenue"),
+    keel.DynCount().Filter(q.Path("hazmat").IsTrue()).As("hazmat loads"),
+    revenue.Sum().Over(keel.Window{}).As("all revenue"),
+    keel.DynOf(keel.Rank().OverWindow(keel.OrderBy(revenue.Desc()))).As("rank"),
+    level.As("level")).
+    Rollup(code, month).
+    Having(revenue.Gt(1000)).
+    Order(level.Asc(), code.Asc(), month.Asc())
+```
+
+### To-many relations
+
+`q.Rel(path...)` resolves a relation path, to-one or to-many. Measures over a to-many relation must
+not fan the query's rows out, so the caller chooses how to read it:
+
+- **`Any(preds...)` and `None(preds...)`** are semi- and anti-joins: `EXISTS` correlated with the
+  row, with the related tables' tenant predicates and interceptors, one nested `EXISTS` per to-many
+  hop. `rel.Col(path...)` resolves the related table's columns, through further to-one relations.
+- **`PreAggregate(strategy)`** aggregates the related rows per parent row. `Measure(agg)` adds an
+  aggregate and returns the column that holds it for each parent; select it, filter on it in
+  `Having`, or aggregate it again in a grouped query. `Where` filters the related rows first.
+
+```go
+moves := q.Rel("moves")
+stops := q.Rel("moves", "stops")
+q.Where(moves.Any(moves.Col("status").Eq("New")),
+    stops.None(stops.Col("location", "city").Eq("Dallas")))
+
+pa := moves.PreAggregate(keel.PreAggCTE)
+legs := pa.Measure(keel.DynCount().As("legs"))
+loaded := pa.Measure(keel.DynCount().Filter(moves.Col("loaded").IsTrue()).As("loaded legs"))
+q.Select(code, revenue.As("revenue"), legs.Sum().As("legs"), loaded.Sum().As("loaded legs")).
+    Group(code)
+```
+
+| Strategy | SQL | Use when |
+|---|---|---|
+| `keel.PreAggCTE` | a grouped CTE keyed by the parent (`WITH keel_moves (k1, …, c1) AS (SELECT m.shipment_id, …, count(*) FROM moves m WHERE tenant AND (keys) IN (SELECT s.id, … FROM shipments s WHERE <the query's filter>) GROUP BY …)`), LEFT JOINed on the key | reports: one pass over the related table whatever the number of parents |
+| `keel.PreAggLateral` | `LEFT JOIN LATERAL (SELECT count(*) AS c1 FROM moves m WHERE tenant AND m.shipment_id = s.id HAVING count(*) > 0) … ON TRUE` | few parents (a page, a top N): one index probe per parent |
+
+Both read NULL for a parent without related rows (wrap a count in `Coalesce(0)` for zero). The first
+to-many relation of the path is the level rows are aggregated to; to-many relations after it are
+joined inside the aggregation (`q.Rel("moves", "stops")` counts stops per shipment), many-to-many
+relations through their join table. The CTE's parent filter repeats the query's `Where`, so a
+`Where` that refers to a pre-aggregated measure is refused; filter measures with `Having`, or use
+the lateral strategy. The keys include the tenant columns, so a pre-aggregation is exact under a
+system scope too.
+
+### CTEs, derived tables and set operations
+
+```go
+sub := reg.Query("shipments")
+sub.Select(sub.Path("customer_id").As("customer"), sub.Path("total").Sum().As("revenue")).
+    Group(sub.Path("customer_id"))
+
+c := reg.Query("customers")
+totals := c.With(sub) // WITH keel_cte_1 (c1, c2) AS (…)
+c.Join(totals, totals.Col("customer").Eq(c.Path("id"))).
+    Select(c.Path("code"), totals.Col("revenue")).
+    Where(totals.Col("revenue").Gt(10_000))
+
+outer := keel.DynFromQuery(sub) // a query over sub's rows, columns by label
+outer.Select(keel.DynCount().As("customers"), outer.Path("revenue").Avg().As("average"))
+
+names := keel.DynUnionAll(customerNames, locationNames) // also DynUnion, DynIntersect, DynExcept
+names.Order(names.Path("name").Asc())
+```
+
+`LeftJoin` joins a CTE with LEFT JOIN. The parts of a set operation select the same number of
+expressions, and the result's columns take the first part's labels. A query used in `With`,
+`DynFromQuery` or a set operation declares `AllTenants` itself, as typed subqueries do. A
+`DynQuery` is also a subquery for typed code: `keel.Exists(dq)`, `col.InQuery(dq)`.
+
+### Reading results
+
+`Run` returns every row; `Count` counts them; `Page` reads a keyset page; `Stream` yields batches;
+`DynInto`, `DynCountInto` and `DynPageInto` are `Batch` items, so a report, its row count and the
+values of a dynamic pivot share one round trip.
+
+A `DynResult` has one `DynColumn` per selected expression and `Rows`. A column has its `Name`
+(label), its `Type`, its Postgres `OID`, a null bitmap (`IsNull(i)`) and one typed vector, the one
+its type selects, with a zero value at each NULL row:
+
+| Type | Postgres types | Vector |
+|---|---|---|
+| `TypeString` | text, varchar, char, name, enums, domains over text, uuid, types read as text | `String []string` |
+| `TypeInt64` | smallint, integer, bigint, oid | `Int64 []int64` |
+| `TypeFloat64` | real, double precision | `Float64 []float64` |
+| `TypeNumeric` | numeric | `Numeric []keel.Decimal` |
+| `TypeBool` | boolean | `Bool []bool` |
+| `TypeTime` | timestamptz, timestamp (UTC) | `Time []time.Time` |
+| `TypeDate` | date (midnight UTC) | `Time []time.Time` |
+| `TypeBytes` | bytea | `Bytes [][]byte` |
+| `TypeJSON` | json, jsonb, and every other type (arrays, ranges, intervals) as JSON | `JSON [][]byte` |
+
+```go
+res, err := q.Run(ctx, db)
+revenue := res.Column("revenue") // TypeNumeric
+for i := range res.Rows {
+    if revenue.IsNull(i) {
+        continue
+    }
+    fmt.Println(res.Columns[0].String[i], revenue.Numeric[i])
+}
+```
+
+`keel.Decimal` is numeric's exact text form (`"-1234.5600"`, `"NaN"`, `"Infinity"`): every digit and
+the scale kept, written by keel from the binary format without a `big.Int` per value, bound back as
+a numeric parameter, and what CSV, JSON and spreadsheet writers emit; `Float64()` gives an
+approximation for charts. `Value(i)` returns one value boxed, for code that handles a few values
+generically.
+
+Decoding reads pgx's raw values through a decoder chosen once per column: no per-row map and no
+per-value allocation. Strings, decimals, bytes and JSON point into chunks of memory that are never
+reused, so they stay valid for the life of the result. A 1000-row read of six columns allocates
+82 times; the same projection through `keel.Into` allocates 14,047 times.
+
+### Pages
+
+`Page` reads by keyset in the query's order. Each order term must be a selected expression, or an
+expression keel adds as a hidden column; on a table query that neither groups nor is DISTINCT, keel
+appends the primary key, so every row has a unique position. A grouped or derived query must order
+by expressions that are unique together. `Next` is the cursor of the following page, empty on the
+last one; `Limit` and `Offset` do not mix with `Page`.
+
+```go
+res, err := q.Order(pro.Desc()).Page(ctx, db, keel.After(cursor, 50))
+next := res.Next
+```
+
+The page wraps the query (`SELECT k.c1, … FROM (query) k WHERE (k.c1, k.c2) < ($n, $m) ORDER BY …
+LIMIT 51`); Postgres flattens the wrapper of an ungrouped query, so an index on the order columns
+still serves it.
+
+### Streaming
+
+`Stream(ctx, db, size)` runs the query once and yields its rows in batches of `size`, decoding each
+batch as rows arrive, so an export of any size holds one batch in memory. Each batch is a separate
+`DynResult` the consumer may keep. A query without rows yields one empty batch, so the columns are
+known. Breaking out of the loop stops the query: outside a transaction keel cancels it; inside one
+the driver reads and discards the remaining rows. Do not run statements on the same transaction in
+the loop body.
+
+```go
+for batch, err := range q.Stream(ctx, db, 5000) {
+    if err != nil {
+        return err
+    }
+    if err := writeCSV(w, batch); err != nil {
+        return err
+    }
+}
+```
+
+### Tenancy, interceptors and safety
+
+- Every table a dynamic statement references gets the scope's tenant predicate: the base, joined
+  relations, `Any` and `None`, pre-aggregations and their parent filters, CTE bodies. Without a
+  scope a statement fails with `ErrNoScope`; under a system scope it needs `AllTenants()`
+  (`ErrAllTenantsRequired`), which covers the query's joins, semi-joins and pre-aggregations.
+- Interceptors apply to every statement whose base is a table, as for typed reads: the query, its
+  pre-aggregation bodies and parent filters, its `EXISTS` subqueries.
+- Identifiers only come from the schema: tables, columns and relations are resolved by name and
+  written from the schema's quoted names; result columns, CTEs and pre-aggregations get generated
+  names; functions and cast types come from fixed lists; window names must match
+  `[a-z_][a-z0-9_]*`. A name that does not resolve is an error, never SQL. Values, user search text
+  included, are always parameters.
 
 ## Writing
 
