@@ -205,12 +205,17 @@ in bulk inserts.
 
 ### Enums, domains and decimals
 
-- **Enums** are registered on every new connection without configuration: keel lists the
-  database's enum types and their array types and loads them, so an enum compared with `In` binds
-  as one array parameter, and enum values decode into one shared string per label, without an
-  allocation per row. `SkipEnums: true` turns this off; then list each enum compared with `In`, and
-  its array type (`_name`), in `LoadTypes`.
-- **Domains and composite types** must be listed in `LoadTypes`, each with its array type.
+- **Enums** are registered on every new connection without configuration: keel reads every enum
+  type of the database and its array type from the catalog in one query and registers their codecs
+  itself, so connection setup costs one round trip whether the schema has ten enums or a thousand
+  (about 5 ms for 700 enums, where pgx's `LoadTypes` takes over a second). An enum compared with
+  `In` binds as one binary array parameter, and enum values decode into one shared string per
+  label, without an allocation per row. Each enum is registered under its name and its
+  schema-qualified name (`status`, `ops.status`, and `_status`, `ops._status` for the array).
+  `SkipEnums: true` turns this off; then list each enum compared with `In`, and its array type
+  (`_name`), in `LoadTypes`.
+- **Domains and composite types** must be listed in `LoadTypes`, each with its array type, by
+  their unquoted names (`ops.label`). They load after the enums, through pgx's `LoadTypes`.
 - **Decimals:** register a binary codec in `AfterConnect`, for example
   `github.com/jackc/pgx-shopspring-decimal`, so numeric values travel in binary instead of being
   parsed from text:

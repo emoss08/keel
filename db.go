@@ -43,11 +43,13 @@ type Config struct {
 	// register codecs (a decimal type, a faster JSON codec).
 	AfterConnect func(ctx context.Context, conn *pgx.Conn) error
 	// LoadTypes lists user-defined types (domains, composites) and their array types to register
-	// on every connection. Enums are registered without being listed.
+	// on every connection, through pgx's LoadTypes, after the enums. Enums are registered without
+	// being listed.
 	LoadTypes []string
 	// SkipEnums turns off registering every enum type of the database on each new connection.
-	// Registered enums bind as arrays and decode into one shared string per label, so enum columns
-	// cost no allocation per row.
+	// keel reads them all from the catalog in one query, however many there are. Registered enums
+	// bind as arrays and decode into one shared string per label, so enum columns cost no
+	// allocation per row.
 	SkipEnums bool
 	// JSON encodes and decodes json and jsonb values. Defaults to encoding/json; set it to a faster
 	// library (sonic, go-json) with the same signatures.
@@ -208,22 +210,21 @@ func (cfg *Config) configure(pc *pgxpool.Config) {
 		if codec != nil {
 			registerJSON(conn.TypeMap(), codec)
 		}
-		names := append([]string(nil), loadTypes...)
+		var loaded []*pgtype.Type
 		if !skipEnums {
-			enums, err := enumTypes(ctx, conn)
+			enums, err := registerEnums(ctx, conn)
 			if err != nil {
 				return err
 			}
-			names = append(names, enums...)
+			loaded = enums
 		}
-		var loaded []*pgtype.Type
-		if len(names) > 0 {
-			types, err := conn.LoadTypes(ctx, names)
+		if len(loadTypes) > 0 {
+			types, err := conn.LoadTypes(ctx, loadTypes)
 			if err != nil {
 				return fmt.Errorf("keel: load types: %w", err)
 			}
 			conn.TypeMap().RegisterTypes(types)
-			loaded = types
+			loaded = append(loaded, types...)
 		}
 		registerArrays(conn.TypeMap(), loaded)
 		if poolAfterConnect != nil {
@@ -275,28 +276,55 @@ func (db *DB) planMode() string {
 	return "auto"
 }
 
-// enumTypes returns the qualified names of the database's enum types and their array types.
-func enumTypes(ctx context.Context, conn *pgx.Conn) ([]string, error) {
-	rows, err := conn.Query(ctx, `SELECT quote_ident(n.nspname) || '.' || quote_ident(t.typname),
-	       quote_ident(n.nspname) || '.' || quote_ident(a.typname)
-	  FROM pg_type t
-	  JOIN pg_namespace n ON n.oid = t.typnamespace
-	  JOIN pg_type a ON a.oid = t.typarray
-	 WHERE t.typtype = 'e'
-	   AND n.nspname NOT IN ('pg_catalog', 'information_schema')`, pgx.QueryExecModeSimpleProtocol)
+// enumTypesSQL reads every enum type of the database with its array type.
+const enumTypesSQL = `SELECT t.oid, t.typname, n.nspname, a.oid, a.typname, a.typdelim
+  FROM pg_type t
+  JOIN pg_namespace n ON n.oid = t.typnamespace
+  JOIN pg_type a ON a.oid = t.typarray
+ WHERE t.typtype = 'e'
+   AND n.nspname NOT IN ('pg_catalog', 'information_schema')`
+
+// registerEnums registers every enum type of the database and its array type on conn, from one
+// catalog query: an enum as pgx's EnumCodec, which decodes each label into one shared string, and
+// its array as an ArrayCodec of it, under the type's name and its schema-qualified name as
+// LoadTypes registers them. It returns the array types under both names, for registerArrays.
+func registerEnums(ctx context.Context, conn *pgx.Conn) ([]*pgtype.Type, error) {
+	rows, err := conn.Query(ctx, enumTypesSQL, pgx.QueryExecModeSimpleProtocol)
 	if err != nil {
 		return nil, fmt.Errorf("keel: list enum types: %w", err)
 	}
 	defer rows.Close()
-	var names []string
+	m := conn.TypeMap()
+	var arrays []*pgtype.Type
 	for rows.Next() {
-		var enum, array string
-		if err := rows.Scan(&enum, &array); err != nil {
-			return nil, err
+		var oid, arrayOID uint32
+		var name, nsp, arrayName, delim string
+		if err := rows.Scan(&oid, &name, &nsp, &arrayOID, &arrayName, &delim); err != nil {
+			return nil, fmt.Errorf("keel: list enum types: %w", err)
 		}
-		names = append(names, enum, array)
+		enum := &pgtype.Type{Name: name, OID: oid, Codec: &pgtype.EnumCodec{}}
+		array := &pgtype.Type{Name: arrayName, OID: arrayOID,
+			Codec: &pgtype.ArrayCodec{ElementType: enum, Delimiter: arrayDelimiter(delim)}}
+		qualified := &pgtype.Type{Name: nsp + "." + arrayName, OID: arrayOID, Codec: array.Codec}
+		m.RegisterType(enum)
+		m.RegisterType(&pgtype.Type{Name: nsp + "." + name, OID: oid, Codec: enum.Codec})
+		m.RegisterType(array)
+		m.RegisterType(qualified)
+		arrays = append(arrays, array, qualified)
 	}
-	return names, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("keel: list enum types: %w", err)
+	}
+	return arrays, nil
+}
+
+// arrayDelimiter is the element delimiter of an array type's text format, a comma unless the
+// catalog names another.
+func arrayDelimiter(typdelim string) byte {
+	if len(typdelim) == 1 {
+		return typdelim[0]
+	}
+	return ','
 }
 
 func registerJSON(m *pgtype.Map, c *JSONCodec) {
