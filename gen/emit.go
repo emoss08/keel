@@ -214,6 +214,7 @@ func flagNames(f schema.ColFlag) string {
 		{schema.FlagAutoCreate, "FlagAutoCreate"}, {schema.FlagAutoUpdate, "FlagAutoUpdate"},
 		{schema.FlagReadOnly, "FlagReadOnly"}, {schema.FlagNoSelect, "FlagNoSelect"},
 		{schema.FlagNullable, "FlagNullable"}, {schema.FlagJSONB, "FlagJSONB"}, {schema.FlagAutoID, "FlagAutoID"},
+		{schema.FlagNullZero, "FlagNullZero"},
 	}
 	var parts []string
 	for _, n := range names {
@@ -612,6 +613,10 @@ func (e *emitter) ptrExpr(im *imports, c *column, unsafePkg string) string {
 }
 
 func (e *emitter) valueStmt(im *imports, c *column, keel string) string {
+	if c.zero != zeroNone {
+		return fmt.Sprintf("\t\tif %s {\n\t\t\treturn nil\n\t\t}\n\t\treturn %s\n", e.zeroCond(im, c),
+			e.plainValue(c, keel))
+	}
 	switch {
 	case c.kind == schema.KindJSON && !c.ptr:
 		switch c.typ.Underlying().(type) {
@@ -644,4 +649,36 @@ func (e *emitter) valueStmt(im *imports, c *column, keel string) string {
 		return fmt.Sprintf("\t\tif r.%s == nil {\n\t\t\treturn []int64{}\n\t\t}\n\t\treturn %s\n", c.field, v)
 	}
 	return fmt.Sprintf("\t\treturn r.%s\n", c.field)
+}
+
+// zeroCond is the condition under which a nullzero field holds its zero value.
+func (e *emitter) zeroCond(im *imports, c *column) string {
+	f := "r." + c.field
+	switch c.zero {
+	case zeroString:
+		return f + ` == ""`
+	case zeroNumber:
+		return f + " == 0"
+	case zeroBool:
+		return "!" + f
+	case zeroNil:
+		return f + " == nil"
+	case zeroMethod:
+		return f + ".IsZero()"
+	}
+	return fmt.Sprintf("%s == (%s{})", f, types.TypeString(c.typ, im.qualifier()))
+}
+
+// plainValue is the value a nullzero field binds when it is not zero.
+func (e *emitter) plainValue(c *column, keel string) string {
+	f := "r." + c.field
+	switch {
+	case c.named != nil && !c.scanner:
+		return c.basic + "(" + f + ")"
+	case c.elem != nil && c.kind == schema.KindStringArray:
+		return keel + ".Strings(" + f + ")"
+	case c.elem != nil && c.kind == schema.KindInt64Array:
+		return keel + ".Int64s(" + f + ")"
+	}
+	return f
 }

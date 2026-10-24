@@ -18,6 +18,7 @@ tenant (see [Tenancy](#tenancy)).
 - [Configuration](#configuration)
 - [Models](#models)
   - [Tag reference](#tag-reference)
+  - [Nullzero columns](#nullzero-columns)
   - [Pick relations](#pick-relations)
   - [Derived metadata](#derived-metadata)
 - [Generating code](#generating-code)
@@ -477,6 +478,7 @@ Shipment.Weight: keel tag "weight,fromat=weight": unknown option "fromat"`).
 | `noselect` | not selected by default; usable in predicates. Mark a generated `noselect` column `readonly` too | `keel:"search_vector,noselect,readonly,tsvector"` |
 | `jsonb` | the value is encoded as JSON; a nil map or slice in a non-pointer field is written as `{}` or `[]` | `keel:"attributes,jsonb"` |
 | `tsvector` | the column gets the full-text operators | see `noselect` |
+| `nullzero` | the field's zero value is stored as NULL and NULL reads back as the zero value; see [Nullzero columns](#nullzero-columns) | `keel:"customer_id,nullzero"` |
 | `label=<text>` | the column's label instead of the derived one | `keel:"pro_number,label=PRO Number"` |
 | `noreport` | reports do not offer the column | `keel:"internal_key,noreport"` |
 | `report` | reports offer a column they leave out by default (a tenant, version, `noselect`, bytea or tsvector column, or an exposed foreign key) | `keel:"customer_id,report"` |
@@ -486,14 +488,15 @@ Shipment.Weight: keel tag "weight,fromat=weight": unknown option "fromat"`).
 | `type=epoch` / `type=date` / `type=decimal` | the value type reports read: an `int64` of Unix seconds, a `time.Time` holding a date, a scanner or string holding a decimal | `keel:"total,type=decimal"` |
 
 A model has at most one `version`, `autoid`, `autocreate` and `autoupdate` column. `readonly`
-cannot be combined with `pk`, `tenant`, `version`, `autoid`, `autocreate` or `autoupdate`; `jsonb`
-and `tsvector`, `report` and `noreport`, `dimension` and `measure` exclude each other. The report
+cannot be combined with `pk`, `tenant`, `version`, `autoid`, `autocreate` or `autoupdate`, and
+neither can `nullzero`; `jsonb` and `tsvector`, `report` and `noreport`, `dimension` and `measure`
+exclude each other. The report
 options (`noreport`, `report`, `dimension`, `measure`, `agg=`, `format=`, `type=`) need `report` on
 the model's table tag.
 
 There is no `default:` or `notnull`: the SQL migrations own the schema. The value in the struct is
 the value written; keel never substitutes `DEFAULT` for a zero value. A nil slice in a non-pointer
-array field is written as an empty array.
+array field is written as an empty array, unless the column is `nullzero`.
 
 **On a relation**
 
@@ -528,6 +531,58 @@ array field is written as an empty array.
 A pointer field (`*int64`, `*ids.ID`) or a `sql.Scanner` whose name starts with `Null` is nullable
 and has the same column type. Plain `int` is refused, because its width is not portable; use
 `int64`. Structs, maps and slices of other element types need the `jsonb` option.
+
+A named type over a basic type is stored as that basic type even when it implements `sql.Scanner`
+and `driver.Valuer`, as `ids.ID` here and Trenova's `pulid.ID` do: keel reads and writes the
+underlying string or number straight through the field, so the column keeps its typed operators,
+can key relations and travels in typed bulk arrays, and the type's `Scan` and `Value` methods are
+not called. A type whose methods store its zero value as NULL gets that behaviour from `nullzero`.
+Only struct and other non-basic types use their `Scan` and `Value` methods.
+
+### Nullzero columns
+
+`nullzero` is for a non-pointer field whose column is nullable: the zero value of the field (`""`,
+`0`, `false`, the zero `time.Time`, a nil slice or map, a struct's zero value) is stored as NULL,
+and NULL reads back as the zero value. Optional foreign keys are the common case: an empty
+`CustomerID` must be NULL, not `''`, for the foreign key and partial unique indexes to hold.
+
+```go
+type Contact struct {
+    keel.Table `keel:"contacts"`
+
+    ID         ids.ID    `keel:"id,pk,autoid:con_"`
+    // …tenant columns…
+    CustomerID ids.ID    `keel:"customer_id,nullzero"`
+    Phone      string    `keel:"phone,nullzero"`
+    LastSeenAt time.Time `keel:"last_seen_at,nullzero"`
+    Balance    Money     `keel:"balance,nullzero"`
+    Notes      []string  `keel:"notes,nullzero"`
+
+    Customer *Customer `keel:"belongs:customer_id"`
+}
+```
+
+- **Writes.** Every write stores a zero value as NULL: `Create`, `CreateMany` (the column's typed
+  array carries NULL elements), `Copy`, `Upsert` and `CreateOrSkip`, `Save` with or without named
+  columns, bulk `Update` and `Conflict.Set` (`c.Phone.To("")` binds NULL), and `InsertFrom`, which
+  wraps a picked value of a string, number, bool or time column in `nullif(…, zero)`.
+- **Reads.** NULL decodes into the zero value through a scan plan cached per connection, without
+  reflection or an allocation per value for the basic kinds and `time.Time`.
+- **Predicates.** A value compared with a nullzero column follows the field's meaning: `Eq(zero)` is
+  `IS NULL`, `Ne(zero)` and `IsDistinctFrom(zero)` are `IS NOT NULL`, `Ne(v)` is `IS DISTINCT FROM v`
+  so rows holding the zero value match, `In(…)` with the zero value in the list adds `OR col IS
+  NULL`, and `NotIn(…)` without it keeps the NULL rows. The dynamic layer's `Eq`, `Ne`, `In` and
+  `NotIn` on a nullzero column do the same. Ordering comparisons (`Gt`, `Lt`, `Between`) see NULL as
+  SQL does: it never matches.
+- **Ordering and pages.** NULL sorts last ascending and first descending, as in Postgres; keyset
+  pages over a nullzero column place its zero values that way.
+- **Relations.** A nullzero foreign key holding the zero value has no related row: `Load` leaves the
+  relation nil, and key lists for relation loads skip it.
+
+The generated `Value` accessor tests the zero value (`r.Phone == ""`, `r.LastSeenAt.IsZero()`,
+`r.Balance == (Money{})`): a struct type needs an `IsZero() bool` method or must be comparable.
+`nullzero` on a pointer field or a `Null…` scanner is refused, since those store NULL already, and
+so is `nullzero` on a `pk`, `tenant`, `version`, `autoid`, `autocreate` or `autoupdate` column.
 
 ### Relations
 
@@ -3231,7 +3286,7 @@ The same pattern works for an application:
 | `AfterScanRow` | `AfterLoad` |
 | `bun:"type:jsonb"` | `keel:"attributes,jsonb"` |
 | `bun:",array"` | nothing; `[]string` and `[]int64` are arrays |
-| `bun:",nullzero"` | a pointer field; keel writes the value in the struct |
+| `bun:",nullzero"` on a non-pointer field | `keel:"customer_id,nullzero"`; on a pointer field drop it, a nil pointer is NULL |
 | `bun:",scanonly"` (generated column) | `keel:"stage_rank,readonly"`, plus `noselect` when it should not be read |
 | `bun:",default:..."` | nothing; set the value in Go |
 | `bun:"-"` | `keel:"-"` |

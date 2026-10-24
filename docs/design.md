@@ -94,6 +94,7 @@ reference to a table, under that alias, for self-joins.
 | `noselect` | not selected by default (a `tsvector`); usable in predicates. A generated `noselect` column must also be tagged `readonly` |
 | `jsonb` | the value is encoded as JSON; a nil map or slice in a non-pointer field is written as `{}` or `[]` |
 | `tsvector` | the column gets the full-text operators |
+| `nullzero` | a non-pointer field's zero value is stored as NULL and NULL reads back as the zero value (see Nullzero columns) |
 | `label=` | the column's label, instead of the one derived from the field name |
 | `noreport`, `report`, `dimension`, `measure`, `agg=`, `format=`, `type=epoch\|date\|decimal` | report facts that differ from the derived ones (see Derived metadata); only on models tagged `report` |
 
@@ -108,8 +109,32 @@ value. A nil slice in a non-pointer array field is written as an empty array.
 
 Column kinds follow the Go type: strings, `int64`, `int32`, `int16`, `float64`, `float32` (a
 `Float64Col`), `bool`, `[]byte`, `time.Time`, `[]string`, `[]int64`, named types with those
-underlying types (enums, IDs), and any type implementing `sql.Scanner` (a decimal). Plain `int` is
-refused: its width is not portable.
+underlying types (enums, IDs), and any other type implementing `sql.Scanner` (a decimal). A named
+type over a basic type is that basic kind even when it implements `sql.Scanner` and
+`driver.Valuer` (`pulid.ID`): keel accesses the underlying value directly and never calls those
+methods. Plain `int` is refused: its width is not portable.
+
+### Nullzero columns
+
+`nullzero` (`schema.FlagNullZero`) makes NULL the stored form of a non-pointer field's zero value.
+
+- The generated `Value` accessor returns nil for the zero value, tested without reflection (a
+  literal for basic kinds, nil for maps and slices, `IsZero()` when the type has it, the composite
+  zero value of a comparable struct otherwise). Every path that binds through `Value` (VALUES
+  inserts, `Copy`, `Save`, upserts) stores NULL. Bulk inserts build the column's array from
+  pointers into the rows' fields, nil for zero values, using the nullable array types. `To(zero)`
+  binds NULL in bulk updates and `Conflict.Set`. `InsertFrom` reads its source through
+  `FROM (src) AS s(c1, …)` and writes `nullif(s.cN, zero)` for string, numeric, bool and time
+  columns.
+- Reads wrap the column's pgx scan plan in a plan that stores the zero value for NULL (typed per
+  basic kind, so no reflection or allocation; `reflect.Value.SetZero` for other types); it is
+  cached per connection and statement like every scan plan.
+- `Column.MayBeNull()` is true for nullable and nullzero columns; keyset pages, the dynamic layer
+  and rollups use it where they need to know whether a column can hold NULL.
+- A value compared with a nullzero column means the field's value: `= zero` is `IS NULL`, `<> zero`
+  `IS NOT NULL`, `<> v` `IS DISTINCT FROM v`, `= ANY(list)` with zero in the list adds
+  `OR col IS NULL`, `<> ALL(list)` without it adds `OR col IS NULL`.
+- Relation keys read from a nullzero column skip the zero value.
 
 ### Relations
 

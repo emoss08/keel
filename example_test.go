@@ -1819,3 +1819,21 @@ func ExampleDynQuery_Explain() {
 	}
 	fmt.Println(plan.TotalCost)
 }
+
+func Example_nullZero() {
+	ctx, db := requestContext(), appDB
+	c := fleetdb.Contacts
+	contact := &fleet.Contact{Name: "Dana"} // CustomerID, Phone, LastSeenAt… are stored as NULL
+	if err := c.Create(ctx, db, contact); err != nil {
+		log.Fatal(err)
+	}
+	unassigned, err := c.Where(c.CustomerID.Eq("")).Count(ctx, db) // customer_id IS NULL
+	if err != nil {
+		log.Fatal(err)
+	}
+	_, err = c.Where(c.Name.Eq("Dana")).Update(ctx, db, c.Phone.To("")) // phone = NULL
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(unassigned)
+}

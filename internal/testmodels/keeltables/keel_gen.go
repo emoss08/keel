@@ -10,6 +10,7 @@ import (
 // All returns every table keel gen generated, in name order.
 func All() []*schema.Table {
 	return []*schema.Table{
+		fleetdb.ContactsSchema(),
 		fleetdb.CustomersSchema(),
 		fleetdb.LocationsSchema(),
 		fleetdb.MovesSchema(),

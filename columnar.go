@@ -91,7 +91,7 @@ type columnArray struct {
 // JSON, numeric, arrays, custom types) travel as text and are cast to the column's type.
 func (db *DB) buildColumn(t *schema.Table, col int32, sqlType string, rows []unsafe.Pointer) (columnArray, error) {
 	c := &t.Columns[col]
-	nullable := c.Flags.Has(schema.FlagNullable)
+	n := nullability(c)
 	native := func(own string) string {
 		if sqlType == own {
 			return ""
@@ -104,24 +104,23 @@ func (db *DB) buildColumn(t *schema.Table, col int32, sqlType string, rows []uns
 		if textFamily(sqlType) {
 			cast = ""
 		}
-		return column[string, textArray, nullTextArray](t, col, rows, nullable, "text[]", cast), nil
+		return column[string, textArray, nullTextArray](t, col, rows, n, "text[]", cast), nil
 	case schema.KindInt64:
-		return column[int64, int8Array, nullInt8Array](t, col, rows, nullable, "int8[]", native("bigint")), nil
+		return column[int64, int8Array, nullInt8Array](t, col, rows, n, "int8[]", native("bigint")), nil
 	case schema.KindInt32:
-		return column[int32, int4Array, nullInt4Array](t, col, rows, nullable, "int4[]", native("integer")), nil
+		return column[int32, int4Array, nullInt4Array](t, col, rows, n, "int4[]", native("integer")), nil
 	case schema.KindInt16:
-		return column[int16, int2Array, nullInt2Array](t, col, rows, nullable, "int2[]", native("smallint")), nil
+		return column[int16, int2Array, nullInt2Array](t, col, rows, n, "int2[]", native("smallint")), nil
 	case schema.KindFloat64:
-		return column[float64, float8Array, nullFloat8Array](t, col, rows, nullable, "float8[]",
+		return column[float64, float8Array, nullFloat8Array](t, col, rows, n, "float8[]",
 			native("double precision")), nil
 	case schema.KindFloat32:
-		return column[float32, float4Array, nullFloat4Array](t, col, rows, nullable, "float4[]",
+		return column[float32, float4Array, nullFloat4Array](t, col, rows, n, "float4[]",
 			native("real")), nil
 	case schema.KindBool:
-		return column[bool, boolArray, nullBoolArray](t, col, rows, nullable, "bool[]", native("boolean")), nil
+		return column[bool, boolArray, nullBoolArray](t, col, rows, n, "bool[]", native("boolean")), nil
 	case schema.KindTime:
-		return column[time.Time, timestamptzArray, nullTimestamptzArray](t, col, rows, nullable,
-			"timestamptz[]", native("timestamp with time zone")), nil
+		return timeColumn(t, col, rows, n, native("timestamp with time zone")), nil
 	case schema.KindBytes:
 		return columnArray{arg: valColumn[[]byte, byteaArray](t, col, rows), param: "bytea[]"}, nil
 	}
@@ -140,14 +139,70 @@ func (db *DB) buildColumn(t *schema.Table, col int32, sqlType string, rows []uns
 	return columnArray{arg: out, param: "text[]", cast: sqlType}, nil
 }
 
+// nullKind is how a column of a basic type holds NULL in Go: never, as a nil pointer, or, for a
+// nullzero column, as its zero value.
+type nullKind uint8
+
+const (
+	notNull nullKind = iota
+	nullPtr
+	nullZero
+)
+
+// nullability returns how column c holds NULL in Go.
+func nullability(c *schema.Column) nullKind {
+	switch {
+	case c.Flags.Has(schema.FlagNullable):
+		return nullPtr
+	case c.Flags.Has(schema.FlagNullZero):
+		return nullZero
+	}
+	return notNull
+}
+
 // column reads a column of a basic type into its keel array parameter: A for a non-nullable
-// column, P, whose nil elements bind as NULL, for a nullable one.
-func column[V any, A ~[]V, P ~[]*V](t *schema.Table, col int32, rows []unsafe.Pointer, nullable bool,
+// column, P, whose nil elements bind as NULL, for a nullable or nullzero one.
+func column[V comparable, A ~[]V, P ~[]*V](t *schema.Table, col int32, rows []unsafe.Pointer, n nullKind,
 	param, cast string) columnArray {
-	if nullable {
+	switch n {
+	case nullPtr:
 		return columnArray{arg: ptrColumn[V, P](t, col, rows), param: param, cast: cast}
+	case nullZero:
+		return columnArray{arg: zeroColumn[V, P](t, col, rows), param: param, cast: cast}
 	}
 	return columnArray{arg: valColumn[V, A](t, col, rows), param: param, cast: cast}
+}
+
+// timeColumn reads a time column into its keel array parameter. A nullzero column's zero times
+// bind as NULL; time.Time's zero is tested with IsZero, so a zero time in any location counts.
+func timeColumn(t *schema.Table, col int32, rows []unsafe.Pointer, n nullKind, cast string) columnArray {
+	const param = "timestamptz[]"
+	switch n {
+	case nullPtr:
+		return columnArray{arg: ptrColumn[time.Time, nullTimestamptzArray](t, col, rows), param: param, cast: cast}
+	case nullZero:
+		out := make(nullTimestamptzArray, len(rows))
+		for i, row := range rows {
+			if p := t.Ptr(row, col).(*time.Time); !p.IsZero() {
+				out[i] = p
+			}
+		}
+		return columnArray{arg: out, param: param, cast: cast}
+	}
+	return columnArray{arg: valColumn[time.Time, timestamptzArray](t, col, rows), param: param, cast: cast}
+}
+
+// zeroColumn reads a nullzero column into a slice of pointers to the rows' fields, nil where a
+// field holds its zero value, so zero values bind as NULL without copying a value.
+func zeroColumn[V comparable, P ~[]*V](t *schema.Table, col int32, rows []unsafe.Pointer) P {
+	var zero V
+	out := make(P, len(rows))
+	for i, row := range rows {
+		if p := t.Ptr(row, col).(*V); *p != zero {
+			out[i] = p
+		}
+	}
+	return out
 }
 
 // valColumn reads a non-nullable column into a slice of its basic type.

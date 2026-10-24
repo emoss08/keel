@@ -35,8 +35,18 @@ type relKey struct {
 	n int64
 }
 
-// readKey reads a key column of row. ok is false for a NULL key.
+// readKey reads a key column of row. ok is false for a NULL key, and for the zero value of a
+// nullzero column, which stores it as NULL.
 func readKey(t *schema.Table, row unsafe.Pointer, col int32) (relKey, bool) {
+	k, ok := readKeyValue(t, row, col)
+	if ok && k == (relKey{}) && t.Columns[col].Flags.Has(schema.FlagNullZero) {
+		return relKey{}, false
+	}
+	return k, ok
+}
+
+// readKeyValue reads a key column of row without reflection. ok is false for a nil pointer.
+func readKeyValue(t *schema.Table, row unsafe.Pointer, col int32) (relKey, bool) {
 	switch p := t.Ptr(row, col).(type) {
 	case *string:
 		return relKey{s: *p}, true

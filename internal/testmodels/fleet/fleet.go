@@ -180,6 +180,35 @@ func (w *Worker) AfterLoad(_ context.Context) error {
 	return nil
 }
 
+// Contact is a person at a customer. Its optional fields are nullzero: an empty value is stored as
+// NULL and NULL reads back as the empty value.
+type Contact struct {
+	keel.Table `keel:"contacts"`
+
+	ID             ids.ID         `keel:"id,pk,autoid:con_"`
+	OrganizationID ids.ID         `keel:"organization_id,pk,tenant"`
+	BusinessUnitID ids.ID         `keel:"business_unit_id,pk,tenant"`
+	CustomerID     ids.ID         `keel:"customer_id,nullzero"`
+	Name           string         `keel:"name"`
+	Phone          string         `keel:"phone,nullzero"`
+	Floor          int16          `keel:"floor,nullzero"`
+	Visits         int32          `keel:"visits,nullzero"`
+	Score          int64          `keel:"score,nullzero"`
+	Rating         float64        `keel:"rating,nullzero"`
+	Weight         float32        `keel:"weight,nullzero"`
+	VIP            bool           `keel:"vip,nullzero"`
+	Status         Status         `keel:"status,nullzero"`
+	Priority       Priority       `keel:"priority,nullzero"`
+	LastSeenAt     time.Time      `keel:"last_seen_at,nullzero"`
+	Balance        Money          `keel:"balance,nullzero"`
+	Notes          []string       `keel:"notes,nullzero"`
+	Prefs          map[string]any `keel:"prefs,jsonb,nullzero"`
+	Avatar         []byte         `keel:"avatar,nullzero"`
+	Version        int64          `keel:"version,version"`
+
+	Customer *Customer `keel:"belongs:customer_id"`
+}
+
 // Plant is a table without tenant columns, shared by every tenant.
 type Plant struct {
 	keel.Table `keel:"plants"`

@@ -165,7 +165,65 @@ func TestGenerateErrors(t *testing.T) {
 		{"bad hook", oneA(`ID string ~keel:"id,pk"~`) + "func (a *A) BeforeSave() error { return nil }\n", at(5, 13) + ": A.BeforeSave must be func(context.Context) error"},
 		{"unexported", oneA(`id string ~keel:"id,pk"~`), field(3) + ": A.id: stored fields must be exported"},
 		{"no models", "type A struct{ X int }\n", "no models"},
+		{"nullzero pointer", oneA(`P *string ~keel:"p,nullzero"~`), field(3) + ": A.P: nullzero needs a non-pointer field"},
+		{"nullzero pk", oneA(`ID string ~keel:"id,pk,nullzero"~`), field(3) + ": A.…nullzero excludes pk"},
+		{"nullzero tenant", oneA(`T string ~keel:"t,tenant,nullzero"~`), field(3) + ": A.…nullzero excludes pk, tenant"},
+		{"nullzero not comparable", "type S struct{ X []int }\n\n" + oneA(`S S ~keel:"s,jsonb,nullzero"~`),
+			field(5) + ": A.S: nullzero needs a comparable type or an IsZero() bool method"},
+		{"nullzero nullable scanner", "type NullX struct{ V string }\n\nfunc (n *NullX) Scan(any) error { return nil }\n\n" +
+			oneA(`X NullX ~keel:"x,nullzero"~`), field(7) + ": A.X: nullzero needs a non-nullable type; NullX already stores NULL"},
 	})
+}
+
+func TestGenerateNullZero(t *testing.T) {
+	files, err := generate(t, `type Code string
+
+type Decimal struct{ v *int }
+
+func (d Decimal) IsZero() bool { return d.v == nil }
+
+func (d *Decimal) Scan(any) error { return nil }
+
+type Point struct{ X, Y float64 }
+
+func (p *Point) Scan(any) error { return nil }
+
+type A struct {
+	keel.Table ~keel:"a"~
+
+	ID    string         ~keel:"id,pk"~
+	Code  Code           ~keel:"code,nullzero"~
+	N     int32          ~keel:"n,nullzero"~
+	B     bool           ~keel:"b,nullzero"~
+	At    time.Time      ~keel:"at,nullzero"~
+	Dec   Decimal        ~keel:"dec,nullzero"~
+	Pt    Point          ~keel:"pt,nullzero"~
+	Tags  []Code         ~keel:"tags,nullzero"~
+	Attrs map[string]any ~keel:"attrs,jsonb,nullzero"~
+}
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(files[0].Content)
+	for _, want := range []string{
+		"Flags: schema.FlagNullZero",
+		"if r.Code == \"\" {\n\t\t\treturn nil\n\t\t}\n\t\treturn string(r.Code)",
+		"if r.N == 0 {",
+		"if !r.B {",
+		"if r.At.IsZero() {",
+		"if r.Dec.IsZero() {",
+		"if r.Pt == (models.Point{}) {",
+		"if r.Tags == nil {\n\t\t\treturn nil\n\t\t}\n\t\treturn keel.Strings(r.Tags)",
+		"if r.Attrs == nil {\n\t\t\treturn nil\n\t\t}\n\t\treturn r.Attrs",
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("generated code lacks %q", want)
+		}
+	}
+	if t.Failed() {
+		t.Log(src)
+	}
 }
 
 func TestGenerateRefusesBadAcronyms(t *testing.T) {

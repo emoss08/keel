@@ -134,7 +134,7 @@ func writeKeyset(r *render, order []Order, after []any) {
 	uniform := true
 	for _, o := range order {
 		c := &t.Columns[o.col.Index]
-		if o.desc != order[0].desc || o.nulls != 0 || c.Flags.Has(schema.FlagNullable) {
+		if o.desc != order[0].desc || o.nulls != 0 || c.MayBeNull() {
 			uniform = false
 		}
 	}

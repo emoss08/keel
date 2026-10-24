@@ -3,6 +3,7 @@ package keel
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"time"
 	"unsafe"
 
@@ -114,7 +115,7 @@ func (p *selectPlan) scan(sc *scopeState, sql string, rows pgx.Rows, emit func(r
 			}
 			if plans[i] == nil {
 				fd := fds[i+off]
-				plans[i] = planScan(m, fd.DataTypeOID, fd.Format, dst)
+				plans[i] = planColumn(m, fd.DataTypeOID, fd.Format, &t.Columns[c.col], dst)
 			}
 			if err := plans[i].Scan(raw[i], dst); err != nil {
 				return fmt.Errorf("keel: scan %s.%s: %w", t.Name, t.Columns[c.col].Name, err)
@@ -135,6 +136,77 @@ func (p *selectPlan) scan(sc *scopeState, sql string, rows pgx.Rows, emit func(r
 		emit(cur[0], key)
 	}
 	return nil
+}
+
+// planColumn plans decoding column c, of type oid, into dst: a nullzero column reads NULL as its
+// zero value, any other column as planScan decodes it.
+func planColumn(m *pgtype.Map, oid uint32, format int16, c *schema.Column, dst any) pgtype.ScanPlan {
+	if c.Flags.Has(schema.FlagNullZero) {
+		return newZeroScanPlan(m, oid, format, dst)
+	}
+	return planScan(m, oid, format, dst)
+}
+
+// newZeroScanPlan returns the plan of a nullzero column read into dst: a typed zeroScanPlan for
+// the field types keel generates, a reflectZeroPlan for any other.
+func newZeroScanPlan(m *pgtype.Map, oid uint32, format int16, dst any) pgtype.ScanPlan {
+	elem := m.PlanScan(oid, format, dst)
+	switch dst.(type) {
+	case *string:
+		return &zeroScanPlan[string]{elem: elem}
+	case *int64:
+		return &zeroScanPlan[int64]{elem: elem}
+	case *int32:
+		return &zeroScanPlan[int32]{elem: elem}
+	case *int16:
+		return &zeroScanPlan[int16]{elem: elem}
+	case *float64:
+		return &zeroScanPlan[float64]{elem: elem}
+	case *float32:
+		return &zeroScanPlan[float32]{elem: elem}
+	case *bool:
+		return &zeroScanPlan[bool]{elem: elem}
+	case *time.Time:
+		return &zeroScanPlan[time.Time]{elem: elem}
+	case *[]string:
+		return &zeroScanPlan[[]string]{elem: elem}
+	case *[]int64:
+		return &zeroScanPlan[[]int64]{elem: elem}
+	case *[]byte:
+		return &zeroScanPlan[[]byte]{elem: elem}
+	}
+	return reflectZeroPlan{elem: elem}
+}
+
+// zeroScanPlan decodes a nullzero column into a *V field: NULL stores V's zero value, any other
+// value is decoded by elem. It neither reflects nor allocates.
+type zeroScanPlan[V any] struct {
+	elem pgtype.ScanPlan
+}
+
+// Scan decodes src into the *V target.
+func (p *zeroScanPlan[V]) Scan(src []byte, target any) error {
+	if src == nil {
+		var zero V
+		*target.(*V) = zero
+		return nil
+	}
+	return p.elem.Scan(src, target)
+}
+
+// reflectZeroPlan decodes a nullzero column of a type keel has no typed plan for (a scanner, a
+// jsonb struct): NULL stores the field's zero value through reflection, which does not allocate.
+type reflectZeroPlan struct {
+	elem pgtype.ScanPlan
+}
+
+// Scan decodes src into target, a pointer to the field.
+func (p reflectZeroPlan) Scan(src []byte, target any) error {
+	if src == nil {
+		reflect.ValueOf(target).Elem().SetZero()
+		return nil
+	}
+	return p.elem.Scan(src, target)
 }
 
 // planScan plans decoding a column of type oid into dst. A nullable field of a basic type (a

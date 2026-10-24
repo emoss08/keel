@@ -143,6 +143,11 @@ func suffix(e Expr, s string) Pred {
 }
 
 func cmp(e Expr, op string, v any) Pred {
+	if c, ok := e.(Col); ok && c.nullZero() {
+		if p := nullZeroCmp(c, op, v); p != nil {
+			return p
+		}
+	}
 	return predExpr{e: func(r *render) {
 		e.writeSQL(r)
 		r.s(op)
@@ -179,6 +184,11 @@ func between(e Expr, lo, hi any) Pred {
 }
 
 func anyOf(e Expr, list any, not bool) Pred {
+	if c, ok := e.(Col); ok && c.nullZero() {
+		if p := nullZeroAny(c, list, not); p != nil {
+			return p
+		}
+	}
 	return predExpr{e: func(r *render) {
 		e.writeSQL(r)
 		if not {
@@ -191,7 +201,11 @@ func anyOf(e Expr, list any, not bool) Pred {
 	}}
 }
 
+// set is col = v. On a nullzero column a zero v binds NULL.
 func set(c Col, v any) Assignment {
+	if c.nullZero() && isZeroValue(v) {
+		v = nil
+	}
 	return Assignment{col: c, e: func(r *render) { r.arg(v) }}
 }
 

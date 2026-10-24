@@ -191,6 +191,7 @@ func (ft *FieldTag) column(name string, opts []option) error {
 var columnFlags = map[string]ColFlag{
 	"pk": FlagPK, "tenant": FlagTenant, "version": FlagVersion, "autocreate": FlagAutoCreate,
 	"autoupdate": FlagAutoUpdate, "readonly": FlagReadOnly, "noselect": FlagNoSelect, "jsonb": FlagJSONB,
+	"nullzero": FlagNullZero,
 }
 
 // columnOption sets one column option.
@@ -292,6 +293,9 @@ func (ft *FieldTag) checkColumn() error {
 	case ft.Flags.Has(FlagReadOnly) && ft.Flags&(FlagPK|FlagTenant|FlagVersion|FlagAutoCreate|
 		FlagAutoUpdate|FlagAutoID) != 0:
 		return fmt.Errorf("readonly excludes write options")
+	case ft.Flags.Has(FlagNullZero) && ft.Flags&(FlagPK|FlagTenant|FlagVersion|FlagAutoCreate|FlagAutoUpdate|
+		FlagAutoID) != 0:
+		return fmt.Errorf("nullzero excludes pk, tenant, version, autoid, autocreate and autoupdate")
 	case ft.Flags.Has(FlagJSONB) && ft.TSVector:
 		return fmt.Errorf("jsonb and tsvector exclude each other")
 	case ft.Report.Include && ft.Report.Exclude:

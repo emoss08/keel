@@ -571,7 +571,7 @@ func scanAt(m *pgtype.Map, fds []pgconn.FieldDescription, raw [][]byte, plans []
 	k int, t *schema.Table, dst any, c int32,
 ) error {
 	if plans[k] == nil {
-		plans[k] = planScan(m, fds[k].DataTypeOID, fds[k].Format, dst)
+		plans[k] = planColumn(m, fds[k].DataTypeOID, fds[k].Format, &t.Columns[c], dst)
 	}
 	if err := plans[k].Scan(raw[k], dst); err != nil {
 		return fmt.Errorf("keel: scan %s.%s: %w", t.Name, t.Columns[c].Name, err)
@@ -913,7 +913,7 @@ func scanInto(rows pgx.Rows, t *schema.Table, row unsafe.Pointer, ret []int32, o
 	i := 0
 	for _, c := range ret {
 		dst := t.Ptr(row, c)
-		if err := planScan(m, fds[i].DataTypeOID, fds[i].Format, dst).Scan(raw[i], dst); err != nil {
+		if err := planColumn(m, fds[i].DataTypeOID, fds[i].Format, &t.Columns[c], dst).Scan(raw[i], dst); err != nil {
 			return fmt.Errorf("keel: scan %s.%s: %w", t.Name, t.Columns[c].Name, err)
 		}
 		i++
@@ -923,7 +923,7 @@ func scanInto(rows pgx.Rows, t *schema.Table, row unsafe.Pointer, ret []int32, o
 	}
 	for _, c := range needs {
 		dst := t.Ptr(old, c)
-		if err := planScan(m, fds[i].DataTypeOID, fds[i].Format, dst).Scan(raw[i], dst); err != nil {
+		if err := planColumn(m, fds[i].DataTypeOID, fds[i].Format, &t.Columns[c], dst).Scan(raw[i], dst); err != nil {
 			return fmt.Errorf("keel: scan old %s.%s: %w", t.Name, t.Columns[c].Name, err)
 		}
 		i++
@@ -1055,7 +1055,11 @@ func (db *DB) insertFrom(ctx context.Context, ref *Ref, src subquery,
 		r.s(t.Columns[c].Quoted)
 	}
 	r.s(") ")
-	if tenantCols > 0 {
+	listed := target[:len(target)-tenantCols]
+	switch {
+	case hasNullZeroLiteral(t, listed):
+		writeNullZeroSource(r, run.sc, t, listed, tenantCols > 0, src)
+	case tenantCols > 0:
 		r.s("SELECT s.*")
 		for _, ci := range t.Tenant {
 			r.s(", ")
@@ -1064,7 +1068,7 @@ func (db *DB) insertFrom(ctx context.Context, ref *Ref, src subquery,
 		r.s(" FROM (")
 		src.writeSubquery(r, false)
 		r.s(") s")
-	} else {
+	default:
 		src.writeSubquery(r, false)
 	}
 	if r.err != nil {
@@ -1073,6 +1077,67 @@ func (db *DB) insertFrom(ctx context.Context, ref *Ref, src subquery,
 	s := &stmt{sql: string(r.buf), args: r.argsCopy(), op: "insert", table: t.Name}
 	n, err := run.bulk(ctx, s, t, "", nil, true)
 	return n, run.close(ctx, err)
+}
+
+// nullZeroLiterals are the SQL literals of the zero values of the kinds a nullzero column compares
+// with in InsertFrom; the zero values of the other kinds (nil slices and maps) are NULL already.
+var nullZeroLiterals = map[schema.Kind]string{
+	schema.KindString: "''", schema.KindTSVector: "''", schema.KindInt16: "0", schema.KindInt32: "0",
+	schema.KindInt64: "0", schema.KindFloat32: "0", schema.KindFloat64: "0", schema.KindBool: "false",
+	schema.KindTime: "'0001-01-01 00:00:00+00'",
+}
+
+// hasNullZeroLiteral reports whether a column of cols is nullzero with a zero value that is not
+// NULL in SQL, so InsertFrom must turn it into NULL.
+func hasNullZeroLiteral(t *schema.Table, cols []int32) bool {
+	for _, c := range cols {
+		if t.Columns[c].Flags.Has(schema.FlagNullZero) && nullZeroLiterals[t.Columns[c].Kind] != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// writeNullZeroSource writes the SELECT of an InsertFrom whose listed columns include nullzero
+// ones: SELECT nullif(s.c1, <zero literal>), s.c2, … [, tenant values] FROM (src) AS s(c1, c2, …),
+// so a query that yields a zero value stores NULL, as every other write does.
+func writeNullZeroSource(r *render, sc *scopeState, t *schema.Table, cols []int32, tenant bool, src subquery) {
+	r.s("SELECT ")
+	for i, c := range cols {
+		if i > 0 {
+			r.s(", ")
+		}
+		lit := ""
+		if t.Columns[c].Flags.Has(schema.FlagNullZero) {
+			lit = nullZeroLiterals[t.Columns[c].Kind]
+		}
+		if lit != "" {
+			r.s("nullif(")
+		}
+		r.s("s.")
+		r.s(outputName(i))
+		if lit != "" {
+			r.s(", ")
+			r.s(lit)
+			r.b(')')
+		}
+	}
+	if tenant {
+		for _, ci := range t.Tenant {
+			r.s(", ")
+			r.tenantArg(sc.tenantPos(t.Columns[ci].Name))
+		}
+	}
+	r.s(" FROM (")
+	src.writeSubquery(r, false)
+	r.s(") AS s(")
+	for i := range cols {
+		if i > 0 {
+			r.s(", ")
+		}
+		r.s(outputName(i))
+	}
+	r.b(')')
 }
 
 // afterWrite runs the After hooks now, in the write's transaction, and queues the Committed hooks.

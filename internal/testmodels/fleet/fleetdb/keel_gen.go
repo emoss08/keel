@@ -13,6 +13,307 @@ import (
 	"github.com/emoss08/keel/schema"
 )
 
+// contactsTable is the schema of fleet.Contact.
+var contactsTable = schema.Table{
+	Name:   "contacts",
+	Quoted: `"contacts"`,
+	Alias:  "c",
+	Model:  "fleet.Contact",
+	Label:  `Contact`,
+	Plural: `Contacts`,
+	Doc:    `Contact is a person at a customer. Its optional fields are nullzero: an empty value is stored as NULL and NULL reads back as the empty value.`,
+	Columns: []schema.Column{
+		{Name: "id", Quoted: `"id"`, Field: "ID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagAutoID, Label: `ID`},
+		{Name: "organization_id", Quoted: `"organization_id"`, Field: "OrganizationID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagTenant, Label: `Organization ID`},
+		{Name: "business_unit_id", Quoted: `"business_unit_id"`, Field: "BusinessUnitID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagTenant, Label: `Business Unit ID`},
+		{Name: "customer_id", Quoted: `"customer_id"`, Field: "CustomerID", Kind: schema.KindString, Flags: schema.FlagNullZero, Label: `Customer ID`},
+		{Name: "name", Quoted: `"name"`, Field: "Name", Kind: schema.KindString, Flags: 0, Label: `Name`},
+		{Name: "phone", Quoted: `"phone"`, Field: "Phone", Kind: schema.KindString, Flags: schema.FlagNullZero, Label: `Phone`},
+		{Name: "floor", Quoted: `"floor"`, Field: "Floor", Kind: schema.KindInt16, Flags: schema.FlagNullZero, Label: `Floor`},
+		{Name: "visits", Quoted: `"visits"`, Field: "Visits", Kind: schema.KindInt32, Flags: schema.FlagNullZero, Label: `Visits`},
+		{Name: "score", Quoted: `"score"`, Field: "Score", Kind: schema.KindInt64, Flags: schema.FlagNullZero, Label: `Score`},
+		{Name: "rating", Quoted: `"rating"`, Field: "Rating", Kind: schema.KindFloat64, Flags: schema.FlagNullZero, Label: `Rating`},
+		{Name: "weight", Quoted: `"weight"`, Field: "Weight", Kind: schema.KindFloat32, Flags: schema.FlagNullZero, Label: `Weight`},
+		{Name: "vip", Quoted: `"vip"`, Field: "VIP", Kind: schema.KindBool, Flags: schema.FlagNullZero, Label: `VIP`},
+		{Name: "status", Quoted: `"status"`, Field: "Status", Kind: schema.KindString, Flags: schema.FlagNullZero, Label: `Status`, Enum: enumStatus[:]},
+		{Name: "priority", Quoted: `"priority"`, Field: "Priority", Kind: schema.KindInt16, Flags: schema.FlagNullZero, Label: `Priority`, Enum: enumPriority[:]},
+		{Name: "last_seen_at", Quoted: `"last_seen_at"`, Field: "LastSeenAt", Kind: schema.KindTime, Flags: schema.FlagNullZero, Label: `Last Seen At`},
+		{Name: "balance", Quoted: `"balance"`, Field: "Balance", Kind: schema.KindOther, Flags: schema.FlagNullZero, Label: `Balance`},
+		{Name: "notes", Quoted: `"notes"`, Field: "Notes", Kind: schema.KindStringArray, Flags: schema.FlagNullable | schema.FlagNullZero, Label: `Notes`},
+		{Name: "prefs", Quoted: `"prefs"`, Field: "Prefs", Kind: schema.KindJSON, Flags: schema.FlagJSONB | schema.FlagNullZero, Label: `Prefs`},
+		{Name: "avatar", Quoted: `"avatar"`, Field: "Avatar", Kind: schema.KindBytes, Flags: schema.FlagNullable | schema.FlagNullZero, Label: `Avatar`},
+		{Name: "version", Quoted: `"version"`, Field: "Version", Kind: schema.KindInt64, Flags: schema.FlagVersion, Label: `Version`},
+	},
+	Relations: []schema.Relation{
+		{Name: "Customer", Alias: "c", Kind: schema.BelongsTo, Local: []int32{3}, Remote: []int32{0}, Label: `Customer`},
+	},
+	PK:         []int32{0, 1, 2},
+	Tenant:     []int32{1, 2},
+	Select:     []int32{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19},
+	Insert:     []int32{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19},
+	Update:     []int32{3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18},
+	Returning:  nil,
+	Version:    19,
+	AutoID:     0,
+	AutoCreate: -1,
+	AutoUpdate: -1,
+	IDPrefix:   "con_",
+	New:        newContact,
+	NewN:       newNContact,
+	Size:       unsafe.Sizeof(fleet.Contact{}),
+	Ptr:        ptrContact,
+	Value:      valueContact,
+	Attach:     attachContact,
+}
+
+var contactsRef = keel.Ref{Table: &contactsTable}
+
+// ContactsTable is the table of fleet.Contact.
+type ContactsTable struct {
+	keel.Handle[fleet.Contact]
+	ID             keelkinds.IdsIDCol
+	OrganizationID keelkinds.IdsIDCol
+	BusinessUnitID keelkinds.IdsIDCol
+	CustomerID     keelkinds.IdsIDCol
+	Name           keel.StringCol
+	Phone          keel.StringCol
+	Floor          keel.Int16Col
+	Visits         keel.Int32Col
+	Score          keel.Int64Col
+	Rating         keel.Float64Col
+	Weight         keel.Float64Col
+	VIP            keel.BoolCol
+	Status         StatusCol
+	Priority       PriorityCol
+	LastSeenAt     keel.TimeCol
+	Balance        MoneyCol
+	Notes          keel.StringArrayCol
+	Prefs          keel.JSONBCol
+	Avatar         keel.BytesCol
+	Version        keel.Int64Col
+}
+
+// Contacts references the contacts table.
+var Contacts = &ContactsTable{
+	Handle:         keel.Handle[fleet.Contact]{Ref: &contactsRef},
+	ID:             keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: &contactsRef, Index: 0}}},
+	OrganizationID: keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: &contactsRef, Index: 1}}},
+	BusinessUnitID: keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: &contactsRef, Index: 2}}},
+	CustomerID:     keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: &contactsRef, Index: 3}}},
+	Name:           keel.StringCol{Col: keel.Col{Ref: &contactsRef, Index: 4}},
+	Phone:          keel.StringCol{Col: keel.Col{Ref: &contactsRef, Index: 5}},
+	Floor:          keel.Int16Col{Col: keel.Col{Ref: &contactsRef, Index: 6}},
+	Visits:         keel.Int32Col{Col: keel.Col{Ref: &contactsRef, Index: 7}},
+	Score:          keel.Int64Col{Col: keel.Col{Ref: &contactsRef, Index: 8}},
+	Rating:         keel.Float64Col{Col: keel.Col{Ref: &contactsRef, Index: 9}},
+	Weight:         keel.Float64Col{Col: keel.Col{Ref: &contactsRef, Index: 10}},
+	VIP:            keel.BoolCol{Col: keel.Col{Ref: &contactsRef, Index: 11}},
+	Status:         StatusCol{StringCol: keel.StringCol{Col: keel.Col{Ref: &contactsRef, Index: 12}}},
+	Priority:       PriorityCol{Int16Col: keel.Int16Col{Col: keel.Col{Ref: &contactsRef, Index: 13}}},
+	LastSeenAt:     keel.TimeCol{Col: keel.Col{Ref: &contactsRef, Index: 14}},
+	Balance:        MoneyCol{AnyCol: keel.AnyCol{Col: keel.Col{Ref: &contactsRef, Index: 15}}},
+	Notes:          keel.StringArrayCol{Col: keel.Col{Ref: &contactsRef, Index: 16}},
+	Prefs:          keel.JSONBCol{Col: keel.Col{Ref: &contactsRef, Index: 17}},
+	Avatar:         keel.BytesCol{Col: keel.Col{Ref: &contactsRef, Index: 18}},
+	Version:        keel.Int64Col{Col: keel.Col{Ref: &contactsRef, Index: 19}},
+}
+
+// BuildContacts builds the handle of contacts for ref. Generated relation and alias methods call it.
+func BuildContacts(r *keel.Ref) *ContactsTable {
+	return &ContactsTable{
+		Handle:         keel.Handle[fleet.Contact]{Ref: r},
+		ID:             keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: r, Index: 0}}},
+		OrganizationID: keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: r, Index: 1}}},
+		BusinessUnitID: keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: r, Index: 2}}},
+		CustomerID:     keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: r, Index: 3}}},
+		Name:           keel.StringCol{Col: keel.Col{Ref: r, Index: 4}},
+		Phone:          keel.StringCol{Col: keel.Col{Ref: r, Index: 5}},
+		Floor:          keel.Int16Col{Col: keel.Col{Ref: r, Index: 6}},
+		Visits:         keel.Int32Col{Col: keel.Col{Ref: r, Index: 7}},
+		Score:          keel.Int64Col{Col: keel.Col{Ref: r, Index: 8}},
+		Rating:         keel.Float64Col{Col: keel.Col{Ref: r, Index: 9}},
+		Weight:         keel.Float64Col{Col: keel.Col{Ref: r, Index: 10}},
+		VIP:            keel.BoolCol{Col: keel.Col{Ref: r, Index: 11}},
+		Status:         StatusCol{StringCol: keel.StringCol{Col: keel.Col{Ref: r, Index: 12}}},
+		Priority:       PriorityCol{Int16Col: keel.Int16Col{Col: keel.Col{Ref: r, Index: 13}}},
+		LastSeenAt:     keel.TimeCol{Col: keel.Col{Ref: r, Index: 14}},
+		Balance:        MoneyCol{AnyCol: keel.AnyCol{Col: keel.Col{Ref: r, Index: 15}}},
+		Notes:          keel.StringArrayCol{Col: keel.Col{Ref: r, Index: 16}},
+		Prefs:          keel.JSONBCol{Col: keel.Col{Ref: r, Index: 17}},
+		Avatar:         keel.BytesCol{Col: keel.Col{Ref: r, Index: 18}},
+		Version:        keel.Int64Col{Col: keel.Col{Ref: r, Index: 19}},
+	}
+}
+
+// ContactsSchema returns the schema of contacts.
+func ContactsSchema() *schema.Table { return &contactsTable }
+
+// As returns a handle that references contacts under its own alias.
+func (t *ContactsTable) As(alias string) *ContactsTable {
+	return keel.Alias(t.Ref, alias, BuildContacts)
+}
+
+// Customer is the belongs relation.
+func (t *ContactsTable) Customer() *CustomersTable { return keel.Path(t.Ref, 0, BuildCustomers) }
+
+// Get returns the contacts row with the given key, or keel.ErrNotFound.
+func (t *ContactsTable) Get(ctx context.Context, db *keel.DB, key ids.ID) (*fleet.Contact, error) {
+	return t.Where(t.ID.Eq(key)).One(ctx, db)
+}
+
+func newContact() unsafe.Pointer { return unsafe.Pointer(new(fleet.Contact)) }
+
+func newNContact(n int) unsafe.Pointer {
+	return unsafe.Pointer(unsafe.SliceData(make([]fleet.Contact, n)))
+}
+
+func ptrContact(p unsafe.Pointer, c int32) any {
+	r := (*fleet.Contact)(p)
+	switch c {
+	case 0:
+		return (*string)(unsafe.Pointer(&r.ID))
+	case 1:
+		return (*string)(unsafe.Pointer(&r.OrganizationID))
+	case 2:
+		return (*string)(unsafe.Pointer(&r.BusinessUnitID))
+	case 3:
+		return (*string)(unsafe.Pointer(&r.CustomerID))
+	case 4:
+		return &r.Name
+	case 5:
+		return &r.Phone
+	case 6:
+		return &r.Floor
+	case 7:
+		return &r.Visits
+	case 8:
+		return &r.Score
+	case 9:
+		return &r.Rating
+	case 10:
+		return &r.Weight
+	case 11:
+		return &r.VIP
+	case 12:
+		return (*string)(unsafe.Pointer(&r.Status))
+	case 13:
+		return (*int16)(unsafe.Pointer(&r.Priority))
+	case 14:
+		return &r.LastSeenAt
+	case 15:
+		return &r.Balance
+	case 16:
+		return &r.Notes
+	case 17:
+		return &r.Prefs
+	case 18:
+		return &r.Avatar
+	case 19:
+		return &r.Version
+	}
+	return nil
+}
+
+func valueContact(p unsafe.Pointer, c int32) any {
+	r := (*fleet.Contact)(p)
+	switch c {
+	case 0:
+		return string(r.ID)
+	case 1:
+		return string(r.OrganizationID)
+	case 2:
+		return string(r.BusinessUnitID)
+	case 3:
+		if r.CustomerID == "" {
+			return nil
+		}
+		return string(r.CustomerID)
+	case 4:
+		return r.Name
+	case 5:
+		if r.Phone == "" {
+			return nil
+		}
+		return r.Phone
+	case 6:
+		if r.Floor == 0 {
+			return nil
+		}
+		return r.Floor
+	case 7:
+		if r.Visits == 0 {
+			return nil
+		}
+		return r.Visits
+	case 8:
+		if r.Score == 0 {
+			return nil
+		}
+		return r.Score
+	case 9:
+		if r.Rating == 0 {
+			return nil
+		}
+		return r.Rating
+	case 10:
+		if r.Weight == 0 {
+			return nil
+		}
+		return r.Weight
+	case 11:
+		if !r.VIP {
+			return nil
+		}
+		return r.VIP
+	case 12:
+		if r.Status == "" {
+			return nil
+		}
+		return string(r.Status)
+	case 13:
+		if r.Priority == 0 {
+			return nil
+		}
+		return int16(r.Priority)
+	case 14:
+		if r.LastSeenAt.IsZero() {
+			return nil
+		}
+		return r.LastSeenAt
+	case 15:
+		if r.Balance == (fleet.Money{}) {
+			return nil
+		}
+		return r.Balance
+	case 16:
+		if r.Notes == nil {
+			return nil
+		}
+		return r.Notes
+	case 17:
+		if r.Prefs == nil {
+			return nil
+		}
+		return r.Prefs
+	case 18:
+		if r.Avatar == nil {
+			return nil
+		}
+		return r.Avatar
+	case 19:
+		return r.Version
+	}
+	return nil
+}
+
+func attachContact(p unsafe.Pointer, rel int32, child unsafe.Pointer) {
+	r := (*fleet.Contact)(p)
+	switch rel {
+	case 0:
+		r.Customer = (*fleet.Customer)(child)
+	}
+}
+
 // customersTable is the schema of fleet.Customer.
 var customersTable = schema.Table{
 	Name:   "customers",
@@ -1289,6 +1590,7 @@ func afterLoadWorker(ctx context.Context, p unsafe.Pointer) error {
 }
 
 func init() {
+	contactsTable.Relations[0].Target = CustomersSchema()
 	movesTable.Relations[0].Target = ShipmentsSchema()
 	movesTable.Relations[1].Target = StopsSchema()
 	movesTable.Relations[2].Target = StopsSchema()
