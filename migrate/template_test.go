@@ -131,6 +131,30 @@ func TestTemplate(t *testing.T) {
 	}
 }
 
+func TestDropTemplate(t *testing.T) {
+	requirePostgres(t)
+	ctx := context.Background()
+	set := one(files("20260101000000_items.sql", "CREATE TABLE items (id int);"))
+	key := randomHex(4)
+	_, drop, err := Template(ctx, TemplateOptions{Admin: adminDSN(), Sources: set, Key: key})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := drop(ctx); err != nil {
+		t.Fatal(err)
+	}
+	name, _ := TemplateName(set, key)
+	if err := DropTemplate(ctx, adminDSN(), name); err != nil {
+		t.Fatal(err)
+	}
+	if n := scalar[int](t, connect(t, adminDSN()), "SELECT count(*) FROM pg_database WHERE datname = $1", name); n != 0 {
+		t.Fatal("template survived DropTemplate")
+	}
+	if err := DropTemplate(ctx, adminDSN(), "keel"); err == nil {
+		t.Fatal("dropped a database that is not a template")
+	}
+}
+
 func TestTemplateFailedBuild(t *testing.T) {
 	requirePostgres(t)
 	ctx := context.Background()

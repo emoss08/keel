@@ -112,10 +112,11 @@ type JSONBlocker struct {
 	Query       string `json:"query"`
 }
 
-// JSONDirectives are a migration's directives.
+// JSONDirectives are a migration's directives; NoLockTimeout marks a disabled lock timeout.
 type JSONDirectives struct {
 	NoTx               bool  `json:"notx,omitempty"`
 	LockTimeoutMS      int64 `json:"lock_timeout_ms,omitempty"`
+	NoLockTimeout      bool  `json:"no_lock_timeout,omitempty"`
 	StatementTimeoutMS int64 `json:"statement_timeout_ms,omitempty"`
 	NoRetry            bool  `json:"no_retry,omitempty"`
 }
@@ -138,7 +139,8 @@ func MigrationJSON(m migrateport.Migration, withSQL bool) JSONMigration {
 	}
 	if d := m.Directives; d != (migrateport.Directives{}) {
 		out.Directives = &JSONDirectives{
-			NoTx: d.NoTx, LockTimeoutMS: ms(d.LockTimeout), StatementTimeoutMS: ms(d.StatementTimeout), NoRetry: d.NoRetry,
+			NoTx: d.NoTx, LockTimeoutMS: ms(max(d.LockTimeout, 0)), NoLockTimeout: d.LockTimeout < 0,
+			StatementTimeoutMS: ms(d.StatementTimeout), NoRetry: d.NoRetry,
 		}
 	}
 	if withSQL {

@@ -45,7 +45,9 @@ func (l *Lines) Migration(e migrateport.Event) {
 		}
 		l.blockers(e.Blockers)
 	case migrateport.LockAcquired:
-		l.printf("lock", "migration lock acquired after %s", Duration(e.Duration))
+		if e.Duration > 0 {
+			l.printf("lock", "migration lock acquired after %s", Duration(e.Duration))
+		}
 	case migrateport.MigrationStart:
 		detail := e.Migration.Source
 		if d := MigrationDetail(*e.Migration); d != "" {
@@ -55,7 +57,11 @@ func (l *Lines) Migration(e migrateport.Event) {
 	case migrateport.Statement:
 		l.printf("migrate", "%s %s  statement %d/%d", step(e.Index, e.Total), e.Migration.ID(), e.Statement, e.Statements)
 	case migrateport.Retry:
-		l.printf("migrate", "%s %s  lock timeout, retry %d: %v", step(e.Index, e.Total), e.Migration.ID(), e.Attempt, e.Err)
+		if e.Migration == nil {
+			l.printf("migrate", "after statements  lock timeout, retry %d: %v", e.Attempt, e.Err)
+		} else {
+			l.printf("migrate", "%s %s  lock timeout, retry %d: %v", step(e.Index, e.Total), e.Migration.ID(), e.Attempt, e.Err)
+		}
 		l.blockers(e.Blockers)
 	case migrateport.MigrationEnd:
 		if e.Err != nil {
@@ -101,7 +107,9 @@ func (l *Lines) Seed(e seedport.Event) {
 	case seedport.LockWait:
 		l.printf("lock", "waiting for the seed lock")
 	case seedport.LockAcquired:
-		l.printf("lock", "seed lock acquired after %s", Duration(e.Duration))
+		if e.Duration > 0 {
+			l.printf("lock", "seed lock acquired after %s", Duration(e.Duration))
+		}
 	case seedport.SeedStart:
 		detail := e.Seed.Kind.String()
 		if e.Tenants > 0 {

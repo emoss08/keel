@@ -12,6 +12,7 @@ import (
 	"github.com/emoss08/keel/keelcli/internal/ui/prompt"
 	"github.com/emoss08/keel/keelcli/migrateport"
 	"github.com/emoss08/keel/keelcli/seedport"
+	"github.com/emoss08/keel/migrate"
 )
 
 type problemsError string
@@ -24,6 +25,40 @@ func (e problemsError) Is(target error) bool { return target == ErrProblems }
 
 func problemsf(format string, args ...any) error {
 	return problemsError(fmt.Sprintf(format, args...))
+}
+
+// dirsFlag is a repeatable [name=]path flag.
+type dirsFlag []migrateport.Dir
+
+// String joins the directories as the flag spells them.
+func (d *dirsFlag) String() string {
+	parts := make([]string, len(*d))
+	for i, x := range *d {
+		parts[i] = x.Name + "=" + x.Path
+	}
+	return strings.Join(parts, ",")
+}
+
+// Set adds a [name=]path directory; without a name it is the default source.
+func (d *dirsFlag) Set(v string) error {
+	dir := ParseDir(v)
+	*d = append(*d, migrateport.Dir{Name: dir.Name, Path: dir.Path})
+	return nil
+}
+
+// ParseDir reads a migration directory as -dir and -base-dir spell it: [name=]path, where a path
+// without a name belongs to the source named default.
+func ParseDir(v string) migrate.Dir {
+	name, path, ok := strings.Cut(v, "=")
+	if !ok {
+		name, path = "default", v
+	}
+	return migrate.Dir{Name: name, Path: path}
+}
+
+// adminFlag declares -admin on the commands that create and drop databases.
+func adminFlag(fs *flag.FlagSet) *string {
+	return fs.String("admin", "", "`dsn` that creates and drops databases (default "+AdminEnv+", or the database's DSN on postgres)")
 }
 
 func noArgs(name string, args []string) error {
@@ -46,23 +81,24 @@ func setupUp(fs *flag.FlagSet) runner {
 				return err
 			}
 		}
-		withSeeds := s.app.Seeds != nil && *to == ""
+		withSeeds := s.hasSeeds() && *to == ""
 		if *dry {
 			return s.dryRun(ctx, *to, withSeeds)
 		}
-		jobs := []live.Job{live.MigrationJob(s.app.Migrations, migrateport.UpOptions{To: *to})}
+		jobs := []live.Job{live.MigrationJob(s.migrations(), migrateport.UpOptions{To: *to})}
 		if withSeeds {
-			jobs = append(jobs, live.SeedJob(s.app.Seeds, seedport.ApplyOptions{}))
+			jobs = append(jobs, live.SeedJob(s.seeds(), seedport.ApplyOptions{}))
 		}
 		return s.runJobs(ctx, jobs)
 	}
 }
 
 func (s *session) markEnvironment(ctx context.Context, env seedport.Environment) error {
-	if s.app.Seeds == nil {
-		return Usagef("keelcli: -env needs an App with Seeds, whose engine records the mark")
+	envs := s.environments()
+	if envs == nil {
+		return Usagef("keelcli: -env needs App.Config or a seed engine, which record the mark")
 	}
-	current, err := s.app.Seeds.Environment(ctx)
+	current, err := envs.Environment(ctx)
 	if err != nil {
 		return fmt.Errorf("keelcli: read environment: %w", err)
 	}
@@ -70,7 +106,7 @@ func (s *session) markEnvironment(ctx context.Context, env seedport.Environment)
 	case env:
 		return nil
 	case "":
-		if err := s.app.Seeds.MarkEnvironment(ctx, env); err != nil {
+		if err := envs.MarkEnvironment(ctx, env); err != nil {
 			return fmt.Errorf("keelcli: mark environment: %w", err)
 		}
 		return s.say(render.Muted, "Marked the database as %s.", env)
@@ -80,13 +116,13 @@ func (s *session) markEnvironment(ctx context.Context, env seedport.Environment)
 }
 
 func (s *session) dryRun(ctx context.Context, to string, withSeeds bool) error {
-	plan, err := s.app.Migrations.Plan(ctx, migrateport.PlanOptions{To: to})
+	plan, err := s.migrations().Plan(ctx, migrateport.PlanOptions{To: to})
 	if err != nil {
 		return err
 	}
 	var seeds []seedport.PlanItem
 	if withSeeds {
-		if seeds, err = s.app.Seeds.Plan(ctx, seedport.PlanOptions{}); err != nil {
+		if seeds, err = s.seeds().Plan(ctx, seedport.PlanOptions{}); err != nil {
 			return err
 		}
 	}
@@ -115,7 +151,7 @@ func setupMigrateUp(fs *flag.FlagSet) runner {
 		if *dry {
 			return s.dryRun(ctx, *to, false)
 		}
-		return s.runJobs(ctx, []live.Job{live.MigrationJob(s.app.Migrations, migrateport.UpOptions{To: *to})})
+		return s.runJobs(ctx, []live.Job{live.MigrationJob(s.migrations(), migrateport.UpOptions{To: *to})})
 	}
 }
 
@@ -125,7 +161,7 @@ func setupMigratePlan(fs *flag.FlagSet) runner {
 		if err := noArgs("migrate plan", args); err != nil {
 			return err
 		}
-		plan, err := s.app.Migrations.Plan(ctx, migrateport.PlanOptions{To: *to})
+		plan, err := s.migrations().Plan(ctx, migrateport.PlanOptions{To: *to})
 		if err != nil {
 			return err
 		}
@@ -140,7 +176,7 @@ func setupMigrateStatus(*flag.FlagSet) runner {
 		if err := noArgs("migrate status", args); err != nil {
 			return err
 		}
-		rows, err := s.app.Migrations.Status(ctx)
+		rows, err := s.migrations().Status(ctx)
 		if err != nil {
 			return err
 		}
@@ -172,7 +208,7 @@ func setupMigrateHistory(*flag.FlagSet) runner {
 		if err := noArgs("migrate history", args); err != nil {
 			return err
 		}
-		rows, err := s.app.Migrations.History(ctx)
+		rows, err := s.migrations().History(ctx)
 		if err != nil {
 			return err
 		}
@@ -199,6 +235,7 @@ func parseCreateKind(s string) (migrateport.CreateKind, error) {
 
 func setupMigrateCreate(fs *flag.FlagSet) runner {
 	kindFlag := fs.String("kind", "", "`kind` of migration: tx (the default), notx or repeatable")
+	source := fs.String("source", "", "write into the directory of source `name` (default the first)")
 	return func(ctx context.Context, s *session, args []string) error {
 		if len(args) > 1 {
 			return Usagef("keelcli: migrate create takes one name, got %q", strings.Join(args, " "))
@@ -222,7 +259,7 @@ func setupMigrateCreate(fs *flag.FlagSet) runner {
 		if err := prompt.ValidateName(name); err != nil {
 			return Usagef("keelcli: migration name %q: %v", name, err)
 		}
-		created, err := s.app.Migrations.Create(ctx, migrateport.CreateRequest{Name: name, Kind: kind})
+		created, err := s.migrations().Create(ctx, migrateport.CreateRequest{Name: name, Kind: kind, Source: *source})
 		if err != nil {
 			return err
 		}
@@ -233,11 +270,15 @@ func setupMigrateCreate(fs *flag.FlagSet) runner {
 	}
 }
 
-func setupMigrateSquash(*flag.FlagSet) runner {
+func setupMigrateSquash(fs *flag.FlagSet) runner {
+	to := fs.String("to", "", "squash up to migration `version` (default the newest)")
+	dump := fs.String("dump", "", "pg_dump `command`, such as \"docker exec keelpg pg_dump -U keel -d {db}\" (default App.Dump or pg_dump)")
+	admin := adminFlag(fs)
 	return func(ctx context.Context, s *session, args []string) error {
 		if err := noArgs("migrate squash", args); err != nil {
 			return err
 		}
+		s.admin = *admin
 		err := s.confirm(ctx, guard.Action{
 			Verb:  "squash migrations",
 			Title: "Squash every applied migration into one baseline?",
@@ -251,7 +292,7 @@ func setupMigrateSquash(*flag.FlagSet) runner {
 		}
 		var out migrateport.Squashed
 		if err := s.busy(ctx, "Squashing migrations", func(ctx context.Context) (err error) {
-			out, err = s.app.Migrations.Squash(ctx)
+			out, err = s.migrations().Squash(ctx, migrateport.SquashOptions{To: *to, Dump: strings.Fields(*dump)})
 			return err
 		}); err != nil {
 			return err
@@ -265,11 +306,12 @@ func setupMigrateSquash(*flag.FlagSet) runner {
 
 func setupMigrateStamp(fs *flag.FlagSet) runner {
 	check := fs.Bool("check", false, "write nothing; fail when the stamp does not match the migrations")
+	out := fs.String("out", "", "`path` of the schema version file (default App.Stamp or schema/version_gen.go)")
 	return func(ctx context.Context, s *session, args []string) error {
 		if err := noArgs("migrate stamp", args); err != nil {
 			return err
 		}
-		st, err := s.app.Migrations.Stamp(ctx, migrateport.StampOptions{Check: *check})
+		st, err := s.migrations().Stamp(ctx, migrateport.StampOptions{Check: *check, Out: *out})
 		if err != nil {
 			return err
 		}
@@ -294,12 +336,13 @@ func setupMigrateStamp(fs *flag.FlagSet) runner {
 }
 
 func setupMigrateCheck(fs *flag.FlagSet) runner {
-	base := fs.String("base", "", "compare against `version`, the newest on the base branch, instead of the database")
+	var base dirsFlag
+	fs.Var(&base, "base-dir", "compare against the base branch's migration directory `[name=]path`, repeatable, instead of the database")
 	return func(ctx context.Context, s *session, args []string) error {
 		if err := noArgs("migrate check", args); err != nil {
 			return err
 		}
-		ps, err := s.app.Migrations.Check(ctx, migrateport.CheckOptions{Base: *base})
+		ps, err := s.migrations().Check(ctx, migrateport.CheckOptions{Base: base})
 		if err != nil {
 			return err
 		}
@@ -315,12 +358,13 @@ func setupMigrateCheck(fs *flag.FlagSet) runner {
 	}
 }
 
-func setupMigrateLint(*flag.FlagSet) runner {
+func setupMigrateLint(flags *flag.FlagSet) runner {
+	all := flags.Bool("all", false, "lint every migration, not only pending ones")
 	return func(ctx context.Context, s *session, args []string) error {
 		if err := noArgs("migrate lint", args); err != nil {
 			return err
 		}
-		fs, err := s.app.Migrations.Lint(ctx)
+		fs, err := s.migrations().Lint(ctx, migrateport.LintOptions{All: *all})
 		if err != nil {
 			return err
 		}
@@ -362,7 +406,7 @@ func setupMigrateBaseline(*flag.FlagSet) runner {
 		}); err != nil {
 			return err
 		}
-		out, err := s.app.Migrations.Baseline(ctx, version)
+		out, err := s.migrations().Baseline(ctx, version)
 		if err != nil {
 			return err
 		}
@@ -394,7 +438,7 @@ func setupMigrateRepair(*flag.FlagSet) runner {
 		}); err != nil {
 			return err
 		}
-		out, err := s.app.Migrations.Repair(ctx, version)
+		out, err := s.migrations().Repair(ctx, version)
 		if err != nil {
 			return err
 		}

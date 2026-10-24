@@ -27,21 +27,25 @@ func (b builtin) group() string {
 }
 
 func builtins(s *session) []builtin {
+	up := "apply pending migrations: the deploy step"
+	if s.hasSeeds() {
+		up = "migrate, then apply seeds: the deploy step"
+	}
 	out := []builtin{
-		{"up", "[-to version] [-dry-run] [-env name]", "migrate, then apply seeds: the deploy step", setupUp},
+		{"up", "[-to version] [-dry-run] [-env name]", up, setupUp},
 		{"migrate up", "[-to version] [-dry-run]", "apply pending migrations", setupMigrateUp},
 		{"migrate plan", "[-to version]", "show what migrate up would do", setupMigratePlan},
 		{"migrate status", "", "list migrations with their state", setupMigrateStatus},
 		{"migrate history", "", "list applied migrations", setupMigrateHistory},
-		{"migrate create", "[-kind tx|notx|repeatable] [name]", "write a new migration file", setupMigrateCreate},
-		{"migrate squash", "", "replace applied migrations with one baseline", setupMigrateSquash},
-		{"migrate stamp", "[-check]", "write the schema version file, or check it", setupMigrateStamp},
-		{"migrate check", "[-base version]", "check ordering and checksums", setupMigrateCheck},
-		{"migrate lint", "", "lint pending migrations", setupMigrateLint},
+		{"migrate create", "[-kind tx|notx|repeatable] [-source name] [name]", "write a new migration file", setupMigrateCreate},
+		{"migrate squash", "[-to version] [-dump command] [-admin dsn]", "replace applied migrations with one baseline", setupMigrateSquash},
+		{"migrate stamp", "[-check] [-out path]", "write the schema version file, or check it", setupMigrateStamp},
+		{"migrate check", "[-base-dir [name=]path]...", "check ordering and checksums", setupMigrateCheck},
+		{"migrate lint", "[-all]", "lint pending migrations", setupMigrateLint},
 		{"migrate baseline", "<version>", "record migrations up to version as applied", setupMigrateBaseline},
 		{"migrate repair", "<version>", "accept the current checksum of a changed migration", setupMigrateRepair},
 	}
-	if s.app.Seeds != nil {
+	if s.hasSeeds() {
 		out = append(out,
 			builtin{"seed apply", "[-force] [-dry-run] [names...]", "apply seeds that changed, or the named ones", setupSeedApply},
 			builtin{"seed plan", "[-force] [names...]", "show which seeds would run and why", setupSeedPlan},
@@ -50,26 +54,23 @@ func builtins(s *session) []builtin {
 		)
 	}
 	out = append(out,
-		builtin{"reset", "", "recreate the database from the current template", setupReset},
-		builtin{"template", "", "list template databases", setupTemplate},
-		builtin{"template build", "", "build the current template", setupTemplateBuild},
-		builtin{"template prune", "", "drop stale templates", setupTemplatePrune},
+		builtin{"reset", "[-admin dsn]", "recreate the database from the current template", setupReset},
+		builtin{"template", "[-admin dsn]", "list template databases", setupTemplate},
+		builtin{"template build", "[-admin dsn]", "build the current template", setupTemplateBuild},
+		builtin{"template prune", "[-admin dsn]", "drop stale templates", setupTemplatePrune},
 	)
-	if s.app.Facts != nil {
+	if s.hasFacts() {
 		out = append(out, builtin{"doctor", "", "check the database, its settings and what holds locks", setupDoctor})
 	}
 	return append(out, builtin{"version", "", "print the version", setupVersion})
 }
 
 func (s *session) route(ctx context.Context, args []string) error {
-	if s.app.Migrations == nil {
-		return errors.New("keelcli: App.Migrations is required")
-	}
 	if err := s.checkCommands(); err != nil {
 		return err
 	}
 	root := s.flagSet(s.app.Name)
-	if err := s.parse(root, args); err != nil {
+	if err := s.parseHead(root, args); err != nil {
 		if errors.Is(err, errHelp) {
 			s.help(s.st.out)
 			return nil
@@ -79,6 +80,9 @@ func (s *session) route(ctx context.Context, args []string) error {
 	rest := root.Args()
 	if len(rest) == 0 {
 		if s.interactive() {
+			if err := s.setup(); err != nil {
+				return err
+			}
 			return s.console(ctx)
 		}
 		s.help(s.st.err)
@@ -89,6 +93,9 @@ func (s *session) route(ctx context.Context, args []string) error {
 	}
 	for _, c := range s.app.Commands {
 		if c.Name == rest[0] {
+			if err := s.setup(); err != nil {
+				return err
+			}
 			return c.Run(ctx, &Env{App: s.app, Stdin: s.st.in, Stdout: s.st.out, Stderr: s.st.err, s: s}, rest[1:])
 		}
 	}
@@ -103,6 +110,9 @@ func (s *session) route(ctx context.Context, args []string) error {
 			s.commandHelp(s.st.out, b, fs)
 			return nil
 		}
+		return err
+	}
+	if err := s.setup(); err != nil {
 		return err
 	}
 	return run(ctx, s, fs.Args())
@@ -197,11 +207,19 @@ func (s *session) commandHelp(w io.Writer, b builtin, fs *flag.FlagSet) {
 	if buf.Len() > 0 {
 		fmt.Fprintf(w, "\nFlags:\n%s", buf.String())
 	}
-	fmt.Fprintf(w, "\nGlobal flags: -json -plain -no-color -yes -yes-production\n")
+	fmt.Fprintf(w, "\nGlobal flags: %s\n", strings.Join(s.globalNames(), " "))
+}
+
+// globalNames lists the global flags, keelcli's and the application's.
+func (s *session) globalNames() []string {
+	names := []string{"-json", "-plain", "-no-color", "-yes", "-yes-production"}
+	s.appFlags.VisitAll(func(f *flag.Flag) { names = append(names, "-"+f.Name) })
+	return names
 }
 
 func (s *session) flagDefaults(w io.Writer, fs *flag.FlagSet, globalsOnly bool) {
 	global := map[string]bool{"json": true, "plain": true, "no-color": true, "yes": true, "yes-production": true}
+	s.appFlags.VisitAll(func(f *flag.Flag) { global[f.Name] = true })
 	t := render.Table{NoHeader: true, Indent: 2, Columns: []render.Column{{Title: "FLAG"}, {Title: "USAGE"}}}
 	fs.VisitAll(func(f *flag.Flag) {
 		if global[f.Name] != globalsOnly {

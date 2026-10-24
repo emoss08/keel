@@ -43,9 +43,11 @@ func main() {
 		Name:        "trenova-devdb",
 		Description: "Trenova's development database: migrations, reference seeds and fixtures.",
 		Version:     "0.0.0-demo",
-		Migrations:  engine.Migrations(),
-		Seeds:       engine.Seeds(),
-		Facts:       engine.Facts(),
-		Extensions:  []string{"pg_trgm", "btree_gin", "pgcrypto"},
+		Engines: keelcli.Engines{
+			Migrations: engine.Migrations(),
+			Seeds:      engine.Seeds(),
+			Facts:      engine.Facts(),
+		},
+		Extensions: []string{"pg_trgm", "btree_gin", "pgcrypto"},
 	})
 }

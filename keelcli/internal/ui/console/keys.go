@@ -1,6 +1,8 @@
 package console
 
 import (
+	"fmt"
+
 	"charm.land/bubbles/v2/key"
 )
 
@@ -78,6 +80,7 @@ func (h helpKeys) FullHelp() [][]key.Binding { return h.full }
 func (m Model) helpKeys() helpKeys {
 	k := m.keys
 	nav := []key.Binding{k.up, k.down, k.top, k.bottom}
+	k.tab1.SetHelp(fmt.Sprintf("1-%d", len(m.tabList())), "go to tab")
 	global := []key.Binding{k.next, k.tab1, k.refresh, k.help, k.quit}
 	if m.run != nil {
 		if m.run.Running() {

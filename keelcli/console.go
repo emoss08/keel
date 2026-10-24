@@ -13,9 +13,9 @@ func (s *session) consoleModel(ctx context.Context) console.Model {
 	return console.New(console.Options{
 		Name:          s.app.Name,
 		Version:       s.app.Version,
-		Migrations:    s.app.Migrations,
-		Seeds:         s.app.Seeds,
-		Facts:         s.app.Facts,
+		Migrations:    s.migrations(),
+		Seeds:         s.seeds(),
+		Facts:         s.facts(),
 		Extensions:    s.app.Extensions,
 		YesProduction: s.g.yesProduction,
 		Theme:         s.programTheme(),

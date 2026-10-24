@@ -32,6 +32,7 @@ tenant (see [Tenancy](#tenancy)).
 - [Hooks, interceptors and observers](#hooks-interceptors-and-observers)
 - [Errors](#errors)
 - [Migrations](#migrations)
+- [Seeds](#seeds)
 - [Performance notes](#performance-notes)
 - [Testing](#testing)
 - [Coming from Bun](#coming-from-bun)
@@ -49,9 +50,10 @@ pgx v5 and never uses `database/sql`.
 | Package | Role |
 |---|---|
 | `github.com/emoss08/keel` | the API: `DB`, transactions, queries, expressions, writes, hooks, errors |
-| `github.com/emoss08/keel/cmd/keel` | the command: `keel gen` and `keel migrate` |
+| `github.com/emoss08/keel/cmd/keel` | the command: `keel gen`, the migration commands and the console |
 | `github.com/emoss08/keel/migrate` | migrations: apply, plan, squash, lint, templates, `Require` |
-| `github.com/emoss08/keel/migrate/migratecli` | the `keel migrate` commands, importable by an application's CLI |
+| `github.com/emoss08/keel/seed` | reference data and fixtures, re-applied when their inputs change |
+| `github.com/emoss08/keel/keelcli` | an application's database binary: migrations and seeds as commands, live views and a console |
 | `github.com/emoss08/keel/schema` | table metadata the generator writes; applications do not use it directly |
 
 ## Configuration
@@ -2526,7 +2528,7 @@ case err != nil:
 ## Migrations
 
 Migrations are SQL files, plus Go functions for data changes SQL cannot express; keel does not
-generate them from models. `keel/migrate` applies them; `keel migrate` is its command line.
+generate them from models. `keel/migrate` applies them; `keel` is its command line.
 [migrations-and-seeds.md](migrations-and-seeds.md) is the design and how it fits deploys.
 
 ### Files
@@ -2597,34 +2599,59 @@ applied. A `CREATE INDEX CONCURRENTLY` that fails leaves an invalid index behind
 
 ### Command line
 
+`keel` runs every migration command; in a terminal runs draw a live view, destructive commands ask
+first and `keel` alone opens a console, and anywhere else (CI, a Job, a pipe) or with `-plain` each
+event is one line:
+
 ```sh
 export KEEL_DSN=postgres://localhost:5432/app
-keel migrate create add_shipment_holds            # migrations/20261023143000_add_shipment_holds.sql
-keel migrate create shipment_status_idx -notx     # starts with --keel:notx
-keel migrate create shipment_views -repeatable    # migrations/R_shipment_views.sql
-keel migrate plan                                 # what up would do
-keel migrate up                                   # apply; one line per event
-keel migrate up -to 20261023143000 -dry-run       # print the SQL up to a version
-keel migrate status                               # applied, pending, changed, repeatable-due, missing
-keel migrate history                              # applied migrations, oldest first
-keel migrate check                                # exit 1 on out-of-order, changed or missing migrations
-keel migrate check -base-dir ../main/migrations   # the same against the base branch, without a database
-keel migrate lint                                 # lint pending migrations; -all for every one
-keel migrate baseline 20261023143000              # adopt an existing database
-keel migrate repair 20261023143000                # accept an applied file's new checksum
-keel migrate squash -dump "docker exec pg pg_dump -U app -d {db}"
-keel migrate stamp -package schema -out schema/version_gen.go [-check]
-keel migrate templates [prune]
+keel migrate create add_shipment_holds                 # migrations/20261023143000_add_shipment_holds.sql
+keel migrate create shipment_status_idx -kind notx     # starts with --keel:notx
+keel migrate create shipment_views -kind repeatable    # migrations/R_shipment_views.sql
+keel migrate plan                                      # what up would do
+keel up                                                # apply: the deploy step
+keel migrate up -to 20261023143000 -dry-run            # print the SQL up to a version
+keel migrate status                                    # applied, pending, changed, repeatable-due, missing
+keel migrate history                                   # applied migrations, oldest first
+keel migrate check                                     # exit 3 on out-of-order, changed or missing migrations
+keel migrate check -base-dir ../main/migrations        # the same against the base branch, without a database
+keel migrate lint                                      # lint pending migrations; -all (or no database) for every one
+keel migrate baseline 20261023143000 -yes              # adopt an existing database
+keel migrate repair 20261023143000 -yes                # accept an applied file's new checksum
+keel migrate squash -yes -dump "docker exec pg pg_dump -U app -d {db}"
+keel migrate stamp -out schema/version_gen.go [-check]
+keel template [build | prune]                          # template databases
+keel reset -yes                                        # recreate the database from the current template
+keel doctor                                            # connection, settings, extensions, locks, long queries
+keel                                                   # the console, in a terminal
 ```
 
-Every command takes `-dsn` (default `$KEEL_DSN`), `-dir [name=]path` (repeatable; default
-`migrations`), `-schema`, `-lock-timeout` (`0` for none), `-retries` (`0` for none),
-`-allow-out-of-order`, `-after SQL` (repeatable) and `-json`. With `-json`, `up` writes one JSON
-object per event and the other commands one JSON document. `check`, `lint` (on an error finding)
-and `stamp -check` exit 1 when they find problems.
+Global flags go before or after the command: `-dsn` (default `$KEEL_DSN`), `-dir [name=]path`
+(repeatable; default `migrations`), `-schema`, `-lock-timeout` (`0` for none), `-retries` (`0` for
+none), `-allow-out-of-order`, `-after statement` (repeatable), `-json`, `-plain`, `-yes` and
+`-yes-production`. With `-json`, runs write one JSON object per event and the other commands one
+JSON document. Exit codes: `1` failure, `2` usage error or refusal, `3` a check found problems
+(`check`, `lint` on an error finding, `stamp -check`, `doctor`). Destructive commands (`squash`,
+`baseline`, `repair`, `template prune`, `reset`) need `-yes` without a terminal and refuse a
+database marked production unless `-yes-production` is given; `reset` refuses it always.
 
-The same commands are importable from `keel/migrate/migratecli`, as functions that take an
-`io.Writer`, for an application's own database binary.
+The same commands, with seeds, make an application's own database binary: one
+[`keelcli.App`](../keelcli/README.md) names the migrations, the seeds and the database
+configuration, and keelcli builds the rest:
+
+```go
+func main() {
+    keelcli.Main(keelcli.App{
+        Name:       "trenova-db",
+        Config:     dbconfig.FromEnv, // func() (keel.Config, error), called on first use
+        Migrations: migrate.Sources(migrate.Source{Name: "core", FS: schema.Migrations}),
+        Migrate:    migrate.Options{After: []string{"SELECT trenova_rls.reconcile()"}},
+        Seeds:      reference.Seeds,
+        Tenants:    tenants.All,
+        System:     sysctx.With,
+    })
+}
+```
 
 ### Go API
 
@@ -2705,7 +2732,7 @@ running `Up`, so it must not block:
 A `Blocker` names a backend holding the lock the run waits for: `PID`, `Application`, `State`,
 `Mode`, `Age` and `Query`, from `pg_locks`, `pg_blocking_pids()` and `pg_stat_activity`. On a
 lock timeout keel finds them from a second connection while the statement waits, so the log says
-which report query held the table. `migratecli.Printer(w, json)` renders events as lines or JSON
+which report query held the table. keelcli renders the events as a live view, as lines or as JSON
 lines.
 
 ### Squash
@@ -2722,7 +2749,8 @@ Repeatable migrations stay.
   `ErrBaselineGap`: apply the squashed migrations from an earlier release first.
 - `-dump` is the pg_dump command, which must match the server's major version; `{db}` and `{dsn}`
   are replaced by the scratch database, as in `-dump "docker exec pg pg_dump -U app -d {db}"`.
-  `-admin` names the server for scratch databases (default `-dsn`); `-to` squashes up to a version.
+  `-admin` names the server for scratch databases (default `KEEL_ADMIN_DSN`, or the database's DSN
+  on the `postgres` database); `-to` squashes up to a version.
 - From Go: `migrate.Squash(ctx, migrate.SquashOptions{Admin, Dirs, To, Dump, Options})`.
 
 ### The server's view
@@ -2730,8 +2758,8 @@ Repeatable migrations stay.
 The server links one generated file instead of its migrations:
 
 ```sh
-keel migrate stamp -package schema -out schema/version_gen.go   # const Version, const Fingerprint
-keel migrate stamp -out schema/version_gen.go -check            # in CI: fail when stale
+keel migrate stamp -out schema/version_gen.go          # const Version, const Fingerprint
+keel migrate stamp -out schema/version_gen.go -check   # in CI: exit 3 when stale
 ```
 
 ```go
@@ -2763,8 +2791,14 @@ packages build it once between them: it migrates, runs `Prepare`, and marks the 
 template that takes no connections. Every call returns a fresh database copied from it with
 `CREATE DATABASE … TEMPLATE … STRATEGY FILE_COPY`, in milliseconds. `migrate.Templates(ctx, admin)`
 lists templates with their size and creation time, `migrate.PruneTemplates(ctx, admin, keep)` drops
-the others (`keel migrate templates prune` keeps the current one), and
+the others, `migrate.DropTemplate(ctx, admin, name)` drops one, and
 `migrate.ResetFromTemplate(ctx, admin, dbname, template)` recreates a database from a template.
+
+`keel template build` builds the current template of the migrations (an application's binary adds
+its reference seeds), `keel reset` recreates the database from it, and `keel template prune` drops
+the stale ones. A template's key starts with the binary's name, so a binary lists and prunes only
+its own templates, never another application's or those a test harness built with keys of its
+own.
 
 ### Lint
 
@@ -3036,6 +3070,27 @@ holding backend), `LockAcquired`, `Planned` (with the plan), then per seed `Seed
 key, `TenantsDone`, rows, duration and error), `SeedEnd` (rows, duration, error), and finally
 `RunEnd`, always last. The observer is called from the goroutine running the seed, so with
 `Parallel` above 1 from several at once: make it safe for concurrent use, and do not block in it.
+
+### Command line
+
+An application's database binary runs its seeds through [keelcli](../keelcli/README.md): with
+`Seeds` set on the `keelcli.App`, `up` migrates and then applies the seeds, and the seed commands
+appear:
+
+```sh
+trenova-db up -env production       # deploy: migrate, mark the database, apply reference seeds
+trenova-devdb seed plan             # which seeds would run and why (input changed, version changed, ...)
+trenova-devdb seed apply            # apply what changed, with a live view in a terminal
+trenova-devdb seed apply -force us_states
+trenova-devdb seed status           # state, reason, rows and tenants; orphaned records last
+trenova-devdb seed prune -yes       # delete the records of seeds no longer registered
+trenova-devdb reset -yes            # back to migrations and reference seeds, no fixtures
+```
+
+`-env` marks an unmarked database and refuses one marked otherwise. A fixture against a database
+marked production fails the run before anything applies, and the destructive commands refuse it
+without `-yes-production`. Per-tenant seeds show their progress per tenth of the tenants in plain
+output and as a progress bar in a terminal.
 
 ## Performance notes
 

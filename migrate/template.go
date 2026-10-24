@@ -310,6 +310,21 @@ func PruneTemplates(ctx context.Context, admin string, keep []string) ([]string,
 	return dropped, nil
 }
 
+// DropTemplate drops the keel template database name, terminating its connections. It refuses a
+// name that is not a keel template's, so a caller pruning by its own rules cannot drop anything
+// else.
+func DropTemplate(ctx context.Context, admin, name string) error {
+	if !strings.HasPrefix(name, TemplatePrefix) {
+		return fmt.Errorf("migrate: drop template: %s is not a keel template", name)
+	}
+	c, err := pgx.Connect(ctx, admin)
+	if err != nil {
+		return fmt.Errorf("migrate: drop template: connect: %w", err)
+	}
+	defer func() { _ = c.Close(context.WithoutCancel(ctx)) }()
+	return dropDatabase(ctx, c, name)
+}
+
 // ResetFromTemplate drops dbname, terminating its connections, and recreates it as a copy of
 // template.
 func ResetFromTemplate(ctx context.Context, admin, dbname, template string) error {

@@ -66,12 +66,12 @@ func Read(ctx context.Context, src Sources) (Target, error) {
 	if src.Facts != nil {
 		c, err := src.Facts.Connection(ctx)
 		if err != nil {
-			return t, fmt.Errorf("keelcli: connect: %w", err)
+			return t, wrap("connect", err)
 		}
 		t = Target{Database: c.Database, Host: c.Host, Port: c.Port, DSN: render.DSN(c.DSN)}
 		env, err := src.Facts.Environment(ctx)
 		if err != nil {
-			return t, fmt.Errorf("keelcli: read environment: %w", err)
+			return t, wrap("read environment", err)
 		}
 		t.Environment = env
 		return t, nil
@@ -79,11 +79,19 @@ func Read(ctx context.Context, src Sources) (Target, error) {
 	if src.Seeds != nil {
 		env, err := src.Seeds.Environment(ctx)
 		if err != nil {
-			return t, fmt.Errorf("keelcli: read environment: %w", err)
+			return t, wrap("read environment", err)
 		}
 		t.Environment = env
 	}
 	return t, nil
+}
+
+// wrap names what failed, unless the error already says it comes from keelcli.
+func wrap(what string, err error) error {
+	if strings.HasPrefix(err.Error(), "keelcli:") {
+		return err
+	}
+	return fmt.Errorf("keelcli: %s: %w", what, err)
 }
 
 // Action is a destructive action. Verb completes "refusing to …"; Never refuses production

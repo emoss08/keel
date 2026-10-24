@@ -4,8 +4,10 @@
 // Every command works two ways: plain, scriptable output when stdout is not a terminal or -plain or
 // -json is given (CI, Kubernetes Jobs, Compose), and an interactive interface when it is: live
 // views for runs, prompts for destructive commands, and, with no command, a full-screen console.
-// keelcli reaches the database only through the ports in migrateport, seedport and factsport, so
-// the engines plug in through small adapters and tests run against package fake.
+// An application describes its migrations, seeds and database in an App and calls Main; keelcli
+// builds adapters over keel/migrate and keel/seed and reaches the database only through the ports
+// in migrateport, seedport and factsport, so tests and the demo run the same commands against
+// package fake.
 package keelcli
 
 import (
@@ -14,17 +16,22 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"iter"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/emoss08/keel"
 	"github.com/emoss08/keel/keelcli/factsport"
+	"github.com/emoss08/keel/keelcli/internal/adapt"
 	"github.com/emoss08/keel/keelcli/internal/guard"
 	"github.com/emoss08/keel/keelcli/internal/term"
 	"github.com/emoss08/keel/keelcli/migrateport"
 	"github.com/emoss08/keel/keelcli/seedport"
+	"github.com/emoss08/keel/migrate"
+	"github.com/emoss08/keel/seed"
 )
 
 // The exit codes.
@@ -54,20 +61,77 @@ func Usagef(format string, args ...any) error {
 	return usageError(fmt.Sprintf(format, args...))
 }
 
+// ErrNoDatabase is the error of a command that needs a database when none is configured. An
+// App's Config returns an error wrapping it when the user gave no connection, so commands that can
+// work without one (migrate lint lints every migration then) do.
+var ErrNoDatabase = adapt.ErrNoDatabase
+
 // App is an application's database binary.
 //
-// Migrations is required; Seeds and Facts are optional, and the commands that need them are left
-// out without them. Extensions are those doctor requires. Commands adds the application's own
-// commands, which must not reuse a built-in name.
+// An application describes its database with the fields below and keelcli builds the engines
+// from them, opening the database the first time a command needs it. A field left unset leaves
+// out what needs it: without Seeds there are no seed commands, and without Config no doctor.
+// Engines replaces any of the engines, as the tests and the demo do with package fake.
 type App struct {
+	// Name names the binary in help and is the application_name of its connections, so other
+	// sessions see who holds a lock.
 	Name        string
 	Description string
 	Version     string
-	Migrations  migrateport.Engine
-	Seeds       seedport.Engine
-	Facts       factsport.Facts
-	Extensions  []string
-	Commands    []Command
+
+	// Config returns the database configuration. It is called the first time a command needs the
+	// database, so help, migrate create and migrate stamp work without one.
+	Config func() (keel.Config, error)
+	// Migrations are the application's migrations, usually embedded files read with
+	// migrate.Sources. When it is the zero Set they are read from Dirs, again on every call.
+	Migrations migrate.Set
+	// Migrate configures the migrator: the bookkeeping schema, lock timeout, retries, out-of-order
+	// migrations and the After statements.
+	Migrate migrate.Options
+	// Dirs are the migration sources' directories on disk, named as the sources: migrate create
+	// writes into the first, or the one -source names, and migrate squash rewrites them.
+	Dirs []migrate.Dir
+	// Stamp is the path of the schema version file migrate stamp writes; default
+	// schema/version_gen.go. Its package is the one the directory's Go files declare, or the
+	// directory's name.
+	Stamp string
+	// Dump is the pg_dump command migrate squash runs, default pg_dump. "{dsn}" and "{db}" name the
+	// scratch database, so a server in a container dumps with its own pg_dump:
+	// docker exec <container> pg_dump -U <user> -d {db}.
+	Dump []string
+	// Lint are the application's lint rules, run after the built-in ones.
+	Lint []migrate.LintRule
+
+	// Seeds are the application's seeds; nil for none.
+	Seeds *seed.Registry
+	// Tenants lists the tenants per-tenant seeds run for.
+	Tenants func(ctx context.Context, db *keel.DB) iter.Seq2[seed.Tenant, error]
+	// System returns ctx with the application's system scope, under which seeds and their
+	// bookkeeping run.
+	System func(ctx context.Context) context.Context
+	// Parallel bounds the seed transactions in flight; default 1.
+	Parallel int
+
+	// Extensions are the extensions doctor requires.
+	Extensions []string
+	// Commands adds the application's own commands, which must not reuse a built-in name.
+	Commands []Command
+	// Flags declares the application's global flags, accepted before or after any command.
+	Flags func(fs *flag.FlagSet)
+	// Setup runs once the command line is parsed, before the command, to finish the App from the
+	// values Flags bound. It may set any field but Name, Config, Seeds, Commands and Flags, which
+	// shape the command line itself; Config reads flag values when it is called, after Setup.
+	Setup func(app *App) error
+
+	// Engines replaces the engines keelcli builds from the fields above.
+	Engines Engines
+}
+
+// Engines are the ports keelcli runs on. A nil engine is built from the App's other fields.
+type Engines struct {
+	Migrations migrateport.Engine
+	Seeds      seedport.Engine
+	Facts      factsport.Facts
 }
 
 // Command is an application command. Run parses its own arguments, typically with Env.FlagSet and
@@ -100,6 +164,10 @@ func (e *Env) FlagSet(name string) *flag.FlagSet { return e.s.flagSet(name) }
 
 // Parse parses args, mapping -h to help and bad flags to a usage error.
 func (e *Env) Parse(fs *flag.FlagSet, args []string) error { return e.s.parse(fs, args) }
+
+// DB returns the application's database, opened on first use and closed when the command
+// returns.
+func (e *Env) DB(ctx context.Context) (*keel.DB, error) { return e.s.database().DB(ctx) }
 
 // Confirm asks before a destructive action: it names the database and its environment mark,
 // refuses a production database without -yes-production, skips the prompt with -yes, and is a
@@ -144,6 +212,7 @@ type streams struct {
 func (a App) run(ctx context.Context, args []string, st streams) int {
 	s := newSession(&a, st)
 	err := s.route(ctx, args)
+	s.close()
 	var r reported
 	if err != nil && !errors.As(err, &r) {
 		fmt.Fprintln(st.err, message(err))

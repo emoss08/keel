@@ -35,7 +35,8 @@ func (k Kind) String() string {
 	}
 }
 
-// Directives are the --keel: lines at the top of a migration file.
+// Directives are the --keel: lines at the top of a migration file. LockTimeout is zero for the
+// default and negative when the file disables it with --keel:lock_timeout 0.
 type Directives struct {
 	NoTx             bool
 	LockTimeout      time.Duration
@@ -180,11 +181,14 @@ func (k EventKind) String() string {
 
 // Event is one step of a run.
 //
-// LockWait: Attempt, Duration waited so far, Blockers holding the migration lock. LockAcquired:
-// Duration waited. MigrationStart: Migration, Index (1-based) of Total. Statement: a notx
-// migration starting statement Statement of Statements. Retry: Attempt that failed with a lock
-// timeout, Err, Blockers. MigrationEnd: Duration, Err. BaselineMarked: Migration. After:
-// Statement of Statements, Duration. RunEnd: Total migrations applied, Duration, Err.
+// LockWait: Attempt (1-based count of the reports), Duration waited so far, Blockers holding the
+// migration lock. LockAcquired: Duration waited, zero when the lock was free. MigrationStart:
+// Migration, Index (1-based) of Total, the migrations the run executes; baselines recorded
+// without running are not counted. Statement: a notx migration starting statement Statement of
+// Statements. Retry: Attempt that failed with a lock timeout, Err, Blockers; Migration is nil
+// when the After statements are retried. MigrationEnd: Duration, Err. BaselineMarked: Migration.
+// After: Statement of Statements finished, Duration. RunEnd: Total migrations applied,
+// Duration, Err.
 type Event struct {
 	Kind       EventKind
 	Migration  *Migration
@@ -233,10 +237,12 @@ func (k CreateKind) String() string {
 	}
 }
 
-// CreateRequest names a new migration.
+// CreateRequest names a new migration. Source names the source whose directory receives the
+// file; empty is the first.
 type CreateRequest struct {
-	Name string
-	Kind CreateKind
+	Name   string
+	Kind   CreateKind
+	Source string
 }
 
 // Created is the file Create wrote.
@@ -279,7 +285,7 @@ const (
 	OutOfOrder ProblemKind = iota
 	ChangedFile
 	MissingFile
-	DuplicateVersion
+	BaselineGap
 )
 
 // String names the problem kind.
@@ -289,8 +295,8 @@ func (k ProblemKind) String() string {
 		return "changed"
 	case MissingFile:
 		return "missing"
-	case DuplicateVersion:
-		return "duplicate"
+	case BaselineGap:
+		return "gap"
 	default:
 		return "out-of-order"
 	}
@@ -303,10 +309,29 @@ type Problem struct {
 	Message   string
 }
 
-// CheckOptions selects what Check compares against: the database's history, or Base, the newest
-// version on the base branch, when it is set.
+// Dir is a directory of migration files on disk, named as its source.
+type Dir struct {
+	Name string
+	Path string
+}
+
+// CheckOptions selects what Check compares against: the database's history, or Base, the
+// migration directories of the branch being merged into, when it is set.
 type CheckOptions struct {
-	Base string
+	Base []Dir
+}
+
+// LintOptions selects what Lint checks: the pending migrations of the database, or every
+// migration with All. Without a database, Lint checks every migration.
+type LintOptions struct {
+	All bool
+}
+
+// SquashOptions narrows Squash: To is the newest version squashed, default the newest of all;
+// Dump replaces the engine's pg_dump command when set.
+type SquashOptions struct {
+	To   string
+	Dump []string
 }
 
 // Baselined is what Baseline recorded.
@@ -337,9 +362,10 @@ type Stamp struct {
 	Current     bool
 }
 
-// StampOptions controls Stamp.
+// StampOptions controls Stamp. Out replaces the engine's path of the file when set.
 type StampOptions struct {
 	Check bool
+	Out   string
 }
 
 // Template is one template database.
@@ -379,7 +405,7 @@ type Runner interface {
 // Author writes migration files: new ones, the squashed baseline and the version stamp.
 type Author interface {
 	Create(ctx context.Context, req CreateRequest) (Created, error)
-	Squash(ctx context.Context) (Squashed, error)
+	Squash(ctx context.Context, opts SquashOptions) (Squashed, error)
 	Stamp(ctx context.Context, opts StampOptions) (Stamp, error)
 }
 
@@ -387,7 +413,7 @@ type Author interface {
 // pending migrations.
 type Checker interface {
 	Check(ctx context.Context, opts CheckOptions) ([]Problem, error)
-	Lint(ctx context.Context) ([]Finding, error)
+	Lint(ctx context.Context, opts LintOptions) ([]Finding, error)
 }
 
 // Repairer edits the bookkeeping table without running migrations.

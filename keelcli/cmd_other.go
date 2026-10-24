@@ -21,11 +21,13 @@ func resetAction(database string) guard.Action {
 	}
 }
 
-func setupReset(*flag.FlagSet) runner {
+func setupReset(fs *flag.FlagSet) runner {
+	admin := adminFlag(fs)
 	return func(ctx context.Context, s *session, args []string) error {
 		if err := noArgs("reset", args); err != nil {
 			return err
 		}
+		s.admin = *admin
 		t, err := s.target(ctx)
 		if err != nil {
 			return err
@@ -35,7 +37,7 @@ func setupReset(*flag.FlagSet) runner {
 		}
 		var out migrateport.Reset
 		if err := s.busy(ctx, "Resetting "+t.Name(), func(ctx context.Context) (err error) {
-			out, err = s.app.Migrations.Reset(ctx)
+			out, err = s.migrations().Reset(ctx)
 			return err
 		}); err != nil {
 			return err
@@ -51,35 +53,41 @@ func setupReset(*flag.FlagSet) runner {
 	}
 }
 
-func setupTemplate(*flag.FlagSet) runner {
+func setupTemplate(fs *flag.FlagSet) runner {
+	admin := adminFlag(fs)
 	return func(ctx context.Context, s *session, args []string) error {
 		if len(args) > 0 {
 			return Usagef("keelcli: unknown template subcommand %q: use build or prune", strings.Join(args, " "))
 		}
+		s.admin = *admin
 		return s.listTemplates(ctx)
 	}
 }
 
-func setupTemplateBuild(*flag.FlagSet) runner {
+func setupTemplateBuild(fs *flag.FlagSet) runner {
+	admin := adminFlag(fs)
 	return func(ctx context.Context, s *session, args []string) error {
 		if err := noArgs("template build", args); err != nil {
 			return err
 		}
+		s.admin = *admin
 		return s.buildTemplate(ctx)
 	}
 }
 
-func setupTemplatePrune(*flag.FlagSet) runner {
+func setupTemplatePrune(fs *flag.FlagSet) runner {
+	admin := adminFlag(fs)
 	return func(ctx context.Context, s *session, args []string) error {
 		if err := noArgs("template prune", args); err != nil {
 			return err
 		}
+		s.admin = *admin
 		return s.pruneTemplates(ctx)
 	}
 }
 
 func (s *session) listTemplates(ctx context.Context) error {
-	ts, err := s.app.Migrations.Templates(ctx)
+	ts, err := s.migrations().Templates(ctx)
 	if err != nil {
 		return err
 	}
@@ -96,7 +104,7 @@ func (s *session) listTemplates(ctx context.Context) error {
 func (s *session) buildTemplate(ctx context.Context) error {
 	var t migrateport.Template
 	if err := s.busy(ctx, "Building the current template", func(ctx context.Context) (err error) {
-		t, err = s.app.Migrations.BuildTemplate(ctx)
+		t, err = s.migrations().BuildTemplate(ctx)
 		return err
 	}); err != nil {
 		return err
@@ -107,7 +115,7 @@ func (s *session) buildTemplate(ctx context.Context) error {
 }
 
 func (s *session) pruneTemplates(ctx context.Context) error {
-	ts, err := s.app.Migrations.Templates(ctx)
+	ts, err := s.migrations().Templates(ctx)
 	if err != nil {
 		return err
 	}
@@ -129,7 +137,7 @@ func (s *session) pruneTemplates(ctx context.Context) error {
 	}); err != nil {
 		return err
 	}
-	dropped, err := s.app.Migrations.PruneTemplates(ctx)
+	dropped, err := s.migrations().PruneTemplates(ctx)
 	if err != nil {
 		return err
 	}
@@ -139,7 +147,7 @@ func (s *session) pruneTemplates(ctx context.Context) error {
 }
 
 func (s *session) doctorSources() doctor.Sources {
-	return doctor.Sources{Facts: s.app.Facts, Migrations: s.app.Migrations, Extensions: s.app.Extensions, Now: s.st.now}
+	return doctor.Sources{Facts: s.facts(), Migrations: s.migrations(), Extensions: s.app.Extensions, Now: s.st.now}
 }
 
 func setupDoctor(*flag.FlagSet) runner {

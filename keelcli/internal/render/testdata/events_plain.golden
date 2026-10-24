@@ -1,0 +1,30 @@
+lock    waiting for the migration lock (attempt 1)
+          blocked by pid 42 psql, idle in transaction for 3s, AccessShareLock: SELECT * FROM shipments
+lock    waiting for the migration lock (attempt 2, 1s)
+          blocked by pid 42 psql, idle in transaction for 3s, AccessShareLock: SELECT * FROM shipments
+lock    migration lock acquired after 1.5s
+migrate baseline 20251231000000_baseline recorded as applied
+migrate [1/2] 20260101000000_index  core · notx · lock_timeout 0
+migrate [1/2] 20260101000000_index  statement 1/2
+migrate [1/2] 20260101000000_index  lock timeout, retry 1: ERROR: canceling statement due to lock timeout (SQLSTATE 55P03)
+          blocked by pid 42 psql, idle in transaction for 3s, AccessShareLock: SELECT * FROM shipments
+migrate [1/2] 20260101000000_index  applied in 20ms
+migrate [2/2] R_views  core · repeatable
+migrate [2/2] R_views  applied in 3ms
+migrate after statements  lock timeout, retry 1: ERROR: canceling statement due to lock timeout (SQLSTATE 55P03)
+          blocked by pid 42 psql, idle in transaction for 3s, AccessShareLock: SELECT * FROM shipments
+migrate after statement 1/1 in 4ms
+migrate done: 2 migrations applied in 2s
+migrate stopped after 1s, 0 migrations applied: migrate: 20260101000000_index: boom
+lock    waiting for the seed lock
+lock    seed lock acquired after 1.2s
+seed    states runs: input changed (data/states.yaml)
+seed    settings skips: up to date
+seed    demo skips: refused
+seed    [1/2] states  reference
+seed    [1/2] states  56 rows in 30ms
+seed    [2/2] settings  reference · 2 tenants
+seed    [2/2] settings  tenants 1/2
+seed    [2/2] settings  tenant t2 failed: boom
+seed    [2/2] settings  failed after 1s: seed: settings: tenant "t2": boom
+seed    stopped after 2s, 1 seed applied: seed: settings: tenant "t2": boom

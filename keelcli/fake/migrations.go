@@ -248,7 +248,7 @@ func cloneBlockers(bs []migrateport.Blocker) []migrateport.Blocker {
 	return append([]migrateport.Blocker(nil), bs...)
 }
 
-// Create adds a pending migration named after the request.
+// Create adds a pending migration named after the request, to its source or core.
 func (x Migrations) Create(_ context.Context, req migrateport.CreateRequest) (migrateport.Created, error) {
 	e := x.e
 	if !namePattern.MatchString(req.Name) {
@@ -256,7 +256,10 @@ func (x Migrations) Create(_ context.Context, req migrateport.CreateRequest) (mi
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	m := migrateport.Migration{Name: req.Name, Source: "core"}
+	m := migrateport.Migration{Name: req.Name, Source: req.Source}
+	if m.Source == "" {
+		m.Source = "core"
+	}
 	var path string
 	switch req.Kind {
 	case migrateport.RepeatableFile:
@@ -285,8 +288,9 @@ func (x Migrations) Create(_ context.Context, req migrateport.CreateRequest) (mi
 	return migrateport.Created{Path: path, Migration: added.m}, nil
 }
 
-// Squash replaces every applied versioned migration with one baseline.
-func (x Migrations) Squash(ctx context.Context) (migrateport.Squashed, error) {
+// Squash replaces every applied versioned migration up to opts.To, or all of them, with one
+// baseline; the fake has no pg_dump, so opts.Dump is not used.
+func (x Migrations) Squash(ctx context.Context, opts migrateport.SquashOptions) (migrateport.Squashed, error) {
 	e := x.e
 	if err := e.sleep(ctx, 1500*time.Millisecond); err != nil {
 		return migrateport.Squashed{}, err
@@ -298,7 +302,7 @@ func (x Migrations) Squash(ctx context.Context) (migrateport.Squashed, error) {
 	var sql strings.Builder
 	sql.WriteString("--keel:baseline\n")
 	for _, m := range e.migrations {
-		if m.state == migrateport.Applied && m.m.Kind != migrateport.Repeatable {
+		if m.state == migrateport.Applied && m.m.Kind != migrateport.Repeatable && (opts.To == "" || m.m.Version <= opts.To) {
 			replaced++
 			newest = m.m.Version
 			sql.WriteString(strings.TrimPrefix(m.m.SQL, "--keel:baseline\n"))
@@ -316,8 +320,8 @@ func (x Migrations) Squash(ctx context.Context) (migrateport.Squashed, error) {
 	return migrateport.Squashed{Path: "schema/migrations/" + base.m.ID() + ".sql", Version: newest, Replaced: replaced}, nil
 }
 
-// Stamp reports the schema version of the newest migration; the fake's stamp file matches the
-// migrations the fake started with.
+// Stamp reports the schema version of the newest migration; the fake's stamp file, at opts.Out
+// or schema/version_gen.go, matches the migrations the fake started with.
 func (x Migrations) Stamp(_ context.Context, opts migrateport.StampOptions) (migrateport.Stamp, error) {
 	e := x.e
 	e.mu.Lock()
@@ -330,8 +334,12 @@ func (x Migrations) Stamp(_ context.Context, opts migrateport.StampOptions) (mig
 		}
 		sums.WriteString(m.m.Checksum)
 	}
+	path := opts.Out
+	if path == "" {
+		path = "schema/version_gen.go"
+	}
 	s := migrateport.Stamp{
-		Path:        "schema/version_gen.go",
+		Path:        path,
 		Version:     newest,
 		Fingerprint: checksum(sums.String())[:16],
 		Current:     newest == e.stamped,
@@ -343,17 +351,16 @@ func (x Migrations) Stamp(_ context.Context, opts migrateport.StampOptions) (mig
 }
 
 // Check reports changed and missing files and pending migrations older than the newest applied
-// one, or than opts.Base when set.
-func (x Migrations) Check(_ context.Context, opts migrateport.CheckOptions) ([]migrateport.Problem, error) {
+// one. The fake has no files, so it compares with its simulated history even when opts.Base
+// names directories.
+func (x Migrations) Check(context.Context, migrateport.CheckOptions) ([]migrateport.Problem, error) {
 	e := x.e
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	newest := opts.Base
-	if newest == "" {
-		for _, m := range e.migrations {
-			if m.state == migrateport.Applied && m.m.Version > newest {
-				newest = m.m.Version
-			}
+	newest := ""
+	for _, m := range e.migrations {
+		if m.state == migrateport.Applied && m.m.Version > newest {
+			newest = m.m.Version
 		}
 	}
 	var out []migrateport.Problem
@@ -373,14 +380,14 @@ func (x Migrations) Check(_ context.Context, opts migrateport.CheckOptions) ([]m
 	return out, nil
 }
 
-// Lint runs the built-in rules over pending migrations.
-func (x Migrations) Lint(context.Context) ([]migrateport.Finding, error) {
+// Lint runs the built-in rules over pending migrations, or every migration with opts.All.
+func (x Migrations) Lint(_ context.Context, opts migrateport.LintOptions) ([]migrateport.Finding, error) {
 	e := x.e
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	var out []migrateport.Finding
 	for _, m := range e.migrations {
-		if m.state != migrateport.Pending {
+		if m.state != migrateport.Pending && !opts.All {
 			continue
 		}
 		out = append(out, lint(m.m)...)

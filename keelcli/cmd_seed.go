@@ -19,7 +19,7 @@ func setupSeedApply(fs *flag.FlagSet) runner {
 		if *dry {
 			return s.seedPlan(ctx, seedport.PlanOptions{Only: args, Force: *force})
 		}
-		return s.runJobs(ctx, []live.Job{live.SeedJob(s.app.Seeds, seedport.ApplyOptions{Only: args, Force: *force})})
+		return s.runJobs(ctx, []live.Job{live.SeedJob(s.seeds(), seedport.ApplyOptions{Only: args, Force: *force})})
 	}
 }
 
@@ -31,7 +31,7 @@ func setupSeedPlan(fs *flag.FlagSet) runner {
 }
 
 func (s *session) seedPlan(ctx context.Context, opts seedport.PlanOptions) error {
-	items, err := s.app.Seeds.Plan(ctx, opts)
+	items, err := s.seeds().Plan(ctx, opts)
 	if err != nil {
 		return err
 	}
@@ -53,7 +53,7 @@ func setupSeedStatus(*flag.FlagSet) runner {
 		if err := noArgs("seed status", args); err != nil {
 			return err
 		}
-		rows, err := s.app.Seeds.Status(ctx)
+		rows, err := s.seeds().Status(ctx)
 		if err != nil {
 			return err
 		}
@@ -70,7 +70,7 @@ func setupSeedPrune(*flag.FlagSet) runner {
 		if err := noArgs("seed prune", args); err != nil {
 			return err
 		}
-		rows, err := s.app.Seeds.Status(ctx)
+		rows, err := s.seeds().Status(ctx)
 		if err != nil {
 			return err
 		}
@@ -92,7 +92,7 @@ func setupSeedPrune(*flag.FlagSet) runner {
 		}); err != nil {
 			return err
 		}
-		pruned, err := s.app.Seeds.Prune(ctx)
+		pruned, err := s.seeds().Prune(ctx)
 		if err != nil {
 			return err
 		}
