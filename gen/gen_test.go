@@ -176,6 +176,7 @@ func TestGenerateErrors(t *testing.T) {
 			field(5) + ": A.S: nullzero needs a comparable type or an IsZero() bool method"},
 		{"nullzero nullable scanner", "type NullX struct{ V string }\n\nfunc (n *NullX) Scan(any) error { return nil }\n\n" +
 			oneA(`X NullX ~keel:"x,nullzero"~`), field(7) + ": A.X: nullzero needs a non-nullable type; NullX already stores NULL"},
+		{"jsonnumber without jsonb", oneA(`M map[string]any ~keel:"m,jsonnumber"~`), field(3) + ": A.…jsonnumber needs the jsonb option"},
 		{"computed pk", oneA(`ID string ~keel:"id,pk,computed"~`), field(3) + ": A.…computed excludes pk"},
 		{"computed readonly", oneA(`R string ~keel:"r,readonly,computed"~`), field(3) + ": A.…computed excludes pk, tenant, version, autoid, autocreate, autoupdate, readonly"},
 		{"computed relation key", "type A struct {\n\tkeel.Table ~keel:\"a\"~\n\tID string ~keel:\"id,pk\"~\n\tBID string ~keel:\"b_id,computed\"~\n\tB *B ~keel:\"belongs:b_id\"~\n}\n" +

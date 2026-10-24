@@ -270,3 +270,18 @@ type Plant struct {
 	Code string `keel:"code,pk"`
 	Name string `keel:"name"`
 }
+
+// AuditEntry records a tool call. Its arguments and result keep every digit of a large integer:
+// their JSON numbers decode as json.Number (jsonnumber).
+type AuditEntry struct {
+	keel.Table `keel:"audit_entries"`
+
+	ID             ids.ID         `keel:"id,pk,autoid:aud_"`
+	OrganizationID ids.ID         `keel:"organization_id,pk,tenant"`
+	BusinessUnitID ids.ID         `keel:"business_unit_id,pk,tenant"`
+	Tool           string         `keel:"tool"`
+	Args           map[string]any `keel:"args,jsonb,jsonnumber"`
+	Result         []any          `keel:"result,jsonb,jsonnumber,nullzero"`
+	Raw            *any           `keel:"raw,jsonb,jsonnumber"`
+	Meta           map[string]any `keel:"meta,jsonb"`
+}

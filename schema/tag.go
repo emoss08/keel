@@ -201,7 +201,7 @@ func (ft *FieldTag) column(name string, opts []option) error {
 var columnFlags = map[string]ColFlag{
 	"pk": FlagPK, "tenant": FlagTenant, "version": FlagVersion, "autocreate": FlagAutoCreate,
 	"autoupdate": FlagAutoUpdate, "readonly": FlagReadOnly, "noselect": FlagNoSelect, "jsonb": FlagJSONB,
-	"nullzero": FlagNullZero, "computed": FlagComputed,
+	"nullzero": FlagNullZero, "computed": FlagComputed, "jsonnumber": FlagJSONNumber,
 }
 
 // columnOption sets one column option.
@@ -319,6 +319,8 @@ func (ft *FieldTag) checkColumn() error {
 		return fmt.Errorf("nullzero excludes pk, tenant, version, autoid, autocreate and autoupdate")
 	case ft.Flags.Has(FlagJSONB) && ft.TSVector:
 		return fmt.Errorf("jsonb and tsvector exclude each other")
+	case ft.Flags.Has(FlagJSONNumber) && !ft.Flags.Has(FlagJSONB):
+		return fmt.Errorf("jsonnumber needs the jsonb option")
 	case ft.Report.Include && ft.Report.Exclude:
 		return fmt.Errorf("report and noreport exclude each other")
 	}

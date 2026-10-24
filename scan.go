@@ -116,7 +116,7 @@ func (p *selectPlan) scan(sc *scopeState, sql string, rows pgx.Rows, emit func(r
 			}
 			if plans[i] == nil {
 				fd := fds[i+off]
-				plans[i] = planColumn(m, fd.DataTypeOID, fd.Format, &t.Columns[c.col], dst)
+				plans[i] = planColumn(rows.Conn(), fd.DataTypeOID, fd.Format, &t.Columns[c.col], dst)
 			}
 			if err := plans[i].Scan(raw[i], dst); err != nil {
 				return fmt.Errorf("keel: scan %s.%s: %w", t.Name, t.Columns[c.col].Name, err)
@@ -139,9 +139,16 @@ func (p *selectPlan) scan(sc *scopeState, sql string, rows pgx.Rows, emit func(r
 	return nil
 }
 
-// planColumn plans decoding column c, of type oid, into dst: a nullzero column reads NULL as its
-// zero value, any other column as planScan decodes it.
-func planColumn(m *pgtype.Map, oid uint32, format int16, c *schema.Column, dst any) pgtype.ScanPlan {
+// planColumn plans decoding column c, of type oid, read on conn, into dst: a jsonnumber column
+// keeps its JSON numbers as json.Number, a nullzero column reads NULL as its zero value, any other
+// column decodes as planScan plans it.
+func planColumn(conn *pgx.Conn, oid uint32, format int16, c *schema.Column, dst any) pgtype.ScanPlan {
+	if c.Flags.Has(schema.FlagJSONNumber) {
+		if p := planJSONNumber(conn, oid, format); p != nil {
+			return p
+		}
+	}
+	m := conn.TypeMap()
 	if c.Flags.Has(schema.FlagNullZero) {
 		return newZeroScanPlan(m, oid, format, dst)
 	}

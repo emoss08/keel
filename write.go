@@ -558,7 +558,8 @@ func returningScanner(t *schema.Table, rows []unsafe.Pointer, cols []int32, inse
 	needs []int32, olds []unsafe.Pointer,
 ) func(pgx.Rows) error {
 	return func(res pgx.Rows) error {
-		m := res.Conn().TypeMap()
+		conn := res.Conn()
+		m := conn.TypeMap()
 		fds := res.FieldDescriptions()
 		off := 0
 		if inserted != nil {
@@ -580,7 +581,7 @@ func returningScanner(t *schema.Table, rows []unsafe.Pointer, cols []int32, inse
 				}
 			}
 			for j, c := range cols {
-				if err := scanAt(m, fds, raw, plans, off+j, t, t.Ptr(rows[i], c), c); err != nil {
+				if err := scanAt(conn, fds, raw, plans, off+j, t, t.Ptr(rows[i], c), c); err != nil {
 					return err
 				}
 			}
@@ -588,7 +589,7 @@ func returningScanner(t *schema.Table, rows []unsafe.Pointer, cols []int32, inse
 				old := t.New()
 				for j, c := range needs {
 					k := off + len(cols) + j
-					if err := scanAt(m, fds, raw, plans, k, t, t.Ptr(old, c), c); err != nil {
+					if err := scanAt(conn, fds, raw, plans, k, t, t.Ptr(old, c), c); err != nil {
 						return err
 					}
 				}
@@ -600,13 +601,13 @@ func returningScanner(t *schema.Table, rows []unsafe.Pointer, cols []int32, inse
 	}
 }
 
-// scanAt decodes column k of a row into dst, the field of table column c, planning the scan on
-// first use.
-func scanAt(m *pgtype.Map, fds []pgconn.FieldDescription, raw [][]byte, plans []pgtype.ScanPlan,
+// scanAt decodes column k of a row read on conn into dst, the field of table column c, planning the
+// scan on first use.
+func scanAt(conn *pgx.Conn, fds []pgconn.FieldDescription, raw [][]byte, plans []pgtype.ScanPlan,
 	k int, t *schema.Table, dst any, c int32,
 ) error {
 	if plans[k] == nil {
-		plans[k] = planColumn(m, fds[k].DataTypeOID, fds[k].Format, &t.Columns[c], dst)
+		plans[k] = planColumn(conn, fds[k].DataTypeOID, fds[k].Format, &t.Columns[c], dst)
 	}
 	if err := plans[k].Scan(raw[k], dst); err != nil {
 		return fmt.Errorf("keel: scan %s.%s: %w", t.Name, t.Columns[c].Name, err)
@@ -964,13 +965,12 @@ func pkWhere(r *render, t *schema.Table, row unsafe.Pointer) {
 func scanInto(rows pgx.Rows, t *schema.Table, row unsafe.Pointer, ret []int32, old unsafe.Pointer,
 	needs []int32,
 ) error {
-	m := rows.Conn().TypeMap()
 	fds := rows.FieldDescriptions()
 	raw := rows.RawValues()
 	i := 0
 	for _, c := range ret {
 		dst := t.Ptr(row, c)
-		if err := planColumn(m, fds[i].DataTypeOID, fds[i].Format, &t.Columns[c], dst).Scan(raw[i], dst); err != nil {
+		if err := planColumn(rows.Conn(), fds[i].DataTypeOID, fds[i].Format, &t.Columns[c], dst).Scan(raw[i], dst); err != nil {
 			return fmt.Errorf("keel: scan %s.%s: %w", t.Name, t.Columns[c].Name, err)
 		}
 		i++
@@ -980,7 +980,7 @@ func scanInto(rows pgx.Rows, t *schema.Table, row unsafe.Pointer, ret []int32, o
 	}
 	for _, c := range needs {
 		dst := t.Ptr(old, c)
-		if err := planColumn(m, fds[i].DataTypeOID, fds[i].Format, &t.Columns[c], dst).Scan(raw[i], dst); err != nil {
+		if err := planColumn(rows.Conn(), fds[i].DataTypeOID, fds[i].Format, &t.Columns[c], dst).Scan(raw[i], dst); err != nil {
 			return fmt.Errorf("keel: scan old %s.%s: %w", t.Name, t.Columns[c].Name, err)
 		}
 		i++

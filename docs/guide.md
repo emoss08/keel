@@ -113,7 +113,7 @@ the request context.
 | `AfterConnect` | `func(ctx, *pgx.Conn) error` | runs on every new connection after keel registers its types; register codecs here |
 | `LoadTypes` | `[]string` | user-defined types (domains, composites) and their array types to register on every connection |
 | `SkipEnums` | `bool` | stops keel registering every enum type of the database on each new connection |
-| `JSON` | `*keel.JSONCodec` | the JSON implementation for `json` and `jsonb` values; defaults to `encoding/json` |
+| `JSON` | `*keel.JSONCodec` | the JSON implementation for `json` and `jsonb` values (`Marshal`, `Unmarshal`, and `UnmarshalNumber` for `jsonnumber` columns); defaults to `encoding/json` |
 | `PlanCache` | `keel.PlanCache` | how statements are prepared: `PlanCacheAuto` (default), `PlanCacheCustom`, `PlanCacheOff` |
 | `StatementCacheCapacity` | `int` | prepared statements (or, with `PlanCacheOff`, statement descriptions) kept per connection; defaults to 512 |
 | `Replicas` | `[]keel.ReplicaConfig` | streaming replicas (`DSN` or `Pool`, and a `Weight`) that reads marked with `keel.OnReplica` run on; see [Read replicas](#read-replicas) |
@@ -202,6 +202,33 @@ JSON: &keel.JSONCodec{Marshal: sonic.Marshal, Unmarshal: sonic.Unmarshal},
 
 The codec is registered for `json` and `jsonb` on every connection and also encodes `jsonb` values
 in bulk inserts.
+
+A `jsonb` column read into `map[string]any`, `[]any` or `any` decodes its numbers as `float64`,
+which rounds an integer past 2^53 (an ID, an amount in minor units, a tool call's argument).
+Tag the column `jsonnumber` and keel decodes it with `JSONCodec.UnmarshalNumber` instead: numbers
+in interface values become `json.Number`, holding the literal, and every codec writes a
+`json.Number` back as the same literal, so a value round-trips digit for digit. Typed fields
+(`int64`, a struct field) decode as before.
+
+```go
+type AuditEntry struct {
+    keel.Table `keel:"audit_entries"`
+
+    Arguments map[string]any `keel:"arguments,jsonb,jsonnumber"`
+}
+
+// The default decodes with encoding/json's Decoder and UseNumber (keel.UnmarshalJSONNumber).
+// With sonic, give its number-preserving configuration:
+JSON: &keel.JSONCodec{Marshal: sonic.Marshal, Unmarshal: sonic.Unmarshal,
+    UnmarshalNumber: sonic.Config{UseNumber: true}.Froze().Unmarshal},
+```
+
+`jsonnumber` applies wherever keel decodes the model's rows (queries, relation loads, values
+read back after writes) on connections keel opened; on a connection joined with `JoinTx`, which
+keel did not set up, it uses `keel.UnmarshalJSONNumber`. `keel.Into` projections and dynamic
+results are not models: a projection decodes with `Unmarshal`, and `DynResult` keeps the JSON
+text. `DB.JSON()` returns the codec with `UnmarshalNumber` filled in, for packages that decode
+JSON themselves.
 
 ### Enums, domains and decimals
 
@@ -512,6 +539,7 @@ Shipment.Weight: keel tag "weight,fromat=weight": unknown option "fromat"`).
 | `readonly` | never written (generated or trigger-maintained columns); read back after inserts and saves | `keel:"stage_rank,readonly"` |
 | `noselect` | not selected by default; usable in predicates. Mark a generated `noselect` column `readonly` too | `keel:"search_vector,noselect,readonly,tsvector"` |
 | `jsonb` | the value is encoded as JSON; a nil map or slice in a non-pointer field is written as `{}` or `[]` | `keel:"attributes,jsonb"` |
+| `jsonnumber` | with `jsonb` only: reads decode numbers held in interface values (`map[string]any`, `[]any`, `any`) as `json.Number`, which keeps an integer past 2^53 exact, instead of `float64` (see [JSON](#json)) | `keel:"arguments,jsonb,jsonnumber"` |
 | `tsvector` / `tsvector=<config>` | the column gets the full-text operators (see [Full-text search](#full-text-search)); `<config>` is the text search configuration its searches use by default, an identifier, optionally schema-qualified | `keel:"search_vector,noselect,readonly,tsvector=english"` |
 | `nullzero` | the field's zero value is stored as NULL and NULL reads back as the zero value; see [Nullzero columns](#nullzero-columns) | `keel:"customer_id,nullzero"` |
 | `computed` | not a column of the table: never inserted, updated or selected by default; a query fills it with `Compute`; see [Computed fields](#computed-fields). The name is how dynamic queries address it | `keel:"rank,computed"` |

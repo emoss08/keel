@@ -52,7 +52,8 @@ type Config struct {
 	// allocation per row.
 	SkipEnums bool
 	// JSON encodes and decodes json and jsonb values. Defaults to encoding/json; set it to a faster
-	// library (sonic, go-json) with the same signatures.
+	// library (sonic, go-json) with the same signatures. Its UnmarshalNumber decodes the columns
+	// tagged jsonnumber.
 	JSON *JSONCodec
 	// PlanCache chooses how statements are prepared. The default, PlanCacheAuto, prepares every
 	// statement shape once per connection.
@@ -98,6 +99,12 @@ const (
 type JSONCodec struct {
 	Marshal   func(v any) ([]byte, error)
 	Unmarshal func(data []byte, v any) error
+	// UnmarshalNumber decodes the columns tagged jsonnumber: as Unmarshal, except that a number
+	// decoded into an interface value (map[string]any, []any, any) is a json.Number holding its
+	// literal instead of a float64, so integers past 2^53 keep every digit. Nil uses
+	// encoding/json's Decoder with UseNumber; with sonic, sonic.Config{UseNumber:
+	// true}.Froze().Unmarshal.
+	UnmarshalNumber func(data []byte, v any) error
 }
 
 // TxInfo describes the transaction being started.
@@ -209,6 +216,9 @@ func (cfg *Config) configure(pc *pgxpool.Config) {
 	pc.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
 		if codec != nil {
 			registerJSON(conn.TypeMap(), codec)
+			if codec.UnmarshalNumber != nil {
+				conn.PgConn().CustomData()[jsonNumberKey] = codec.UnmarshalNumber
+			}
 		}
 		var loaded []*pgtype.Type
 		if !skipEnums {

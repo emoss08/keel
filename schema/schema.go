@@ -43,6 +43,9 @@ const (
 	FlagAutoID
 	FlagNullZero
 	FlagComputed
+	// FlagJSONNumber decodes a jsonb column's JSON with numbers in interface values kept as
+	// json.Number instead of float64 (the tag's jsonnumber option).
+	FlagJSONNumber
 )
 
 // Has reports whether every flag in f2 is set.

@@ -161,11 +161,16 @@ func (db *DB) execOn(ctx context.Context, pool *pgxpool.Pool, rep *replica, sql 
 }
 
 // JSON returns the JSON implementation db encodes and decodes json and jsonb values with:
-// Config.JSON, or encoding/json when it is unset. Packages built on keel use it to read JSON the
-// way the application configured.
+// Config.JSON, or encoding/json when it is unset, with UnmarshalNumber always set (encoding/json's
+// Decoder with UseNumber when the configuration leaves it nil). Packages built on keel use it to
+// read JSON the way the application configured.
 func (db *DB) JSON() JSONCodec {
-	if c := db.cfg.JSON; c != nil && c.Marshal != nil && c.Unmarshal != nil {
-		return *c
+	c := JSONCodec{Marshal: json.Marshal, Unmarshal: json.Unmarshal}
+	if cfg := db.cfg.JSON; cfg != nil && cfg.Marshal != nil && cfg.Unmarshal != nil {
+		c = *cfg
 	}
-	return JSONCodec{Marshal: json.Marshal, Unmarshal: json.Unmarshal}
+	if c.UnmarshalNumber == nil {
+		c.UnmarshalNumber = UnmarshalJSONNumber
+	}
+	return c
 }

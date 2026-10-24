@@ -13,6 +13,163 @@ import (
 	"github.com/emoss08/keel/schema"
 )
 
+// auditEntriesTable is the schema of fleet.AuditEntry.
+var auditEntriesTable = schema.Table{
+	Name:   "audit_entries",
+	Quoted: `"audit_entries"`,
+	Alias:  "ae",
+	Model:  "fleet.AuditEntry",
+	Label:  `Audit Entry`,
+	Plural: `Audit Entries`,
+	Doc:    `AuditEntry records a tool call. Its arguments and result keep every digit of a large integer: their JSON numbers decode as json.Number (jsonnumber).`,
+	Columns: []schema.Column{
+		{Name: "id", Quoted: `"id"`, Field: "ID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagAutoID, Label: `ID`},
+		{Name: "organization_id", Quoted: `"organization_id"`, Field: "OrganizationID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagTenant, Label: `Organization ID`},
+		{Name: "business_unit_id", Quoted: `"business_unit_id"`, Field: "BusinessUnitID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagTenant, Label: `Business Unit ID`},
+		{Name: "tool", Quoted: `"tool"`, Field: "Tool", Kind: schema.KindString, Flags: 0, Label: `Tool`},
+		{Name: "args", Quoted: `"args"`, Field: "Args", Kind: schema.KindJSON, Flags: schema.FlagJSONB | schema.FlagJSONNumber, Label: `Args`},
+		{Name: "result", Quoted: `"result"`, Field: "Result", Kind: schema.KindJSON, Flags: schema.FlagJSONB | schema.FlagNullZero | schema.FlagJSONNumber, Label: `Result`},
+		{Name: "raw", Quoted: `"raw"`, Field: "Raw", Kind: schema.KindJSON, Flags: schema.FlagNullable | schema.FlagJSONB | schema.FlagJSONNumber, Label: `Raw`},
+		{Name: "meta", Quoted: `"meta"`, Field: "Meta", Kind: schema.KindJSON, Flags: schema.FlagJSONB, Label: `Meta`},
+	},
+	PK:         []int32{0, 1, 2},
+	Tenant:     []int32{1, 2},
+	Select:     []int32{0, 1, 2, 3, 4, 5, 6, 7},
+	Insert:     []int32{0, 1, 2, 3, 4, 5, 6, 7},
+	Update:     []int32{3, 4, 5, 6, 7},
+	Returning:  nil,
+	Version:    -1,
+	AutoID:     0,
+	AutoCreate: -1,
+	AutoUpdate: -1,
+	IDPrefix:   "aud_",
+	New:        newAuditEntry,
+	NewN:       newNAuditEntry,
+	Size:       unsafe.Sizeof(fleet.AuditEntry{}),
+	Ptr:        ptrAuditEntry,
+	Value:      valueAuditEntry,
+}
+
+var auditEntriesRef = keel.Ref{Table: &auditEntriesTable}
+
+// AuditEntriesTable is the table of fleet.AuditEntry.
+type AuditEntriesTable struct {
+	keel.Handle[fleet.AuditEntry]
+	ID             keelkinds.IdsIDCol
+	OrganizationID keelkinds.IdsIDCol
+	BusinessUnitID keelkinds.IdsIDCol
+	Tool           keel.StringCol
+	Args           keel.JSONBCol
+	Result         keel.JSONBCol
+	Raw            keel.JSONBCol
+	Meta           keel.JSONBCol
+}
+
+// AuditEntries references the audit_entries table.
+var AuditEntries = &AuditEntriesTable{
+	Handle:         keel.Handle[fleet.AuditEntry]{Ref: &auditEntriesRef},
+	ID:             keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: &auditEntriesRef, Index: 0}}},
+	OrganizationID: keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: &auditEntriesRef, Index: 1}}},
+	BusinessUnitID: keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: &auditEntriesRef, Index: 2}}},
+	Tool:           keel.StringCol{Col: keel.Col{Ref: &auditEntriesRef, Index: 3}},
+	Args:           keel.JSONBCol{Col: keel.Col{Ref: &auditEntriesRef, Index: 4}},
+	Result:         keel.JSONBCol{Col: keel.Col{Ref: &auditEntriesRef, Index: 5}},
+	Raw:            keel.JSONBCol{Col: keel.Col{Ref: &auditEntriesRef, Index: 6}},
+	Meta:           keel.JSONBCol{Col: keel.Col{Ref: &auditEntriesRef, Index: 7}},
+}
+
+// BuildAuditEntries builds the handle of audit_entries for ref. Generated relation and alias methods call it.
+func BuildAuditEntries(r *keel.Ref) *AuditEntriesTable {
+	return &AuditEntriesTable{
+		Handle:         keel.Handle[fleet.AuditEntry]{Ref: r},
+		ID:             keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: r, Index: 0}}},
+		OrganizationID: keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: r, Index: 1}}},
+		BusinessUnitID: keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: r, Index: 2}}},
+		Tool:           keel.StringCol{Col: keel.Col{Ref: r, Index: 3}},
+		Args:           keel.JSONBCol{Col: keel.Col{Ref: r, Index: 4}},
+		Result:         keel.JSONBCol{Col: keel.Col{Ref: r, Index: 5}},
+		Raw:            keel.JSONBCol{Col: keel.Col{Ref: r, Index: 6}},
+		Meta:           keel.JSONBCol{Col: keel.Col{Ref: r, Index: 7}},
+	}
+}
+
+// AuditEntriesSchema returns the schema of audit_entries.
+func AuditEntriesSchema() *schema.Table { return &auditEntriesTable }
+
+// As returns a handle that references audit_entries under its own alias.
+func (t *AuditEntriesTable) As(alias string) *AuditEntriesTable {
+	return keel.Alias(t.Ref, alias, BuildAuditEntries)
+}
+
+// Get returns the audit_entries row with the given key, or keel.ErrNotFound.
+func (t *AuditEntriesTable) Get(ctx context.Context, db *keel.DB, key ids.ID) (*fleet.AuditEntry, error) {
+	return t.Where(t.ID.Eq(key)).One(ctx, db)
+}
+
+func newAuditEntry() unsafe.Pointer { return unsafe.Pointer(new(fleet.AuditEntry)) }
+
+func newNAuditEntry(n int) unsafe.Pointer {
+	return unsafe.Pointer(unsafe.SliceData(make([]fleet.AuditEntry, n)))
+}
+
+func ptrAuditEntry(p unsafe.Pointer, c int32) any {
+	r := (*fleet.AuditEntry)(p)
+	switch c {
+	case 0:
+		return (*string)(unsafe.Pointer(&r.ID))
+	case 1:
+		return (*string)(unsafe.Pointer(&r.OrganizationID))
+	case 2:
+		return (*string)(unsafe.Pointer(&r.BusinessUnitID))
+	case 3:
+		return &r.Tool
+	case 4:
+		return &r.Args
+	case 5:
+		return &r.Result
+	case 6:
+		return &r.Raw
+	case 7:
+		return &r.Meta
+	}
+	return nil
+}
+
+func valueAuditEntry(p unsafe.Pointer, c int32) any {
+	r := (*fleet.AuditEntry)(p)
+	switch c {
+	case 0:
+		return string(r.ID)
+	case 1:
+		return string(r.OrganizationID)
+	case 2:
+		return string(r.BusinessUnitID)
+	case 3:
+		return r.Tool
+	case 4:
+		if r.Args == nil {
+			return keel.EmptyJSONObject
+		}
+		return r.Args
+	case 5:
+		if r.Result == nil {
+			return nil
+		}
+		return r.Result
+	case 6:
+		if r.Raw == nil {
+			return nil
+		}
+		return *r.Raw
+	case 7:
+		if r.Meta == nil {
+			return keel.EmptyJSONObject
+		}
+		return r.Meta
+	}
+	return nil
+}
+
 // contactsTable is the schema of fleet.Contact.
 var contactsTable = schema.Table{
 	Name:   "contacts",

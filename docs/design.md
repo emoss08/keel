@@ -93,6 +93,7 @@ reference to a table, under that alias, for self-joins.
 | `readonly` | never written (generated or trigger-maintained columns); read back after writes |
 | `noselect` | not selected by default (a `tsvector`); usable in predicates. A generated `noselect` column must also be tagged `readonly` |
 | `jsonb` | the value is encoded as JSON; a nil map or slice in a non-pointer field is written as `{}` or `[]` |
+| `jsonnumber` | with `jsonb` only (`schema.FlagJSONNumber`): reads decode the JSON with `JSONCodec.UnmarshalNumber` (default `keel.UnmarshalJSONNumber`, encoding/json's `UseNumber`), so numbers in interface values are `json.Number` |
 | `tsvector` / `tsvector=<config>` | the column gets the full-text operators; `<config>` (`Column.TSConfig`) is the text search configuration its searches use by default |
 | `nullzero` | a non-pointer field's zero value is stored as NULL and NULL reads back as the zero value (see Nullzero columns) |
 | `computed` | not a column of the table: a field queries fill with `Compute(field, expr)` (see Computed fields) |
@@ -101,7 +102,13 @@ reference to a table, under that alias, for self-joins.
 
 The table tag takes `report[=Category]`, `label=` and `plural=`. Options that exclude each other
 (`readonly` and the write options, `jsonb` and `tsvector`, `report` and `noreport`, `dimension` and
-`measure`) are refused.
+`measure`) are refused, and so is `jsonnumber` without `jsonb`.
+
+A `jsonnumber` column's scan plan (`jsonNumberPlan`) calls the number-preserving decoder on the
+column's bytes (after the jsonb version byte in the binary format) and stores the zero value for
+NULL. The pool's `AfterConnect` puts `Config.JSON.UnmarshalNumber` in the connection's
+`CustomData`, where the plan finds it when it is built, once per connection and statement like
+every scan plan; a connection keel did not set up (`JoinTx`) uses the default.
 
 There is no `default:` or `notnull`, and `type=` names a report value type, not a SQL type. The SQL
 migrations own the schema; nullability follows the Go type (a pointer, or a `sql.Scanner` named
