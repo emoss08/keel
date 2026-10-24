@@ -106,6 +106,7 @@ type relation struct {
 	remote []int32
 	path   []int32
 	order  []schema.PickKey
+	filter []schema.PickFilter
 
 	label string
 	doc   string

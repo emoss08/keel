@@ -131,3 +131,11 @@ type PickKey struct {
 	Hop    int32
 	Column int32
 }
+
+// PickFilter is one condition of a pick relation: the column of the table reached by hop Hop
+// holds one of Values. The values are constants written into the pick's subquery.
+type PickFilter struct {
+	Hop    int32
+	Column int32
+	Values []string
+}

@@ -1,6 +1,8 @@
 package keel
 
 import (
+	"strings"
+
 	"github.com/emoss08/keel/schema"
 )
 
@@ -32,6 +34,7 @@ func (r *render) writePick(parent *schema.Table, rel *schema.Relation, allTenant
 	where := r.section(func() {
 		r.pickStart(hops[0], parentAlias, key, tenant, tenantKey)
 		r.tenantPred(hops[0].rel.Target, hops[0].alias, allTenants)
+		r.pickFilter(hops, rel)
 		for _, h := range hops {
 			r.preds(r.intercepted(h.rel.Target, OpRead, true), true)
 			r.pinnedPreds(h.rel.Target, h.alias, r.readFiltered(h.rel.Target))
@@ -171,6 +174,36 @@ func (r *render) pickJoinTable(hops []pickHop, i int) {
 		r.joinTenantEq(h.from, h.rel, h.joinAlias, hops[i-1].alias)
 	}
 	r.s(" JOIN ")
+}
+
+// pickFilter writes the relation's where= conditions: each hop's column compared with the tag's
+// constants, written as SQL string literals so the subquery's text stays one shape.
+func (r *render) pickFilter(hops []pickHop, rel *schema.Relation) {
+	for _, f := range rel.Filter {
+		h := hops[f.Hop]
+		r.s(" AND ")
+		r.s(h.alias)
+		r.b('.')
+		r.s(h.rel.Target.Columns[f.Column].Quoted)
+		if len(f.Values) == 1 {
+			r.s(" = ")
+			r.s(sqlString(f.Values[0]))
+			continue
+		}
+		r.s(" IN (")
+		for i, v := range f.Values {
+			if i > 0 {
+				r.s(", ")
+			}
+			r.s(sqlString(v))
+		}
+		r.b(')')
+	}
+}
+
+// sqlString quotes s as a SQL string literal.
+func sqlString(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
 }
 
 // pickOrder writes the relation's order keys, descending for a Last pick.

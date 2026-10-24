@@ -182,6 +182,13 @@ func resolvePick(m *model, r *relation) error {
 	if r.order[len(r.order)-1] != total {
 		r.order = append(r.order, total)
 	}
+	for _, c := range r.tag.PickWhere {
+		k, err := pickKey(r.tag.PickPath, hops, schema.PickRef{Segment: c.Segment, Column: c.Column})
+		if err != nil {
+			return fmt.Errorf("where: %w", err)
+		}
+		r.filter = append(r.filter, schema.PickFilter{Hop: k.Hop, Column: k.Column, Values: c.Values})
+	}
 	return nil
 }
 

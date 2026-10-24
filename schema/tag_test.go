@@ -55,6 +55,14 @@ func TestParseFieldTag(t *testing.T) {
 		{tag: "pick:stops,last=stops.sequence,noreport,label=Last", ok: true, want: FieldTag{Rel: Pick,
 			PickPath: []string{"stops"}, PickOrder: []PickRef{{"stops", "sequence"}}, PickLast: true, NoReport: true,
 			Label: "Last"}},
+		{tag: "pick:moves.stops,first=moves.sequence|stops.sequence,where=stops.type:Pickup;SplitPickup|moves.status:Open",
+			ok: true, want: FieldTag{Rel: Pick,
+				PickPath:  []string{"moves", "stops"},
+				PickOrder: []PickRef{{"moves", "sequence"}, {"stops", "sequence"}},
+				PickWhere: []PickCond{
+					{Segment: "stops", Column: "type", Values: []string{"Pickup", "SplitPickup"}},
+					{Segment: "moves", Column: "status", Values: []string{"Open"}},
+				}}},
 	}
 	for _, c := range cases {
 		t.Run(c.tag, func(t *testing.T) {
@@ -127,6 +135,11 @@ func TestParseFieldTagErrors(t *testing.T) {
 		"pick:moves,first=stops.id":               "first=stops.id: stops is not a segment of the path moves",
 		"pick:moves,first=moves.ID":               `first=moves.ID: identifier "ID" must match`,
 		"pick:moves,first=moves.id,pk":            `relation option "pk"`,
+		"belongs:move_id,where=moves.id:x":        "option where is only for pick relations",
+		"pick:moves,first=moves.id,where=moves.id": `where=moves.id: "moves.id" must be <segment>.<column>:<value>`,
+		"pick:moves,first=moves.id,where=moves:x":  `where=moves:x: "moves" must be <segment>.<column>`,
+		"pick:moves,first=moves.id,where=stops.id:x": "where=stops.id:x: stops is not a segment of the path moves",
+		"pick:moves,first=moves.id,where=moves.id:a;": "where=moves.id:a;: moves.id has an empty value",
 	} {
 		t.Run(tag, func(t *testing.T) {
 			_, _, err := ParseFieldTag(tag)

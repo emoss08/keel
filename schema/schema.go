@@ -109,9 +109,10 @@ type Relation struct {
 	Local  []int32
 	Remote []int32
 
-	Path  []int32
-	Order []PickKey
-	Last  bool
+	Path   []int32
+	Order  []PickKey
+	Last   bool
+	Filter []PickFilter
 
 	// Label is derived from the field's name, or set by the tag's label= option.
 	Label string

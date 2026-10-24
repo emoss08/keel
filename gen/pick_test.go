@@ -73,6 +73,17 @@ func TestGeneratePicks(t *testing.T) {
 		"case 2:\n\t\tr.Origin = (*models.Stop)(child)")
 }
 
+func TestGeneratePickFilters(t *testing.T) {
+	files, err := generate(t, withPick(`FirstLate *Stop ~keel:"pick:moves.stops,first=moves.seq|stops.seq,where=stops.id:a;b'c|moves.seq:1"~`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(files[0].Content)
+	has(t, line(t, src, "shipmentsTable", `{Name: "FirstLate"`),
+		"Path: []int32{0, 1}, Order: []schema.PickKey{{Hop: 0, Column: 2}, {Hop: 1, Column: 2}, {Hop: 1, Column: 0}}",
+		"Filter: []schema.PickFilter{{Hop: 1, Column: 0, Values: []string{`a`, `b'c`}}, {Hop: 0, Column: 2, Values: []string{`1`}}}")
+}
+
 func TestGeneratePickErrors(t *testing.T) {
 	at := field(pickField)
 	runErrors(t, []errorCase{

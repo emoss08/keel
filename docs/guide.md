@@ -573,6 +573,7 @@ array field is written as an empty array, unless the column is `nullzero`.
 | `m2m:<join_table>.<local_fk>.<remote_fk>` | rows linked through a join table: `<local_fk>` references this table, `<remote_fk>` the target; between two tenant tables the join table also carries the tenant columns they share (see [Relations](#relations)) | `Tags []*Tag \`keel:"m2m:shipment_tags.shipment_id.tag_id"\`` |
 | `pick:<relation>.<relation>…` | one row picked along a path that crosses a to-many relation (see [Pick relations](#pick-relations)) | `OriginStop *Stop \`keel:"pick:moves.stops,first=moves.sequence\|stops.sequence"\`` |
 | `first=<segment>.<column>\|…` / `last=…` | a pick's order: the first or the last row by these columns; exactly one is required on `pick` and allowed nowhere else | see `pick` |
+| `where=<segment>.<column>:<value>[;<value>…]\|…` | a pick chooses only among rows whose column holds one of the values; only on `pick` | `keel:"pick:moves.stops,first=moves.sequence\|stops.sequence,where=stops.type:Pickup"` |
 | `label=<text>` | the relation's label instead of the derived one | `keel:"belongs:bill_to_id,label=Bill-to Customer"` |
 | `noreport` | reports do not offer the relation as an edge | `keel:"m2m:shipment_tags.shipment_id.tag_id,noreport"` |
 
@@ -736,6 +737,14 @@ DestinationStop *Stop `keel:"pick:moves.stops,last=moves.sequence|stops.sequence
   segment reaches. `last=` orders every key descending. `keel gen` appends the target's primary
   key when the order does not end with it, so the order is total and the pick is deterministic;
   keys after the target's key are refused because they never apply.
+- `where=` narrows the rows the pick chooses from, as `<segment>.<column>:<value>[;<value>…]`
+  conditions joined by `|`: the row that segment reaches must hold one of the values. Values are
+  constants written into the subquery as SQL string literals, so they cannot hold a comma, `|` or
+  `;`, and the column must accept a text literal (text, enum or number columns all do).
+
+  ```go
+  FirstPickup *Stop `keel:"pick:moves.stops,first=moves.sequence|stops.sequence,where=stops.type:Pickup;SplitPickup"`
+  ```
 - The model's key the first hop starts from must be a string or integer column.
 
 `Load(s.OriginStop())` fills the field, and the pick's own relations load like any other

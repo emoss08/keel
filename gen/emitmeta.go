@@ -237,5 +237,17 @@ func (s *shared) relationMeta(r *relation) string {
 	if r.tag.PickLast {
 		out += ", Last: true"
 	}
+	if len(r.filter) > 0 {
+		filters := make([]string, len(r.filter))
+		for i, f := range r.filter {
+			values := make([]string, len(f.Values))
+			for j, v := range f.Values {
+				values[j] = lit(v)
+			}
+			filters[i] = fmt.Sprintf("{Hop: %d, Column: %d, Values: []string{%s}}", f.Hop, f.Column,
+				strings.Join(values, ", "))
+		}
+		out += fmt.Sprintf(", Filter: []%s.PickFilter{%s}", s.sch, strings.Join(filters, ", "))
+	}
 	return out
 }

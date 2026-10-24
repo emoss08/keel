@@ -25,6 +25,7 @@ type FieldTag struct {
 	PickPath   []string
 	PickOrder  []PickRef
 	PickLast   bool
+	PickWhere  []PickCond
 }
 
 // RelKey is one column pair of a belongs, one or many relation as written: FK names the
@@ -44,6 +45,14 @@ func (t FieldTag) IsRelation() bool { return t.Rel != 0 }
 type PickRef struct {
 	Segment string
 	Column  string
+}
+
+// PickCond is one condition of a pick tag's where= option as written: the row a segment of the
+// path reaches must hold one of Values in Column.
+type PickCond struct {
+	Segment string
+	Column  string
+	Values  []string
 }
 
 // ReportTag holds a column's report options as written in its tag. Zero values mean the option is
@@ -420,9 +429,17 @@ func (ft *FieldTag) relationOption(o option) error {
 		}
 		ft.PickLast = o.key == "last"
 		return ft.pickOrder(o)
+	case "where":
+		if ft.Rel != Pick {
+			return fmt.Errorf("option where is only for pick relations")
+		}
+		if ft.PickWhere != nil {
+			return fmt.Errorf("option where is repeated")
+		}
+		return ft.pickWhere(o)
 	}
-	return fmt.Errorf("relation option %q: relations take label=, noreport and, on pick, first= or last=",
-		o.key)
+	return fmt.Errorf("relation option %q: relations take label=, noreport and, on pick, first= or last= "+
+		"and where=", o.key)
 }
 
 // pickOrder reads the <segment>.<column>|… order of a pick tag.
@@ -447,6 +464,43 @@ func (ft *FieldTag) pickOrder(o option) error {
 				strings.Join(ft.PickPath, "."))
 		}
 		ft.PickOrder = append(ft.PickOrder, PickRef{Segment: seg, Column: col})
+	}
+	return nil
+}
+
+// pickWhere reads the <segment>.<column>:<value>;<value>|… conditions of a pick tag.
+func (ft *FieldTag) pickWhere(o option) error {
+	v, err := o.needValue()
+	if err != nil {
+		return err
+	}
+	for _, item := range strings.Split(v, "|") {
+		ref, values, found := strings.Cut(strings.TrimSpace(item), ":")
+		if !found || values == "" {
+			return fmt.Errorf("where=%s: %q must be <segment>.<column>:<value>[;<value>…]", v, item)
+		}
+		seg, col, found := strings.Cut(ref, ".")
+		if !found {
+			return fmt.Errorf("where=%s: %q must be <segment>.<column>", v, ref)
+		}
+		if err := checkIdent(seg); err != nil {
+			return fmt.Errorf("where=%s: %w", v, err)
+		}
+		if err := checkIdent(col); err != nil {
+			return fmt.Errorf("where=%s: %w", v, err)
+		}
+		if !slices.Contains(ft.PickPath, seg) {
+			return fmt.Errorf("where=%s: %s is not a segment of the path %s", v, seg,
+				strings.Join(ft.PickPath, "."))
+		}
+		cond := PickCond{Segment: seg, Column: col}
+		for _, val := range strings.Split(values, ";") {
+			if val == "" {
+				return fmt.Errorf("where=%s: %s.%s has an empty value", v, seg, col)
+			}
+			cond.Values = append(cond.Values, val)
+		}
+		ft.PickWhere = append(ft.PickWhere, cond)
 	}
 	return nil
 }
