@@ -54,6 +54,9 @@ func (db *DB) columnTypes(ctx context.Context, t *schema.Table) ([]string, error
 	}
 	types = make([]string, len(t.Columns))
 	for i, c := range t.Columns {
+		if !c.Stored() {
+			continue
+		}
 		typ, ok := byName[c.Name]
 		if !ok {
 			return nil, errf("table %s has no column %s; run migrations or regenerate", t.Name, c.Name)

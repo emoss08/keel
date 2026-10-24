@@ -22,6 +22,7 @@ func TestParseFieldTag(t *testing.T) {
 			want: FieldTag{Name: "v", Flags: FlagVersion | FlagAutoCreate | FlagAutoUpdate}},
 		{tag: "attrs,jsonb", ok: true, want: FieldTag{Name: "attrs", Flags: FlagJSONB}},
 		{tag: "phone,nullzero", ok: true, want: FieldTag{Name: "phone", Flags: FlagNullZero}},
+		{tag: "rank,computed", ok: true, want: FieldTag{Name: "rank", Flags: FlagComputed}},
 		{tag: "geom,readonly,nullzero", ok: true, want: FieldTag{Name: "geom", Flags: FlagReadOnly | FlagNullZero}},
 		{tag: "pro_number,label=PRO Number", ok: true, want: FieldTag{Name: "pro_number", Label: "PRO Number"}},
 		{tag: "x,noreport", ok: true, want: FieldTag{Name: "x", Report: ReportTag{Exclude: true}}},
@@ -79,6 +80,7 @@ func TestParseFieldTagErrors(t *testing.T) {
 		"id,autoid:a/b":                   `autoid prefix "a/b" must match`,
 		"x,readonly,pk":                   "readonly excludes write options",
 		"x,nullzero,version":              "nullzero excludes pk, tenant, version",
+		"x,computed,noselect":             "computed excludes pk, tenant, version, autoid, autocreate, autoupdate, readonly and noselect",
 		"x,nullzero,autoid:x_":            "nullzero excludes pk, tenant, version, autoid",
 		"x,jsonb,tsvector":                "jsonb and tsvector exclude each other",
 		"x,label":                         "option label needs a value (label=…)",
@@ -197,6 +199,7 @@ func TestDerive(t *testing.T) {
 		{Name: "version", Flags: FlagVersion},
 		{Name: "created", Flags: FlagAutoCreate},
 		{Name: "updated", Flags: FlagAutoUpdate},
+		{Name: "rank", Flags: FlagComputed},
 	}}
 	Derive(tb)
 	eqInts(t, tb.PK, 0, 1)
@@ -207,6 +210,9 @@ func TestDerive(t *testing.T) {
 	eqInts(t, tb.Returning, 3)
 	if tb.Version != 5 || tb.AutoID != 0 || tb.AutoCreate != 6 || tb.AutoUpdate != 7 {
 		t.Fatalf("%+v", tb)
+	}
+	if tb.Columns[8].Stored() || !tb.Columns[2].Stored() {
+		t.Fatal("Stored misreports a computed field")
 	}
 	if tb.Quoted != `"t"` || tb.Columns[2].Quoted != `"name"` {
 		t.Fatal("not quoted")

@@ -80,6 +80,19 @@ func shipmentsWithCustomers(cust *schema.Table, edit func(*schema.Table)) []*sch
 	return []*schema.Table{&ship, cust}
 }
 
+func TestCatalogLeavesOutComputedFields(t *testing.T) {
+	cust := fleetdb.CustomersSchema()
+	cat := must[*analytics.Catalog](t)(analytics.Build(shipmentsWithCustomers(cust, func(s *schema.Table) {
+		info := *s.Columns[5].Report
+		info.Included = true
+		s.Columns = append(s.Columns, schema.Column{Name: "rank", Field: "Rank", Kind: schema.KindFloat64,
+			Flags: schema.FlagComputed, Report: &info})
+	}), analytics.Options{}))
+	if _, ok := cat.Field("shipment", "rank"); ok {
+		t.Fatal("a computed field is a report field")
+	}
+}
+
 func TestCatalogVersionTracksWhatDefinitionsDependOn(t *testing.T) {
 	cust := fleetdb.CustomersSchema()
 	base := must[*analytics.Catalog](t)(analytics.Build(shipmentsWithCustomers(cust, nil), analytics.Options{}))

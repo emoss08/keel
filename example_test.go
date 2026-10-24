@@ -1837,3 +1837,36 @@ func Example_nullZero() {
 	}
 	fmt.Println(unassigned)
 }
+
+func ExampleQuery_Compute() {
+	ctx, db := requestContext(), appDB
+	c, s := fleetdb.Contacts, fleetdb.Shipments
+	rows, err := c.
+		Compute(c.CustomerName, c.Customer().Name).
+		Compute(c.Loads, keel.Scalar(s.Pick(keel.Count()).Where(s.CustomerID.EqCol(c.CustomerID)))).
+		Where(c.Loads.Gt(0)).
+		Order(c.Loads.Desc()).
+		Limit(50).
+		List(ctx, db)
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, r := range rows {
+		fmt.Println(r.Name, r.CustomerName, r.Loads)
+	}
+}
+
+func ExampleDynQuery_Compute() {
+	ctx, db := requestContext(), appDB
+	c, s := fleetdb.Contacts, fleetdb.Shipments
+	q := keel.DynFrom(fleetdb.ContactsSchema())
+	q.Compute("loads", keel.DynOf(keel.Scalar(s.Pick(keel.Count()).Where(s.CustomerID.EqCol(c.CustomerID))))).
+		Select(q.Path("name"), q.Path("loads")).
+		Order(q.Path("loads").Desc()).
+		Limit(10)
+	res, err := q.Run(ctx, db)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(res.Rows)
+}

@@ -154,6 +154,13 @@ func (n *lnode) selectedColumns(extra []int32) []int32 {
 	for _, c := range extra {
 		need(c)
 	}
+	if n.spec != nil {
+		for _, c := range n.spec.computes {
+			if c.err == nil {
+				need(c.col)
+			}
+		}
+	}
 	return cols
 }
 
@@ -193,6 +200,8 @@ func (q *query) renderSelect(r *render, sn *lnode, o selectOpts) *selectPlan {
 			plan.parents[i] = n.parent.idx
 		}
 	}
+
+	r.registerComputes(sc, nodes)
 
 	lateral := make([]string, len(q.joins))
 	for i, j := range q.joins {
@@ -296,9 +305,13 @@ func (q *query) renderSelect(r *render, sn *lnode, o selectOpts) *selectPlan {
 					r.s(", ")
 				}
 				first = false
-				r.s(na)
-				r.b('.')
-				r.s(n.table.Columns[c].Quoted)
+				if n.table.Columns[c].Stored() {
+					r.s(na)
+					r.b('.')
+					r.s(n.table.Columns[c].Quoted)
+				} else {
+					r.computed(Col{Ref: n.ref, Index: c})
+				}
 				plan.cols = append(plan.cols, lcol{node: ni, col: c})
 			}
 			if ni > 0 {

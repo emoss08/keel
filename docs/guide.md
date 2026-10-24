@@ -479,6 +479,7 @@ Shipment.Weight: keel tag "weight,fromat=weight": unknown option "fromat"`).
 | `jsonb` | the value is encoded as JSON; a nil map or slice in a non-pointer field is written as `{}` or `[]` | `keel:"attributes,jsonb"` |
 | `tsvector` | the column gets the full-text operators | see `noselect` |
 | `nullzero` | the field's zero value is stored as NULL and NULL reads back as the zero value; see [Nullzero columns](#nullzero-columns) | `keel:"customer_id,nullzero"` |
+| `computed` | not a column of the table: never inserted, updated or selected by default; a query fills it with `Compute`; see [Computed fields](#computed-fields). The name is how dynamic queries address it | `keel:"rank,computed"` |
 | `label=<text>` | the column's label instead of the derived one | `keel:"pro_number,label=PRO Number"` |
 | `noreport` | reports do not offer the column | `keel:"internal_key,noreport"` |
 | `report` | reports offer a column they leave out by default (a tenant, version, `noselect`, bytea or tsvector column, or an exposed foreign key) | `keel:"customer_id,report"` |
@@ -489,7 +490,7 @@ Shipment.Weight: keel tag "weight,fromat=weight": unknown option "fromat"`).
 
 A model has at most one `version`, `autoid`, `autocreate` and `autoupdate` column. `readonly`
 cannot be combined with `pk`, `tenant`, `version`, `autoid`, `autocreate` or `autoupdate`, and
-neither can `nullzero`; `jsonb` and `tsvector`, `report` and `noreport`, `dimension` and `measure`
+neither can `nullzero`; `computed` excludes those, `readonly` and `noselect`; `jsonb` and `tsvector`, `report` and `noreport`, `dimension` and `measure`
 exclude each other. The report
 options (`noreport`, `report`, `dimension`, `measure`, `agg=`, `format=`, `type=`) need `report` on
 the model's table tag.
@@ -1011,6 +1012,15 @@ hazmatShippers, err := c.Where(
 
 Subqueries are scoped like any statement: the tenant predicate is added to each.
 
+`keel.Scalar(q)` is the value of a query that picks one expression and returns at most one row,
+`(SELECT …)`, usable wherever an expression is: in `Pick`, `Where`, `Order`, and to fill a computed
+field (below).
+
+```go
+loads := keel.Scalar(s.Pick(keel.Count()).Where(s.CustomerID.EqCol(c.ID)))
+busy, err := c.Where(keel.Raw("? > 10", loads)).All(ctx, db)
+```
+
 ### Lateral joins
 
 `LeftJoinLateral(sub)` adds `LEFT JOIN LATERAL (sub) ON TRUE`; `JoinLateral(sub)` adds
@@ -1144,6 +1154,48 @@ and the column methods `Count`, `CountDistinct`, `Min`, `Max`, `Sum`, `Avg`, `Le
 `Agg` compares to values (`Eq`, `Ne`, `Gt`, `Gte`, `Lt`, `Lte`), orders (`Asc`, `Desc`), restricts its
 rows with `Filter(pred)` (`FILTER (WHERE …)`), and becomes a window function with `Over` or
 `OverWindow`. Use a pointer field for an aggregate that can be NULL (`max` over no rows).
+
+### Computed fields
+
+A field tagged `computed` is not a column of the table: a search rank, a count of related rows, a
+name from a joined table. Writes never insert or update it, queries do not select it by default,
+the bulk-insert column catalog skips it, and reports do not offer it. A query fills it with
+`Compute(field, expr)`, which selects the expression into the field for the rows it returns:
+
+```go
+type Contact struct {
+    keel.Table `keel:"contacts"`
+    // …
+    CustomerName string `keel:"customer_name,computed,nullzero"`
+    Loads        int64  `keel:"loads,computed"`
+}
+
+c, s := fleetdb.Contacts, fleetdb.Shipments
+rows, err := c.
+    Compute(c.CustomerName, c.Customer().Name).
+    Compute(c.Loads, keel.Scalar(s.Pick(keel.Count()).Where(s.CustomerID.EqCol(c.CustomerID)))).
+    Where(c.Loads.Gt(0)).
+    Order(c.Loads.Desc()).
+    Limit(50).
+    List(ctx, db)
+```
+
+- The field is filled only by queries that compute it; elsewhere it keeps its zero value. A field
+  that can read NULL (a `LEFT JOIN`ed name, `max` over no rows) needs a pointer type or `nullzero`.
+- Inside the query, the field stands for its expression: `Where`, `Order`, `Pick`, keyset `Page`s
+  and `keel.Into` projections write the expression where the field is used. Using a computed field
+  in a query that does not compute it fails the query.
+- The expression's type must fit the field: keel knows the type of columns, string expressions,
+  `Scalar` over one typed expression, counts and ranks (`bigint`), `ts_rank` (`real`), `sum` and
+  `avg` (by their argument), `min` and `max` (their argument's type), and refuses an expression
+  that does not fit (a `bigint` field takes integers, a `double precision` field any number, a
+  scanner field such as a decimal any number). Expressions whose type keel cannot tell (`Raw`) are
+  checked by the driver when rows decode.
+- `Compute` works on loads too (`Load(m.Compute(m.Rank, …))`) and on the dynamic layer:
+  `q.Compute("loads", expr)` makes `q.Path("loads")` read the expression, and a query without
+  `Select` returns the field after the table's default columns.
+- `Save`, bulk `Update`, `OnConflict` and `InsertFrom` refuse a computed field, and `keel.Needs`
+  panics on one: it has no stored value.
 
 ### Grouping sets, rollups and cubes
 
@@ -3288,6 +3340,8 @@ The same pattern works for an application:
 | `bun:",array"` | nothing; `[]string` and `[]int64` are arrays |
 | `bun:",nullzero"` on a non-pointer field | `keel:"customer_id,nullzero"`; on a pointer field drop it, a nil pointer is NULL |
 | `bun:",scanonly"` (generated column) | `keel:"stage_rank,readonly"`, plus `noselect` when it should not be read |
+| `bun:",scanonly"` (a search rank, an aggregate or a joined value scanned onto the model) | `keel:"rank,computed"` plus `q.Compute(s.Rank, expr)` |
+| `ColumnExpr("(SELECT count(*) …) AS loads")` | `Compute(c.Loads, keel.Scalar(s.Pick(keel.Count()).Where(…)))` |
 | `bun:",default:..."` | nothing; set the value in Go |
 | `bun:"-"` | `keel:"-"` |
 | `bun:",soft_delete"` | not built in; an interceptor that adds `deleted_at IS NULL` |

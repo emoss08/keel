@@ -308,11 +308,38 @@ func (q *DynQuery) outputs() []DynExpr {
 		}
 		return out
 	}
-	out := make([]DynExpr, len(t.Select))
-	for i, c := range t.Select {
-		out[i] = dynColumn(Col{Ref: q.q.ref, Index: c}, t.Columns[c].Name)
+	out := make([]DynExpr, 0, len(t.Select)+len(q.q.computes))
+	for _, c := range t.Select {
+		out = append(out, dynColumn(Col{Ref: q.q.ref, Index: c}, t.Columns[c].Name))
+	}
+	for _, c := range q.q.computes {
+		out = append(out, dynColumn(Col{Ref: q.q.ref, Index: c.col}, t.Columns[c.col].Name))
 	}
 	return out
+}
+
+// Compute fills the computed field named name (its SQL name or Go field name) with e, as
+// Query.Compute does: Path(name) then reads e, in Select, Where, Order and keyset pages, and a
+// query without Select returns the field after the table's default columns. e's type must fit
+// the field when keel knows it.
+func (q *DynQuery) Compute(name string, e DynExpr) *DynQuery {
+	if q.err != nil {
+		return q
+	}
+	q.check(e)
+	if q.derived != nil {
+		q.fail(errf("Compute %s: a derived query has no computed fields", name))
+		return q
+	}
+	ci := columnIndex(q.q.ref.Table, name)
+	if ci < 0 {
+		q.fail(errf("table %s has no field %q", q.q.ref.Table.Name, name))
+		return q
+	}
+	c := newCompute(q.q.ref, Col{Ref: q.q.ref, Index: ci}, e, q.q.computes)
+	q.fail(c.err)
+	q.q.computes = append(q.q.computes, c)
+	return q
 }
 
 // Where adds predicates, joined by AND. Nil predicates are skipped.

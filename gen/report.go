@@ -270,12 +270,15 @@ func isDecimal(n *types.Named) bool {
 // or noreport says otherwise.
 func included(c *column) bool {
 	switch {
-	case c.tag.Report.Include:
+	case c.tag.Report.Include && !c.tag.Flags.Has(schema.FlagComputed):
 		return true
 	case c.tag.Report.Exclude:
 		return false
 	}
 	f := c.tag.Flags
+	if f.Has(schema.FlagComputed) {
+		return false
+	}
 	return !f.Has(schema.FlagTenant) && !f.Has(schema.FlagVersion) && !f.Has(schema.FlagNoSelect) &&
 		c.kind != schema.KindBytes && c.kind != schema.KindTSVector && !c.exposed
 }

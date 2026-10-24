@@ -36,6 +36,10 @@ func (q *query) update(ctx context.Context, db *DB, sets []Assignment) (int64, e
 					a.col.Ref.name(), q.ref.name()))
 				return
 			}
+			if !t.Columns[a.col.Index].Stored() {
+				r.fail(errf("Update assigns the computed field %s.%s", t.Name, t.Columns[a.col.Index].Name))
+				return
+			}
 			if i > 0 {
 				r.s(", ")
 			}

@@ -126,6 +126,7 @@ type query struct {
 	distinct   bool
 	ctes       []*CTETable
 	windows    []namedWindow
+	computes   []compute
 }
 
 type joinClause struct {
@@ -317,6 +318,7 @@ func (q *Query[T]) Clone() *Query[T] {
 	c.q.distinctOn = append([]Expr(nil), q.q.distinctOn...)
 	c.q.ctes = append([]*CTETable(nil), q.q.ctes...)
 	c.q.windows = append([]namedWindow(nil), q.q.windows...)
+	c.q.computes = append([]compute(nil), q.q.computes...)
 	return c
 }
 

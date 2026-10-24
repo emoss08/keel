@@ -73,6 +73,19 @@ func resolveRelation(all map[*types.Named]*model, m *model, r *relation) error {
 	case schema.Pick:
 		return resolvePick(m, r)
 	}
+	return checkStoredKeys(m, r)
+}
+
+// checkStoredKeys refuses a relation keyed by a computed field, which is not a column of its table.
+func checkStoredKeys(m *model, r *relation) error {
+	for i := range r.local {
+		if c := m.columns[r.local[i]]; c.tag.Flags.Has(schema.FlagComputed) {
+			return fmt.Errorf("%s.%s is computed and cannot key a relation", m.name, c.field)
+		}
+		if c := r.target.columns[r.remote[i]]; c.tag.Flags.Has(schema.FlagComputed) {
+			return fmt.Errorf("%s.%s is computed and cannot key a relation", r.target.name, c.field)
+		}
+	}
 	return nil
 }
 
@@ -152,6 +165,10 @@ func pickKey(segs []string, hops []*model, o schema.PickRef) (schema.PickKey, er
 	if c == nil {
 		return schema.PickKey{}, fmt.Errorf("order key %s.%s: %s has no column %s", o.Segment, o.Column,
 			hops[hop].name, o.Column)
+	}
+	if c.tag.Flags.Has(schema.FlagComputed) {
+		return schema.PickKey{}, fmt.Errorf("order key %s.%s: %s.%s is computed", o.Segment, o.Column,
+			hops[hop].name, c.field)
 	}
 	return schema.PickKey{Hop: int32(hop), Column: c.idx}, nil
 }

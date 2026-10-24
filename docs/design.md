@@ -95,6 +95,7 @@ reference to a table, under that alias, for self-joins.
 | `jsonb` | the value is encoded as JSON; a nil map or slice in a non-pointer field is written as `{}` or `[]` |
 | `tsvector` | the column gets the full-text operators |
 | `nullzero` | a non-pointer field's zero value is stored as NULL and NULL reads back as the zero value (see Nullzero columns) |
+| `computed` | not a column of the table: a field queries fill with `Compute(field, expr)` (see Computed fields) |
 | `label=` | the column's label, instead of the one derived from the field name |
 | `noreport`, `report`, `dimension`, `measure`, `agg=`, `format=`, `type=epoch\|date\|decimal` | report facts that differ from the derived ones (see Derived metadata); only on models tagged `report` |
 
@@ -248,7 +249,7 @@ page, err := s.
 
 ### Builder methods
 
-`Where`, `Pick`, `Load`, `Order`, `Group`, `GroupingSets`, `Rollup`, `Cube`, `Having`, `Window`,
+`Where`, `Pick`, `Compute`, `Load`, `Order`, `Group`, `GroupingSets`, `Rollup`, `Cube`, `Having`, `Window`,
 `Limit`, `Offset`, `Lock`, `Join`, `LeftJoin`, `JoinLateral`, `LeftJoinLateral`, `DistinctOn`,
 `With`, `AllTenants`, `Timeout`, `CustomPlan`; `Any` and `None` turn a query into a predicate.
 Builders are mutable and chainable; `Clone` copies one. `ToSQL` renders the main statement and
@@ -307,6 +308,27 @@ comparable values compared with the same column through the same operator, and e
 the same explicit cast. Writes never share. A column resolves to the innermost statement that references
 its table; a column of a table's base handle also resolves inside a statement built on a relation
 path to that table.
+
+### Computed fields
+
+A `computed` field (`schema.FlagComputed`, `Column.Stored()` false) stays in `Table.Columns`, so it
+has a column index, a `Ptr` and a `Value` accessor, but `Derive` leaves it out of `Select`,
+`Insert`, `Update` and `Returning`; the bulk-insert catalog lookup skips it, reports never include
+it, and writes that name it are refused.
+
+- `Compute(field, expr)` records `(column, expr)` on the query, after checking that the field is a
+  computed field of the query's table, computed once, and that `expr`'s value kind, when keel
+  knows it (columns, `StringExpr`, `Scalar` of one typed expression, aggregates and window
+  functions by their function and argument), fits the field's kind.
+- When a statement renders, each node's computes are registered on its render scope. A column
+  reference to a computed field (`r.col`) writes `(expr)` from the innermost scope that computes
+  it, so the field can be selected, filtered, ordered, paged by keyset and projected; with no
+  compute in scope the statement fails. The select list appends computed fields after a node's
+  columns, and the scan plan decodes them into the field like any column.
+- `DynQuery.Compute(name, expr)` is the dynamic counterpart: `Path(name)` resolves the field, which
+  renders the expression.
+- `keel.Scalar(q)` is `(SELECT …)` as an expression, typically correlated, to fill a computed field
+  with an aggregate over related rows.
 
 ## Relation loading
 

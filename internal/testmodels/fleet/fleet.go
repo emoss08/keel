@@ -205,6 +205,10 @@ type Contact struct {
 	Prefs          map[string]any `keel:"prefs,jsonb,nullzero"`
 	Avatar         []byte         `keel:"avatar,nullzero"`
 	Version        int64          `keel:"version,version"`
+	// CustomerName is the name of the contact's customer, filled by queries that compute it.
+	CustomerName string `keel:"customer_name,computed,nullzero"`
+	// Loads counts the shipments of the contact's customer, filled by queries that compute it.
+	Loads int64 `keel:"loads,computed"`
 
 	Customer *Customer `keel:"belongs:customer_id"`
 }

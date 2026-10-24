@@ -109,6 +109,9 @@ func (c *Conflict) check(ref *Ref) ([]int32, error) {
 		if col.Ref.Table != t {
 			return nil, errf("OnConflict names a column of %s on %s", col.Ref.Table.Name, t.Name)
 		}
+		if !t.Columns[col.Index].Stored() {
+			return nil, errf("OnConflict names the computed field %s.%s", t.Name, t.Columns[col.Index].Name)
+		}
 	}
 	if c.nothing {
 		return nil, nil
@@ -117,6 +120,9 @@ func (c *Conflict) check(ref *Ref) ([]int32, error) {
 	assign := func(col Col) error {
 		if col.Ref.Table != t {
 			return errf("OnConflict assigns a column of %s on %s", col.Ref.Table.Name, t.Name)
+		}
+		if !t.Columns[col.Index].Stored() {
+			return errf("OnConflict assigns the computed field %s.%s", t.Name, t.Columns[col.Index].Name)
 		}
 		if slices.Contains(changed, col.Index) {
 			return errf("OnConflict assigns %s.%s twice", t.Name, t.Columns[col.Index].Name)
@@ -1030,6 +1036,10 @@ func (db *DB) insertFrom(ctx context.Context, ref *Ref, src subquery,
 		if col.Ref.Table != t {
 			return 0, run.close(ctx, errf("InsertFrom names a column of %s on %s",
 				col.Ref.Table.Name, t.Name))
+		}
+		if !t.Columns[col.Index].Stored() {
+			return 0, run.close(ctx, errf("InsertFrom names the computed field %s.%s", t.Name,
+				t.Columns[col.Index].Name))
 		}
 		if col.Ref.Table.Columns[col.Index].Flags.Has(schema.FlagTenant) && !run.sc.system {
 			return 0, run.close(ctx, errf("InsertFrom fills tenant columns from the scope; do not list %s",

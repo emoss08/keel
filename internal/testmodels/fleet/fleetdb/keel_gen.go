@@ -43,6 +43,8 @@ var contactsTable = schema.Table{
 		{Name: "prefs", Quoted: `"prefs"`, Field: "Prefs", Kind: schema.KindJSON, Flags: schema.FlagJSONB | schema.FlagNullZero, Label: `Prefs`},
 		{Name: "avatar", Quoted: `"avatar"`, Field: "Avatar", Kind: schema.KindBytes, Flags: schema.FlagNullable | schema.FlagNullZero, Label: `Avatar`},
 		{Name: "version", Quoted: `"version"`, Field: "Version", Kind: schema.KindInt64, Flags: schema.FlagVersion, Label: `Version`},
+		{Name: "customer_name", Quoted: `"customer_name"`, Field: "CustomerName", Kind: schema.KindString, Flags: schema.FlagNullZero | schema.FlagComputed, Label: `Customer Name`, Doc: `CustomerName is the name of the contact's customer, filled by queries that compute it.`},
+		{Name: "loads", Quoted: `"loads"`, Field: "Loads", Kind: schema.KindInt64, Flags: schema.FlagComputed, Label: `Loads`, Doc: `Loads counts the shipments of the contact's customer, filled by queries that compute it.`},
 	},
 	Relations: []schema.Relation{
 		{Name: "Customer", Alias: "c", Kind: schema.BelongsTo, Local: []int32{3}, Remote: []int32{0}, Label: `Customer`},
@@ -91,6 +93,8 @@ type ContactsTable struct {
 	Prefs          keel.JSONBCol
 	Avatar         keel.BytesCol
 	Version        keel.Int64Col
+	CustomerName   keel.StringCol
+	Loads          keel.Int64Col
 }
 
 // Contacts references the contacts table.
@@ -116,6 +120,8 @@ var Contacts = &ContactsTable{
 	Prefs:          keel.JSONBCol{Col: keel.Col{Ref: &contactsRef, Index: 17}},
 	Avatar:         keel.BytesCol{Col: keel.Col{Ref: &contactsRef, Index: 18}},
 	Version:        keel.Int64Col{Col: keel.Col{Ref: &contactsRef, Index: 19}},
+	CustomerName:   keel.StringCol{Col: keel.Col{Ref: &contactsRef, Index: 20}},
+	Loads:          keel.Int64Col{Col: keel.Col{Ref: &contactsRef, Index: 21}},
 }
 
 // BuildContacts builds the handle of contacts for ref. Generated relation and alias methods call it.
@@ -142,6 +148,8 @@ func BuildContacts(r *keel.Ref) *ContactsTable {
 		Prefs:          keel.JSONBCol{Col: keel.Col{Ref: r, Index: 17}},
 		Avatar:         keel.BytesCol{Col: keel.Col{Ref: r, Index: 18}},
 		Version:        keel.Int64Col{Col: keel.Col{Ref: r, Index: 19}},
+		CustomerName:   keel.StringCol{Col: keel.Col{Ref: r, Index: 20}},
+		Loads:          keel.Int64Col{Col: keel.Col{Ref: r, Index: 21}},
 	}
 }
 
@@ -210,6 +218,10 @@ func ptrContact(p unsafe.Pointer, c int32) any {
 		return &r.Avatar
 	case 19:
 		return &r.Version
+	case 20:
+		return &r.CustomerName
+	case 21:
+		return &r.Loads
 	}
 	return nil
 }
@@ -302,6 +314,13 @@ func valueContact(p unsafe.Pointer, c int32) any {
 		return r.Avatar
 	case 19:
 		return r.Version
+	case 20:
+		if r.CustomerName == "" {
+			return nil
+		}
+		return r.CustomerName
+	case 21:
+		return r.Loads
 	}
 	return nil
 }

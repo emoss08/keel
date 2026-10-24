@@ -99,6 +99,7 @@ type scope struct {
 	joins      []*join
 	joinMode   joinMode
 	allTenants bool
+	computed   []*scopedCompute
 }
 
 type joinMode uint8
@@ -450,6 +451,10 @@ func (r *render) addJoin(sc *scope, ref *Ref, parentAlias string, selected bool)
 }
 
 func (r *render) col(c Col) {
+	if c.Ref.Table.Columns[c.Index].Flags.Has(schema.FlagComputed) {
+		r.computed(c)
+		return
+	}
 	if r.bare {
 		r.s(c.Ref.Table.Columns[c.Index].Quoted)
 		return
