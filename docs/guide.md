@@ -2299,3 +2299,286 @@ The same pattern works for an application:
 | `sql.ErrNoRows` | `keel.ErrNotFound` |
 | `pgdriver.Error` with `IntegrityViolation()` | `keel.IsUnique`, `IsForeignKey`, `IsCheck`, `Constraint` |
 | `bun.QueryHook` | `keel.Observer` |
+
+## Analytics: report definitions and formulas
+
+`keel/analytics` lets an application's users build their own reports. Two packages hold what a user
+writes; neither runs SQL or touches the database:
+
+- [`analytics/ir`](../analytics/ir) is the report definition: its types, JSON encoding, JSON Schema,
+  versions and upgrades, validation, dashboard filter merging and drill-through.
+- [`analytics/formula`](../analytics/formula) is the formula language of calculated columns and
+  conditions.
+
+The compiler turns a validated definition into SQL. [analytics.md](analytics.md) is the design.
+
+### A definition
+
+A definition is stored as JSON, and the JSON reads the way the report does:
+
+```json
+{
+  "version": 2,
+  "entity": "shipment",
+  "columns": [
+    {"id": "customer", "dimension": {"field": "customer.name"}},
+    {"id": "month", "dimension": {"field": "shippedAt", "bucket": "month"}},
+    {"id": "revenue", "measure": {"field": "totalCharge", "agg": "sum"}},
+    {"id": "miles", "measure": {"field": "moves.distance", "agg": "sum"}},
+    {"id": "rpm", "calc": "round([revenue] / nullif([miles], 0), 2)", "format": "money"},
+    {"id": "share", "window": {"of": "revenue", "fn": "percent_of_total", "partition": ["month"]}},
+    {"id": "mom", "window": {"of": "revenue", "fn": "change", "over": "month", "offset": 1}}
+  ],
+  "filters": {"and": [
+    {"field": "shippedAt", "op": "last_n_days", "param": "window"},
+    {"field": "status", "op": "not_in", "value": ["Canceled"]}
+  ]},
+  "having": {"and": [{"column": "revenue", "op": "gt", "value": 1000}]},
+  "groupings": {"subtotals": ["customer"], "total": true},
+  "top": {"n": 5, "by": "revenue", "per": ["month"]},
+  "sort": [{"column": "revenue", "desc": true}],
+  "limit": 500,
+  "parameters": [{"name": "window", "type": "int", "default": 30}]
+}
+```
+
+`ir.Decode` reads stored JSON of any supported version, rejects unknown keys and keeps numbers exact
+(`json.Number`); `ir.Encode` writes it back in this shape. In Go the same report is a plain value:
+
+```go
+def := &ir.Definition{
+    Version: ir.Version,
+    Entity:  "shipment",
+    Columns: []ir.Column{
+        {ID: "customer", Dimension: &ir.Dimension{Field: "customer.name"}},
+        {ID: "month", Dimension: &ir.Dimension{Field: "shippedAt", Bucket: ir.Every(ir.BucketMonth)}},
+        {ID: "revenue", Measure: &ir.Measure{Field: "totalCharge", Agg: ir.AggSum}},
+        {ID: "loads", Measure: &ir.Measure{Agg: ir.AggCount}},
+        {ID: "per_load", Calc: formula.Of("[revenue] / [loads]")},
+    },
+    Filters: ir.And(
+        ir.WhereParam("shippedAt", ir.OpLastNDays, "window"),
+        ir.Where("status", ir.OpNotIn, []string{"Canceled"}),
+    ),
+    Top:        &ir.Top{N: ir.CountParam("n"), By: "revenue"},
+    Parameters: []ir.Parameter{{Name: "window", Type: formula.Int, Default: 30}, {Name: "n", Type: formula.Int, Default: 10}},
+}
+```
+
+**Columns.** Each column has an id (letters, digits, underscores) and exactly one kind:
+
+| Kind | What it is | Options |
+|---|---|---|
+| `dimension` | groups by a field, given as a dotted path across relations | `bucket` (hour to year, or `{"param": …}`), `band` (`width`, or ascending `edges` with an open top range) |
+| `measure` | aggregates a field: `count`, `count_distinct`, `sum`, `avg`, `min`, `max` | `filter`: narrows only this measure (`FILTER (WHERE …)`); `count` without a field counts rows |
+| `calc` | a formula, as text or as an AST | row-level calcs group like dimensions; calcs over measures are aggregates |
+| `window` | a value across the grouped rows from another column (`of`) | `running_total`, `percent_of_total`, `rank`, `dense_rank`, `moving_avg` (`size`), `change` and `percent_change` (`offset`), `first`, `last`; `over` orders, `partition` restarts |
+
+Any column can carry a `transform` (round, ceil, floor, truncate, abs, scale, upper, lower, title, trim),
+a `format` hint, a `display` spec (an object owned by `analytics/format`) and `hidden`, which computes
+a column for other columns, `having` or `sort` without returning it.
+
+**Filters** are trees of `{"and": […]}` and `{"or": […]}` groups. A condition compares a `field`, a
+`calc` or a `column` with an `op` and a `value` or a `param`; a `calc` with no `op` is a condition when
+it is true. `ir.OpsFor(t)` lists the operators of a value type, and the same table is in the generated
+TypeScript. `between` is half-open: from the first value, up to the second. `having` compares output
+columns (or aggregate calcs) after grouping.
+
+**Layout.** `groupings` adds subtotal rows (each named dimension and the ones before it) and a grand
+total, computed in the same statement as the rows. `top` keeps the first N rows per group. `pivot`
+spreads measure columns across a field's values: listed (`values`, or `{"param": …}`), or discovered
+when the report runs (`top: {"n", "by"}`), with `other` for the rest; a pivot cell is addressed as
+`revenue:Completed` (and `revenue:__other__`) in `sort` and charts. `limit` and `page` (`size`, `after`)
+bound the output.
+
+**Parameters** have a type, `required`, a `default`, `multi`, `allowed` values and, for `ref`, the
+`entity` they point at. They supply filter values, limits, top-N counts, buckets and pivot values,
+always as bound values, never as identifiers.
+
+**Charts** (bar, hbar, line, area, pie, donut, scatter, kpi, map) are presentation: they name output
+columns and never change what is queried. `ir.ChartRules()` says what each type needs.
+
+### Validation and errors
+
+`ir.Validate(def, limits)` checks everything that needs no catalog: structure, ids, references between
+columns, calculation cycles, formula syntax and levels, parameter binding, pivot and sort cells, charts
+and the limits in `ir.Limits` (zero fields take `ir.DefaultLimits()`). `ir.Resolve(def, catalog, limits)`
+does the same and checks the definition against the catalog: entities, relations and fields exist,
+aggregations, operators, buckets, bands and transforms suit the field types, values fit their fields
+(including enum values), formulas type-check, dimensions do not cross a to-many relation, and a to-many
+measure's filter stays on its own rows. It returns an `*ir.Resolved` with each output column's type and
+level, the resolved fields and the checked formulas the compiler renders.
+
+The catalog is an interface, so the compiler implements it and tests use a fake:
+
+```go
+type Catalog interface {
+    HasEntity(key string) bool
+    EntityKeys() []string
+    Field(entity, key string) (ir.FieldInfo, bool)
+    FieldKeys(entity string) []string
+    Edge(entity, name string) (ir.EdgeInfo, bool)
+    EdgeNames(entity string) []string
+}
+```
+
+Every error is an `*ir.Error` in an `ir.Errors` list: a code to translate, a message for a person, a
+JSON pointer to the offending part and suggestions for unknown names, found by Damerau-Levenshtein
+distance. A formula error also carries its line, column and span:
+
+```text
+/columns/2/dimension/field: unknown field "nam" on customer; did you mean "customer.name"?
+/filters/and/1/value/0: unknown value "Canceld"; did you mean "Canceled"?
+/columns/4/calc: 1:1: unknown column [revnue]; did you mean [revenue]?
+```
+
+### Formulas
+
+A formula is a typed expression over the report's columns, the catalog's fields and the report's
+parameters:
+
+```text
+round([revenue] / nullif([miles], 0), 2)
+case when date_diff('day', {pickedUpAt}, {deliveredAt}) > 2 then 'late' else 'on time' end
+concat({customer.name}, ' (', {customer.code}, ')')
+sum({totalCharge}) / count()
+```
+
+- `[id]` is an output column, `{path.field}` a catalog field, `@name` a parameter.
+- Literals: exact decimal numbers (`0.1` stays 0.1), `'text'` with `''` for a quote, `true`, `false`,
+  `null`, `date '2026-01-31'` and `timestamp '2026-01-31T08:00:00Z'`.
+- Arithmetic promotes int to decimal to float; `int / int` is decimal and dividing by zero gives null.
+  Comparisons need comparable types, and `= null` is refused in favour of `is null`.
+- Dates and times are computed in the report time zone: `date_trunc`, `date_diff`, `extract` and
+  `today()` all bind the zone as a parameter.
+
+The grammar, loosest binding first:
+
+```text
+expr     = or
+or       = and { "or" and }
+and      = not { "and" not }
+not      = "not" not | compare
+compare  = concat [ ("=" | "!=" | "<>" | "<" | "<=" | ">" | ">=") concat | "is" ["not"] "null" ]
+concat   = additive { "||" additive }
+additive = term { ("+" | "-") term }
+term     = unary { ("*" | "/" | "%") unary }
+unary    = ("-" | "+") unary | primary
+primary  = number | string | "true" | "false" | "null" | ("date" | "timestamp") string
+         | "[" column "]" | "{" path "}" | "@" name | name "(" [ expr { "," expr } ] ")"
+         | "case" [ expr ] "when" expr "then" expr { "when" expr "then" expr } [ "else" expr ] "end"
+         | "(" expr ")"
+```
+
+`formula.Parse` builds the AST, `formula.Check` types it against a `formula.Env`, and `formula.Format`
+prints the canonical text, which parses back to the same tree. Each formula has a level: constant, row
+(usable as a dimension and in filters), aggregate (over measures) or window. Mixing a per-row field with
+per-group values outside an aggregate is an error that says which field to aggregate. A structured
+editor can send the AST as JSON instead of text, as in
+`{"op": "/", "args": [{"column": "revenue"}, {"column": "miles"}]}`; a definition stores whichever form
+it was given. Formulas are capped in length, depth and size (`formula.Limits`).
+
+Every function carries its signature, its result rule, whether it aggregates, and how it renders: a
+SQL template with argument positions (`round({0}, {1})`), never text a user typed.
+`formula.Coercion(from, to)` gives the conversion the checker asked for, such as `to_timestamp({0})`
+for an epoch used as a timestamp.
+
+### Formula reference
+
+The tables are generated from the registry by `go generate ./analytics/ir`.
+
+<!-- keel:formula-reference:start -->
+
+| Operator | Precedence | Meaning |
+|---|---|---|
+| `a or b` | 10 | True when either side is true. |
+| `a and b` | 20 | True when both sides are true. |
+| `not a` | 25 | True when the operand is false. |
+| `a = b` | 30 | Equal. |
+| `a != b` | 30 | Not equal; <> is accepted too. |
+| `a < b` | 30 | Less than. |
+| `a <= b` | 30 | Less than or equal. |
+| `a > b` | 30 | Greater than. |
+| `a >= b` | 30 | Greater than or equal. |
+| `a is null` | 30 | True when the operand is null. |
+| `a is not null` | 30 | True when the operand is not null. |
+| `a \|\| b` | 40 | Both sides as text, joined; null when either is null. |
+| `a + b` | 50 | Addition. |
+| `a - b` | 50 | Subtraction. |
+| `a * b` | 60 | Multiplication. |
+| `a / b` | 60 | Division; int / int is decimal, and dividing by zero gives null. |
+| `a % b` | 60 | Remainder of int or decimal division; by zero gives null. |
+| `-a` | 70 | Negation. |
+
+| Function | Returns | Kind | Meaning | Example |
+|---|---|---|---|---|
+| `if(condition: bool, then: any, else: any)` | the common type of its values | row | The second argument when the condition is true, else the third. | `if([miles] > 0, [revenue] / [miles], 0)` |
+| `case [subject] when condition then result … [else result] end` | the common type of its values | row | The result of the first branch whose condition holds (or whose value equals the subject), else the else branch or null. | `case when [margin] < 0 then 'loss' when [margin] < 0.1 then 'thin' else 'healthy' end` |
+| `coalesce(value: any, ...fallback: any)` | the common type of its values | row | The first argument that is not null. | `coalesce({customer.name}, 'Unknown')` |
+| `nullif(value: any, other: any)` | the common type of its values | row | Null when both arguments are equal, else the first. | `[revenue] / nullif([miles], 0)` |
+| `round(number: number, digits?: digits)` | decimal | row | The number rounded half away from zero to the given decimal places (0 when omitted). | `round([revenue] / [miles], 2)` |
+| `trunc(number: number, digits?: digits)` | decimal | row | The number truncated toward zero to the given decimal places (0 when omitted). | `trunc({weight} / 1000, 1)` |
+| `floor(number: number)` | decimal (float for a float) | row | The largest whole number not greater than the argument. | `floor([miles] / 100)` |
+| `ceil(number: number)` | decimal (float for a float) | row | The smallest whole number not less than the argument. | `ceil({weight} / 1000)` |
+| `abs(number: number)` | the type of number | row | The absolute value. | `abs([variance])` |
+| `greatest(value: ordered, ...other: ordered)` | the common type of its values | row | The largest of the arguments, ignoring nulls. | `greatest([billed], [quoted])` |
+| `least(value: ordered, ...other: ordered)` | the common type of its values | row | The smallest of the arguments, ignoring nulls. | `least([billed], [quoted])` |
+| `concat(...value: any)` | string | row | The arguments as text joined together; nulls are skipped. | `concat({firstName}, ' ', {lastName})` |
+| `lower(text: text)` | string | row | The text in lower case. | `lower({customer.code})` |
+| `upper(text: text)` | string | row | The text in upper case. | `upper({customer.code})` |
+| `trim(text: text)` | string | row | The text without leading and trailing spaces. | `trim({reference})` |
+| `length(text: text)` | int | row | The number of characters in the text. | `length({proNumber})` |
+| `date_trunc(unit: 'hour' \| 'day' \| 'week' \| 'month' \| 'quarter' \| 'year', value: temporal)` | timestamp | row | The instant the period containing the value starts, in the report time zone. | `date_trunc('month', {shippedAt})` |
+| `date_diff(unit: 'second' \| 'minute' \| 'hour' \| 'day' \| 'week' \| 'month' \| 'quarter' \| 'year', start: temporal, end: temporal)` | int | row | Whole units from start to end: elapsed time for seconds, minutes and hours, calendar boundaries crossed in the report time zone for days and longer. | `date_diff('day', {pickedUpAt}, {deliveredAt})` |
+| `extract(part: 'year' \| 'quarter' \| 'month' \| 'week' \| 'day' \| 'dow' \| 'isodow' \| 'doy' \| 'hour' \| 'minute', value: temporal)` | int | row | A part of the value's local date or time in the report time zone; dow counts from 0 on Sunday, isodow from 1 on Monday. | `extract('dow', {shippedAt})` |
+| `now()` | timestamp | row | The instant the statement started. | `date_diff('day', {dueAt}, now())` |
+| `today()` | date | row | Today's date in the report time zone. | `date_diff('day', {expiresOn}, today())` |
+| `count(value?: any)` | int | aggregate | The number of rows in the group, or of rows where the value is not null. | `count({moves.id})` |
+| `count_distinct(value: any)` | int | aggregate | The number of distinct non-null values in the group. | `count_distinct({customer.id})` |
+| `sum(number: number)` | the type of number | aggregate | The total of the values in the group. | `sum({totalCharge}) / sum({moves.distance})` |
+| `avg(number: number)` | decimal (float for a float) | aggregate | The mean of the values in the group. | `avg({weight})` |
+| `min(value: ordered)` | the type of value | aggregate | The smallest value in the group. | `min({shippedAt})` |
+| `max(value: ordered)` | the type of value | aggregate | The largest value in the group. | `max({deliveredAt})` |
+
+<!-- keel:formula-reference:end -->
+
+### Dashboards
+
+`ir.ApplyFilters(def, filters, params)` folds a dashboard's filters and parameters into one tile's
+report. A filter applies to reports of its entity when it has a value; a condition of the report on the
+same field (not bound to a parameter) takes the filter's operator and value; every other filter is ANDed
+on top with the report's own tree nested intact. Report parameters take the dashboard value named by the
+tile's binding, then the value of the same name. The stored definition is never modified.
+
+```go
+tile, params := ir.ApplyFilters(def, []ir.FilterValue{
+    {Filter: ir.DashboardFilter{ID: "status", Entity: "shipment", Field: "status", Op: ir.OpEq}, Value: "Completed"},
+}, ir.Params{Values: dashboardValues, Bindings: map[string]string{"window": "lookback"}})
+```
+
+The generated TypeScript exports `applyFilters` with the same behaviour, and a test runs both on the
+same cases.
+
+### Drill-through
+
+`ir.Drill(def, req, types)` rewrites an aggregate report into the records behind a clicked cell: the
+report's filters, the row's grouping values (a bucket inverted into the half-open range it covered in
+`req.Location`, a band into its range, a transformed dimension compared through its transform, a
+row-level calc compared as a calc), and the clicked measure's own filter and pivot scope. The caller
+chooses the record columns the reader may see; the report's dimensions across relations are appended.
+`types` gives field types so ranges hold the field's own values (`ir.CatalogTypes(catalog, entity)`
+adapts a catalog).
+
+### Versions, schema and TypeScript
+
+`ir.Version` is 2. `ir.Decode` upgrades older definitions; `ir.UpgradeFromTrenovaV1` converts Trenova's
+stored IR: field references become paths, computed specs become formulas, `having` by field and
+aggregation becomes a condition on a measure column (adding a hidden one when the report has none),
+totals become a total grouping, and pivots, parameters, display specs and charts carry over.
+
+`ir.Schema()` is the JSON Schema of a definition, generated from the Go types and their doc comments.
+`go generate ./analytics/ir` regenerates it, the TypeScript module (`tsgen.Generate`, which the keel CLI
+calls) and the formula reference above; a test fails when any of them is stale. The TypeScript module
+holds the definition types, the schema, the operator table per value type, chart and transform rules,
+the formula function registry and `applyFilters`, so a client builder imports the server's rules
+instead of copying them.
