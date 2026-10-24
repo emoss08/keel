@@ -54,7 +54,7 @@ type indexed struct {
 	joins   map[int32]int32
 }
 
-// NewRouter returns a Router over rollups.
+// NewRouter returns a Router over rollups. With a nil db it only matches: Route answers false.
 func NewRouter(db *keel.DB, o RouterOptions, rollups ...*Rollup) (*Router, error) {
 	o.Keys = o.Keys.WithDefaults()
 	if o.Now == nil {
@@ -114,6 +114,9 @@ func (rt *Router) index(r *Rollup) *indexed {
 // tenant has a slice pending refresh in the range it reads, or the rollup has not been built.
 // The report then reads its source tables.
 func (rt *Router) Route(ctx context.Context, res *ir.Resolved) (*Plan, bool) {
+	if rt.db == nil {
+		return nil, false
+	}
 	loc := time.UTC
 	if rt.o.Location != nil {
 		if l := rt.o.Location(ctx); l != nil {

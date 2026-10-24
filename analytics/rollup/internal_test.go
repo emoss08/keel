@@ -105,7 +105,7 @@ func TestCoarsens(t *testing.T) {
 }
 
 func TestBucketAndRangeSQL(t *testing.T) {
-	r := &Rollup{source: &schema.Table{Columns: []schema.Column{{Name: "on"}}}, unit: ir.BucketWeek, zoneName: "UTC"}
+	r := &Rollup{source: &schema.Table{Columns: []schema.Column{{Name: "on"}}}, unit: ir.BucketWeek, zoneName: "UTC", zone: time.UTC}
 	cases := []struct {
 		vt           schema.ValueType
 		bucket, span string
@@ -122,5 +122,18 @@ func TestBucketAndRangeSQL(t *testing.T) {
 		if got := r.rangeExpr("s", "b"); got != tc.span {
 			t.Errorf("range %v = %s", tc.vt, got)
 		}
+	}
+}
+
+func TestRangeInAZoneWithClockChanges(t *testing.T) {
+	chicago, err := time.LoadLocation("America/Chicago")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &Rollup{source: &schema.Table{Columns: []schema.Column{{Name: "at"}}}, unit: ir.BucketHour,
+		zoneName: "America/Chicago", zone: chicago, grainType: schema.ValueTime}
+	want := `s."at" >= (b - interval '3 hours') AND s."at" < (((b AT TIME ZONE 'America/Chicago') + interval '1 hour') AT TIME ZONE 'America/Chicago' + interval '3 hours') AND date_trunc('hour', s."at", 'America/Chicago') = b`
+	if got := r.rangeExpr("s", "b"); got != want {
+		t.Fatalf("range = %s\nwant    %s", got, want)
 	}
 }

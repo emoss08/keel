@@ -3,6 +3,7 @@ package rollup
 import (
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/emoss08/keel/analytics/ir"
 	"github.com/emoss08/keel/schema"
@@ -87,19 +88,35 @@ func (r *Rollup) upperExpr(b string) string {
 	return "((" + b + " AT TIME ZONE " + zone + ") + " + interval(r.unit) + ") AT TIME ZONE " + zone
 }
 
+// dstMargin widens the range a bucket is read through in a zone with clock changes: a bucket's
+// rows lie within its wall-clock range give or take the largest clock change, two hours.
+const dstMargin = "interval '3 hours'"
+
 // rangeExpr is true for the source rows under alias in the bucket starting at b, written on the
-// grain column itself so an index on it serves the read.
+// grain column itself so an index on it serves the read. In UTC the range is exact; in another
+// zone a local time a clock change repeats or skips can put a row's bucket outside its wall-clock
+// range, so the range is widened by dstMargin and the bucket compared too.
 func (r *Rollup) rangeExpr(alias, b string) string {
 	c := qcol(alias, r.source.Columns[r.grain].Name)
-	hi := r.upperExpr(b)
+	lo, hi := b, r.upperExpr(b)
+	exact := r.grainType == schema.ValueDate || r.zone == time.UTC
+	if !exact {
+		lo, hi = "("+b+" - "+dstMargin+")", "("+hi+" + "+dstMargin+")"
+	}
+	var span string
 	switch r.grainType {
 	case schema.ValueEpoch:
-		return c + " >= extract(epoch FROM " + b + ")::int8 AND " + c + " < extract(epoch FROM " + hi + ")::int8"
+		span = c + " >= extract(epoch FROM " + lo + ")::int8 AND " + c + " < extract(epoch FROM " + hi + ")::int8"
 	case schema.ValueDate:
 		zone := lit(r.zoneName)
-		return c + " >= (" + b + " AT TIME ZONE " + zone + ")::date AND " + c + " < ((" + hi + ") AT TIME ZONE " + zone + ")::date"
+		span = c + " >= (" + lo + " AT TIME ZONE " + zone + ")::date AND " + c + " < ((" + hi + ") AT TIME ZONE " + zone + ")::date"
+	default:
+		span = c + " >= " + lo + " AND " + c + " < " + hi
 	}
-	return c + " >= " + b + " AND " + c + " < " + hi
+	if exact {
+		return span
+	}
+	return span + " AND " + r.bucketExpr(alias) + " = " + b
 }
 
 // tenantKeyExpr is the data-versions tenant key of a source row under alias (see
