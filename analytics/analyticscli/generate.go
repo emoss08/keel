@@ -21,16 +21,16 @@ func (e *env) ts(args []string) error {
 		return err
 	}
 	if path == "" {
-		return keelcli.Usagef("analytics ts: -out is required")
+		return keelcli.Usagef("analyticscli: ts: -out is required")
 	}
 	if check {
 		if err := tsgen.Check(path); err != nil {
-			return problems(fmt.Errorf("analytics ts: %w", err))
+			return problems(fmt.Errorf("analyticscli: ts: %w", err))
 		}
 		return e.wrote(path, true)
 	}
 	if err := tsgen.Write(path); err != nil {
-		return fmt.Errorf("analytics ts: %w", err)
+		return fmt.Errorf("analyticscli: ts: %w", err)
 	}
 	return e.wrote(path, false)
 }
@@ -42,7 +42,7 @@ func (e *env) i18n(args []string) error {
 		return err
 	}
 	if path == "" {
-		return keelcli.Usagef("analytics i18n: -out is required")
+		return keelcli.Usagef("analyticscli: i18n: -out is required")
 	}
 	if check {
 		if err := CheckMessages(path, e.cfg.Tables, e.cfg.Keys); err != nil {
@@ -68,7 +68,7 @@ func (e *env) describe(args []string) error {
 		return err
 	}
 	if err := writeFile(path, []byte(text)); err != nil {
-		return fmt.Errorf("analytics describe: %w", err)
+		return fmt.Errorf("analyticscli: describe: %w", err)
 	}
 	return e.wrote(path, false)
 }
@@ -154,10 +154,10 @@ func encodeMessages(m map[string]string) ([]byte, error) {
 func WriteMessages(path string, tables []*schema.Table, keys rollup.Keys) error {
 	data, err := encodeMessages(Messages(tables, keys))
 	if err != nil {
-		return fmt.Errorf("analytics i18n: %w", err)
+		return fmt.Errorf("analyticscli: i18n: %w", err)
 	}
 	if err := writeFile(path, data); err != nil {
-		return fmt.Errorf("analytics i18n: %w", err)
+		return fmt.Errorf("analyticscli: i18n: %w", err)
 	}
 	return nil
 }
@@ -168,11 +168,11 @@ func CheckMessages(path string, tables []*schema.Table, keys rollup.Keys) error 
 	want := Messages(tables, keys)
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return fmt.Errorf("analytics i18n: %w", err)
+		return fmt.Errorf("analyticscli: i18n: %w", err)
 	}
 	var got map[string]string
 	if err := json.Unmarshal(data, &got); err != nil {
-		return fmt.Errorf("analytics i18n: %s: %w", path, err)
+		return fmt.Errorf("analyticscli: i18n: %s: %w", path, err)
 	}
 	var diff []string
 	for k, v := range want {
@@ -187,10 +187,10 @@ func CheckMessages(path string, tables []*schema.Table, keys rollup.Keys) error 
 	}
 	if len(diff) > 0 {
 		slices.Sort(diff)
-		return fmt.Errorf("analytics i18n: %s is out of date at %v; regenerate it", path, diff)
+		return fmt.Errorf("analyticscli: i18n: %s is out of date at %v; regenerate it", path, diff)
 	}
 	if canonical, err := encodeMessages(want); err == nil && !bytes.Equal(canonical, data) {
-		return fmt.Errorf("analytics i18n: %s is not formatted as generated; regenerate it", path)
+		return fmt.Errorf("analyticscli: i18n: %s is not formatted as generated; regenerate it", path)
 	}
 	return nil
 }

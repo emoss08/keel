@@ -83,7 +83,7 @@ func Run(ctx context.Context, cfg Config, args []string, out io.Writer) error {
 	}
 	en.parse = func(fs *flag.FlagSet, args []string) error {
 		if err := fs.Parse(args); err != nil {
-			return keelcli.Usagef("analytics: %v", err)
+			return keelcli.Usagef("analyticscli: %v", err)
 		}
 		return nil
 	}
@@ -118,7 +118,7 @@ type env struct {
 // run dispatches args to a command.
 func (e *env) run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return keelcli.Usagef("analytics: name a command\n\n%s", usage)
+		return keelcli.Usagef("analyticscli: name a command\n\n%s", usage)
 	}
 	switch args[0] {
 	case "help", "-h", "-help", "--help":
@@ -133,7 +133,7 @@ func (e *env) run(ctx context.Context, args []string) error {
 	case "rollups":
 		return e.rollups(ctx, args[1:])
 	}
-	return keelcli.Usagef("analytics: unknown command %q\n\n%s", args[0], usage)
+	return keelcli.Usagef("analyticscli: unknown command %q\n\n%s", args[0], usage)
 }
 
 // outputFlags parses a command that writes a file: -out and, when check is set, -check.
@@ -148,7 +148,7 @@ func (e *env) outputFlags(name string, args []string, check bool) (string, bool,
 		return "", false, err
 	}
 	if fs.NArg() > 0 {
-		return "", false, keelcli.Usagef("analytics %s: unexpected arguments %s", name, strings.Join(fs.Args(), " "))
+		return "", false, keelcli.Usagef("analyticscli: %s: unexpected arguments %s", name, strings.Join(fs.Args(), " "))
 	}
 	return *out, doCheck != nil && *doCheck, nil
 }

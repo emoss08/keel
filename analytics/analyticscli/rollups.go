@@ -17,7 +17,7 @@ import (
 // rollups dispatches the rollups commands.
 func (e *env) rollups(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return keelcli.Usagef("analytics rollups: name a command: migration, refresh or pending")
+		return keelcli.Usagef("analyticscli: rollups: name a command: migration, refresh or pending")
 	}
 	switch args[0] {
 	case "migration":
@@ -27,7 +27,7 @@ func (e *env) rollups(ctx context.Context, args []string) error {
 	case "pending":
 		return e.rollupPending(ctx, args[1:])
 	}
-	return keelcli.Usagef("analytics rollups: unknown command %q: want migration, refresh or pending", args[0])
+	return keelcli.Usagef("analyticscli: rollups: unknown command %q: want migration, refresh or pending", args[0])
 }
 
 // rollupMigration writes or checks the rollups' migrations.
@@ -37,7 +37,7 @@ func (e *env) rollupMigration(args []string) error {
 		return err
 	}
 	if dir == "" {
-		return keelcli.Usagef("analytics rollups migration: -out is required")
+		return keelcli.Usagef("analyticscli: rollups migration: -out is required")
 	}
 	if check {
 		if err := rollup.CheckMigrations(dir, e.cfg.Rollups...); err != nil {
@@ -133,7 +133,7 @@ func (e *env) rollupPending(ctx context.Context, args []string) error {
 // pick returns the rollups named in a comma-separated list, or every rollup for an empty one.
 func (e *env) pick(list string) ([]*rollup.Rollup, error) {
 	if len(e.cfg.Rollups) == 0 {
-		return nil, keelcli.Usagef("analytics rollups: the application declares no rollups")
+		return nil, keelcli.Usagef("analyticscli: rollups: the application declares no rollups")
 	}
 	if strings.TrimSpace(list) == "" {
 		return e.cfg.Rollups, nil
@@ -143,7 +143,7 @@ func (e *env) pick(list string) ([]*rollup.Rollup, error) {
 		name = strings.TrimSpace(name)
 		i := slices.IndexFunc(e.cfg.Rollups, func(r *rollup.Rollup) bool { return r.Name() == name })
 		if i < 0 {
-			return nil, keelcli.Usagef("analytics rollups: unknown rollup %q", name)
+			return nil, keelcli.Usagef("analyticscli: rollups: unknown rollup %q", name)
 		}
 		out = append(out, e.cfg.Rollups[i])
 	}
@@ -153,11 +153,11 @@ func (e *env) pick(list string) ([]*rollup.Rollup, error) {
 // open opens the database through Config.Open.
 func (e *env) open(ctx context.Context) (*keel.DB, error) {
 	if e.cfg.Open == nil {
-		return nil, errors.New("analytics rollups: Config.Open is not set")
+		return nil, errors.New("analyticscli: rollups: Config.Open is not set")
 	}
 	db, err := e.cfg.Open(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("analytics rollups: open the database: %w", err)
+		return nil, fmt.Errorf("analyticscli: rollups: open the database: %w", err)
 	}
 	return db, nil
 }
