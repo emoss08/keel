@@ -1,0 +1,305 @@
+package analytics
+
+import (
+	"slices"
+	"strconv"
+	"strings"
+
+	"github.com/emoss08/keel"
+	"github.com/emoss08/keel/analytics/formula"
+	"github.com/emoss08/keel/analytics/ir"
+	"github.com/emoss08/keel/schema"
+)
+
+// fanout builds the statement of the distinct counts across to-many paths that pre-aggregation
+// cannot answer exactly (a distinct count of values two parents can share), declares it on the
+// outer statement and joins it by the grouping columns and level. The statement reads the
+// entity's rows with the report's filters, joins each to-many path's rows (each table read in its
+// own CTE, with its tenant predicate and row rules), groups by the same grouping sets and counts
+// distinct values over the joined rows, which a fan-out cannot inflate.
+func (c *compiler) fanout(o *keel.DynQuery) (*keel.DynCTE, error) {
+	q := c.source()
+	f := newFrame(c, q)
+	if err := c.where(f); err != nil {
+		return nil, err
+	}
+	ch, err := c.chainFor(f)
+	if err != nil {
+		return nil, err
+	}
+	s := stage{q: q, exprs: map[string]keel.DynExpr{}}
+	for _, p := range c.grouped {
+		e, err := f.column(p, "")
+		if err != nil {
+			return nil, err
+		}
+		s.selectAs(e, label(p.def.ID, ""))
+	}
+	for _, p := range c.cols {
+		if !p.fanout {
+			continue
+		}
+		for _, cell := range c.cellsOf(p) {
+			e, err := ch.distinct(p, cell)
+			if err != nil {
+				return nil, err
+			}
+			s.selectAs(e, label(p.def.ID, cell))
+		}
+	}
+	if err := c.grouping(f, s); err != nil {
+		return nil, err
+	}
+	cte := o.With(q)
+	var on []keel.Pred
+	for _, p := range c.grouped {
+		l := label(p.def.ID, "")
+		on = append(on, o.Path(l).IsDistinctFrom(cte.Col(l)).Not())
+	}
+	if len(c.sets) > 0 {
+		on = append(on, o.Path(levelLabel).Eq(cte.Col(levelLabel)))
+	}
+	o.LeftJoin(cte, on...)
+	return cte, nil
+}
+
+// chain joins the rows of to-many paths to a fan-out statement, one CTE per to-many edge.
+type chain struct {
+	c      *compiler
+	f      *frame
+	levels map[string]*chainLevel
+}
+
+// chainLevel is the CTE of one to-many edge's rows: the labels of the columns it selects, by the
+// path suffix they read from the edge's table.
+type chainLevel struct {
+	cte    *keel.DynCTE
+	labels map[string]string
+}
+
+// chainFor builds the chain of every to-many path the fan-out distinct counts read, their filters
+// included.
+func (c *compiler) chainFor(f *frame) (*chain, error) {
+	ch := &chain{c: c, f: f, levels: map[string]*chainLevel{}}
+	needs := map[string][]string{}
+	var paths []fieldPath
+	for _, p := range c.cols {
+		if !p.fanout {
+			continue
+		}
+		fp, err := c.resolvePath(p.def.Measure.Field)
+		if err != nil {
+			return nil, err
+		}
+		paths = append(paths, fp)
+		var ferr error
+		p.def.Measure.Filter.Walk(func(cond *ir.Filter) {
+			if cond.Field == "" || ferr != nil {
+				return
+			}
+			fq, err := c.resolvePath(cond.Field)
+			if err != nil {
+				ferr = err
+				return
+			}
+			paths = append(paths, fq)
+		})
+		if ferr != nil {
+			return nil, ferr
+		}
+	}
+	for _, fp := range paths {
+		addNeeds(needs, fp)
+	}
+	keys := make([]string, 0, len(needs))
+	for k := range needs {
+		keys = append(keys, k)
+	}
+	slices.SortFunc(keys, func(a, b string) int { return depth(a) - depth(b) })
+	for _, k := range keys {
+		if err := ch.level(k, needs[k], paths); err != nil {
+			return nil, err
+		}
+	}
+	return ch, nil
+}
+
+// depth counts the edges of a level key.
+func depth(key string) int { return strings.Count(key, ".") + 1 }
+
+// addNeeds records what each to-many level of a path must select: the path's field at its last
+// level, and at earlier levels the key the next level joins on.
+func addNeeds(needs map[string][]string, fp fieldPath) {
+	var many []int
+	for i, e := range fp.via {
+		if e.ToMany {
+			many = append(many, i)
+		}
+	}
+	for j, at := range many {
+		key := fp.via[:at+1].String()
+		if j == len(many)-1 {
+			needs[key] = appendNew(needs[key], suffix(fp.via[at+1:], colName(fp.field)))
+			continue
+		}
+		next := fp.via[many[j+1]]
+		for _, local := range next.relation().Local {
+			needs[key] = appendNew(needs[key], suffix(fp.via[at+1:many[j+1]], next.From.Table.Columns[local].Name))
+		}
+	}
+}
+
+// suffix joins relation names and a column name into a path read from a level's table.
+func suffix(via Path, col string) string {
+	return strings.Join(append(relNames(via), col), ".")
+}
+
+// appendNew appends s unless the list holds it.
+func appendNew(list []string, s string) []string {
+	if slices.Contains(list, s) {
+		return list
+	}
+	return append(list, s)
+}
+
+// level declares the CTE of one to-many edge and joins it to its parent level.
+func (ch *chain) level(key string, cols []string, paths []fieldPath) error {
+	var fp fieldPath
+	at := -1
+	for _, p := range paths {
+		for i := range p.via {
+			if p.via[:i+1].String() == key {
+				fp, at = p, i
+			}
+		}
+	}
+	edge := fp.via[at]
+	rel := edge.relation()
+	parent, err := ch.parentKeys(fp, at)
+	if err != nil {
+		return err
+	}
+	cq := keel.DynFrom(edge.Target.Table)
+	lv := &chainLevel{labels: map[string]string{}}
+	var sel []keel.DynExpr
+	for i, r := range ch.remote(rel) {
+		sel = append(sel, cq.Path(edge.Target.Table.Columns[r].Name).As("r"+strconv.Itoa(i+1)))
+	}
+	for i, col := range cols {
+		l := "v" + strconv.Itoa(i+1)
+		sel = append(sel, cq.Path(strings.Split(col, ".")...).As(l))
+		lv.labels[col] = l
+	}
+	cq.Select(sel...)
+	if err := cq.Err(); err != nil {
+		return err
+	}
+	q := ch.f.q
+	lv.cte = q.With(cq)
+	if rel.Kind == schema.ManyToMany {
+		jt := q.With(joinTableQuery(rel))
+		q.Join(jt, jt.Col("l").Eq(parent[0]))
+		q.Join(lv.cte, lv.cte.Col("r1").Eq(jt.Col("r")))
+	} else {
+		on := make([]keel.Pred, len(parent))
+		for i, p := range parent {
+			on[i] = lv.cte.Col("r" + strconv.Itoa(i+1)).Eq(p)
+		}
+		q.Join(lv.cte, on...)
+	}
+	ch.levels[key] = lv
+	return nil
+}
+
+// remote returns the columns of a to-many edge's table it joins on: the relation's remote keys,
+// or for many-to-many the target key the join table refers to.
+func (ch *chain) remote(rel *schema.Relation) []int32 {
+	if rel.Kind == schema.ManyToMany {
+		return rel.Remote[:1]
+	}
+	return rel.Remote
+}
+
+// parentKeys returns the values the to-many edge at index at of a path joins on, on the parent
+// side: columns of the entity through to-one edges, or columns the previous level selected.
+func (ch *chain) parentKeys(fp fieldPath, at int) ([]keel.DynExpr, error) {
+	prev := -1
+	for i := at - 1; i >= 0; i-- {
+		if fp.via[i].ToMany {
+			prev = i
+			break
+		}
+	}
+	rel := fp.via[at].relation()
+	locals := rel.Local
+	if rel.Kind == schema.ManyToMany {
+		locals = rel.Local[:1]
+	}
+	out := make([]keel.DynExpr, len(locals))
+	for i, local := range locals {
+		name := fp.via[at].From.Table.Columns[local].Name
+		if prev < 0 {
+			out[i] = ch.f.q.Path(append(relNames(fp.via[:at]), name)...)
+		} else {
+			lv := ch.levels[fp.via[:prev+1].String()]
+			out[i] = lv.cte.Col(lv.labels[suffix(fp.via[prev+1:at], name)])
+		}
+		if err := out[i].Err(); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+// joinTableQuery reads a many-to-many relation's join table: its key to the parent ("l") and
+// to the target ("r").
+func joinTableQuery(rel *schema.Relation) *keel.DynQuery {
+	t := &schema.Table{Name: rel.JoinTable, Quoted: rel.JoinQuoted, Alias: rel.JoinAlias,
+		Columns: []schema.Column{{Name: rel.JoinLocal[0], Quoted: rel.JoinLocalQ[0]},
+			{Name: rel.JoinRemote[0], Quoted: rel.JoinRemoteQ[0]}}}
+	q := keel.DynFrom(t)
+	return q.Select(q.Path(rel.JoinLocal[0]).As("l"), q.Path(rel.JoinRemote[0]).As("r"))
+}
+
+// value returns a field of a to-many path from its last level's CTE.
+func (ch *chain) value(fp fieldPath) keel.DynExpr {
+	last := -1
+	for i, e := range fp.via {
+		if e.ToMany {
+			last = i
+		}
+	}
+	lv := ch.levels[fp.via[:last+1].String()]
+	return lv.cte.Col(lv.labels[suffix(fp.via[last+1:], colName(fp.field))])
+}
+
+// distinct returns a fan-out distinct count for a pivot cell, with its measure filter over the
+// joined rows.
+func (ch *chain) distinct(p *colPlan, cell string) (keel.DynExpr, error) {
+	m := p.def.Measure
+	fp, err := ch.c.resolvePath(m.Field)
+	if err != nil {
+		return keel.DynExpr{}, err
+	}
+	pivot, err := ch.f.pivotPred(cell)
+	if err != nil {
+		return keel.DynExpr{}, err
+	}
+	at := "/columns/" + itoa(ch.c.indexOf(p)) + "/measure/filter"
+	filter, err := ch.c.filterPred(m.Filter, at, condEnv{scope: scopeMeasure,
+		field: func(path string) (subject, func(keel.Pred) keel.Pred, error) {
+			fq, err := ch.c.resolvePath(path)
+			if err != nil {
+				return subject{}, nil, err
+			}
+			return subject{e: ch.value(fq), t: fq.field.Type}, identity, nil
+		},
+		formula: func(t *formula.Typed) (keel.DynExpr, error) {
+			return keel.DynExpr{}, fail(CodeNotAllowed, at, "a distinct count across a to-many relation filters by fields, not calculations")
+		},
+	})
+	if err != nil {
+		return keel.DynExpr{}, err
+	}
+	return aggregate(ir.AggCountDistinct, ch.value(fp), andPred(filter, pivot), formula.Int), nil
+}
