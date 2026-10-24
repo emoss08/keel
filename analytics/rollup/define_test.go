@@ -31,7 +31,7 @@ func TestDefineRejects(t *testing.T) {
 		{"column through a relation", func() (*rollup.Rollup, error) {
 			return rollup.Define("r", fleetdb.CustomersSchema(), rollup.Day(fleetdb.Customers.CreatedAt),
 				rollup.Dims(s.Customer().Name), count)
-		}, "taken from another handle"},
+		}, "taken through a relation"},
 		{"grain not a time", func() (*rollup.Rollup, error) {
 			return rollup.Define("r", ship, rollup.Day(s.Weight), nil, count)
 		}, "holds neither dates, times nor epochs"},
