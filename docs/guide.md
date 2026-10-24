@@ -1782,20 +1782,54 @@ page, err := s.
 | `Next` | the cursor of the following page; empty on the last page |
 | `Total` | the number of matching rows when the request asked for it, capped at its limit |
 | `TotalCapped` | `Total` stopped at the limit ("10,000+") |
+| `CursorAt(i)` | the cursor that resumes after `Items[i]`: a GraphQL connection's edge cursor |
+
+`CursorAt(i)` encodes row `i`'s order values in the format of `Next` (which is the cursor of the
+last item when a page follows), without a statement: `After(page.CursorAt(i), n)` reads the `n`
+rows after that row. A connection gives every edge its cursor and takes `endCursor` from the last
+one, so a client can resume after any row it saw:
+
+```go
+page, err := s.Order(s.CreatedAt.Desc()).Page(ctx, db, keel.After(after, first))
+edges := make([]Edge, len(page.Items))
+for i, sh := range page.Items {
+    edges[i] = Edge{Node: sh, Cursor: page.CursorAt(i)}
+}
+info := PageInfo{HasNextPage: page.Next != ""}
+if n := len(edges); n > 0 {
+    info.EndCursor = edges[n-1].Cursor
+}
+```
 
 Rules:
 
-- The order may use columns of the query's table only. keel appends every primary key column the
-  order does not already name, in the direction of the order's last term, so each row has a unique
-  position. A query without an order pages by primary key.
-- The cursor is opaque (base64url) and encodes the order values of the page's last row. Pass it only
-  to the query that produced it; a cursor whose number of values does not match the order fails.
+- The order may use columns of the query's table, columns of to-one relations (belongs, one and
+  pick paths: `s.Customer().Name.Asc()`, `keel.ResolvePath(s, "customer", "name").Desc()`) and
+  expressions (`keel.Desc(keel.Raw("coalesce(?, ?)", s.Weight, 0))`, `s.Customer().Name.Lower().Asc()`).
+  A relation in the order is LEFT JOINed with its tenant condition, the same join a `Load` or a
+  filter on that path uses. A column of a to-many relation is refused.
+- keel appends every primary key column the order does not already name, in the direction of the
+  order's last term, so each row has a unique position. A query without an order pages by primary
+  key.
+- A column of the table is read from the row for the cursor. A relation column or an expression is
+  selected once more, as a hidden value after the row's columns, and decoded into the cursor's
+  value: a string, an integer, a float, a bool, a time, bytes or NULL (a uuid as its text). An
+  expression of another type (an interval, an array) fails the page.
+- NULLs: a relation column is NULL when the related row is missing, and an expression may be NULL,
+  so both are treated as nullable. `NullsFirst` and `NullsLast` (default: last ascending, first
+  descending, as Postgres sorts) place NULLs the same way in the `ORDER BY` and in the predicate that
+  resumes after a cursor holding NULL.
+- The cursor is opaque (base64url) and encodes the order values of one row. Pass it only to the
+  query that produced it; a cursor whose number of values does not match the order fails.
 - `size` must be positive.
 
-When every order term sorts the same way, none uses `NullsFirst` or `NullsLast` and no column is
-nullable, keel compares the position as one row, `(created_at, id, …) < ($3, $4, …)`, which a
-matching composite index serves. Otherwise it expands an `OR` chain that places NULLs as the order
-does. See [Performance notes](#performance-notes) for the index.
+When every order term sorts the same way, none uses `NullsFirst` or `NullsLast` and none can be
+NULL (columns of the table that are not nullable), keel compares the position as one row,
+`(created_at, id, …) < ($3, $4, …)`, which a matching composite index serves. Otherwise it expands
+an `OR` chain that places NULLs as the order does, writing an expression in parentheses. See
+[Performance notes](#performance-notes) for the index; a page ordered by a relation's column is
+served by the relation's index only as a join, so order a large table by its own columns (a
+denormalised copy of the related value, kept by a trigger) when it must page fast at any depth.
 
 ### Each
 
@@ -2107,7 +2141,12 @@ last one; `Limit` and `Offset` do not mix with `Page`.
 ```go
 res, err := q.Order(pro.Desc()).Page(ctx, db, keel.After(cursor, 50))
 next := res.Next
+rowCursor := res.CursorAt(3) // resumes after row 3
 ```
+
+`res.CursorAt(i)` is the cursor of row `i` in the format of `Next`, made from the row's order
+values, hidden order columns included; it is empty on a result `Page` did not read. An order term
+on a bytea or JSON column fails the page.
 
 The page wraps the query (`SELECT k.c1, … FROM (query) k WHERE (k.c1, k.c2) < ($n, $m) ORDER BY …
 LIMIT 51`); Postgres flattens the wrapper of an ungrouped query, so an index on the order columns

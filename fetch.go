@@ -8,13 +8,16 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// fetchOpts adds keyset pagination and a capped count to a fetch.
+// fetchOpts adds keyset pagination, hidden values and a capped count to a fetch.
 type fetchOpts struct {
 	keyset    func(r *render)
 	extraCols []int32
-	limit     int64
-	countCap  int64
-	count     *int64
+	// tail are expressions selected after the rows' columns; tailScan decodes them for each row.
+	tail     []Expr
+	tailScan tailScanner
+	limit    int64
+	countCap int64
+	count    *int64
 	// sizeHint overrides the expected row count (One expects one row but limits to two).
 	sizeHint int
 }
@@ -152,10 +155,12 @@ func (q *query) prepareRows(ctx context.Context, run *runner, fo fetchOpts, emit
 
 	r := newRender(run.sc, ctx, run.db)
 	defer r.recycle()
-	plan := q.renderSelect(r, root, selectOpts{keyset: fo.keyset, extraCols: fo.extraCols, limit: fo.limit})
+	plan := q.renderSelect(r, root, selectOpts{keyset: fo.keyset, extraCols: fo.extraCols, limit: fo.limit,
+		tail: fo.tail})
 	if r.err != nil {
 		return nil, r.err
 	}
+	plan.tailScan = fo.tailScan
 	plan.track()
 	plan.sizeHint = fo.rowHint(q)
 	main := &stmt{sql: string(r.buf), args: r.argsCopy(), op: "select", table: root.table.Name,

@@ -177,12 +177,13 @@ func (n *lnode) selectedColumns(extra []int32, system bool) []int32 {
 	return cols
 }
 
-// selectOpts shapes a SELECT beyond its query: extra filters, columns and joins, keyset pages,
-// counts, and a FROM item that replaces the table (prefiltered when it applies the tenant and
+// selectOpts shapes a SELECT beyond its query: extra filters, columns and joins, expressions
+// selected after the rows' columns (tail), keyset pages, counts, and a FROM item that replaces the table (prefiltered when it applies the tenant and
 // interceptor predicates itself).
 type selectOpts struct {
 	extraWhere func(r *render, alias string)
 	extraCols  []int32
+	tail       []Expr
 	keyset     func(r *render)
 	limit      int64
 	countOnly  bool
@@ -336,6 +337,14 @@ func (q *query) renderSelect(r *render, sn *lnode, o selectOpts) *selectPlan {
 				n.presence = presenceOf(plan.cols, ni, pc)
 			}
 		}
+		for _, e := range o.tail {
+			if !first {
+				r.s(", ")
+			}
+			first = false
+			e.writeSQL(r)
+		}
+		plan.tail = len(o.tail)
 	})
 
 	var group, having, windows, order []byte

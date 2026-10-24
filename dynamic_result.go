@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"iter"
 	"math"
 	"strconv"
@@ -245,6 +246,25 @@ type DynResult struct {
 	Next    string
 
 	arena dynArena
+	keys  []DynColumn
+}
+
+// CursorAt returns the cursor that resumes the page after row i: Page with After(res.CursorAt(i),
+// n) reads the n rows that follow it. It is the format of Next, computed from the row's order
+// values (hidden order columns included) without a statement. It returns "" on a result that Page
+// did not read, and panics when i is out of range.
+func (res *DynResult) CursorAt(i int) string {
+	if res.keys == nil {
+		return ""
+	}
+	if i < 0 || i >= res.Rows {
+		panic(fmt.Sprintf("keel: CursorAt(%d) on a page of %d rows", i, res.Rows))
+	}
+	b := make([]byte, 0, 64)
+	for k := range res.keys {
+		b = appendCursorValue(b, res.keys[k].Value(i))
+	}
+	return base64.RawURLEncoding.EncodeToString(b)
 }
 
 // Column returns the column labelled name, or nil.
@@ -577,6 +597,13 @@ func decodeUUIDBinary(c *DynColumn, src []byte, a *dynArena) error {
 		return errf("invalid uuid of %d bytes", len(src))
 	}
 	d := a.alloc(36)
+	encodeUUID(d, src)
+	c.String = append(c.String, unsafe.String(unsafe.SliceData(d), len(d)))
+	return nil
+}
+
+// encodeUUID writes the canonical text of the 16 bytes of a uuid in src into the 36 bytes of d.
+func encodeUUID(d, src []byte) {
 	hex.Encode(d[0:8], src[0:4])
 	d[8] = '-'
 	hex.Encode(d[9:13], src[4:6])
@@ -586,8 +613,6 @@ func decodeUUIDBinary(c *DynColumn, src []byte, a *dynArena) error {
 	hex.Encode(d[19:23], src[8:10])
 	d[23] = '-'
 	hex.Encode(d[24:], src[10:16])
-	c.String = append(c.String, unsafe.String(unsafe.SliceData(d), len(d)))
-	return nil
 }
 
 // decodeOther decodes a type the columnar path has no vector for (arrays, ranges, intervals)
@@ -1009,21 +1034,15 @@ func (q *DynQuery) pagePlan(p PageRequest) (*dynPage, error) {
 func (q *DynQuery) writePage(r *render, pg *dynPage) {
 	t := &schema.Table{Name: "k", Quoted: `"k"`, Alias: "k"}
 	for i := range pg.width {
-		t.Columns = append(t.Columns, schema.Column{Name: outputName(i), Quoted: outputName(i),
-			Flags: schema.FlagNullable})
-	}
-	for _, o := range pg.order {
-		if o.notNull {
-			t.Columns[o.out].Flags = 0
-		}
+		t.Columns = append(t.Columns, schema.Column{Name: outputName(i), Quoted: outputName(i)})
 	}
 	k := &Ref{Table: t}
 	_, ka := r.push(k, joinNone, false)
 	defer r.pop()
-	orders := make([]Order, len(pg.order))
+	terms := make([]keyTerm, len(pg.order))
 	for i, o := range pg.order {
-		c := Col{Ref: k, Index: int32(o.out)}
-		orders[i] = Order{e: c, col: &c, desc: o.desc, nulls: o.nulls}
+		terms[i] = keyTerm{e: Col{Ref: k, Index: int32(o.out)}, desc: o.desc, nulls: o.nulls,
+			nullable: !o.notNull, base: -1}
 	}
 	r.s("SELECT ")
 	for i := range pg.width {
@@ -1042,37 +1061,40 @@ func (q *DynQuery) writePage(r *render, pg *dynPage) {
 	r.s(ka)
 	if pg.after != nil {
 		r.s(" WHERE ")
-		writeKeyset(r, orders, pg.after)
+		writeKeyset(r, terms, pg.after)
 	}
 	r.s(" ORDER BY ")
-	for i, o := range orders {
+	for i, kt := range terms {
 		if i > 0 {
 			r.s(", ")
 		}
-		o.writeSQL(r)
+		Order{e: kt.e, desc: kt.desc, nulls: kt.nulls}.writeSQL(r)
 	}
 	r.s(" LIMIT ")
 	r.int(int64(pg.size) + 1)
 }
 
-// finish trims a page's extra row, sets its cursor from the last row it keeps and drops the hidden
-// columns.
+// finish trims a page's extra row, keeps the order columns for the rows' cursors, sets Next from
+// the last row it keeps and drops the hidden columns.
 func (pg *dynPage) finish(res *DynResult, visible int) error {
-	if res.Rows > pg.size {
-		last := pg.size - 1
-		vals := make([]byte, 0, 64)
-		for _, o := range pg.order {
-			c := &res.Columns[o.out]
-			if c.Type == TypeBytes || c.Type == TypeJSON {
-				return errf("Page cannot order by the %s column %d", c.Type, o.out+1)
-			}
-			vals = appendCursorValue(vals, c.Value(last))
+	for _, o := range pg.order {
+		if c := &res.Columns[o.out]; c.Type == TypeBytes || c.Type == TypeJSON {
+			return errf("Page cannot order by the %s column %d", c.Type, o.out+1)
 		}
-		res.Next = base64.RawURLEncoding.EncodeToString(vals)
+	}
+	more := res.Rows > pg.size
+	if more {
 		for i := range res.Columns {
 			res.Columns[i].truncate(pg.size)
 		}
 		res.Rows = pg.size
+	}
+	res.keys = make([]DynColumn, len(pg.order))
+	for i, o := range pg.order {
+		res.keys[i] = res.Columns[o.out]
+	}
+	if more {
+		res.Next = res.CursorAt(pg.size - 1)
 	}
 	res.hide(visible)
 	return nil

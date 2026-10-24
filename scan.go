@@ -9,6 +9,7 @@ import (
 
 	"github.com/emoss08/keel/schema"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
@@ -28,7 +29,15 @@ type selectPlan struct {
 	// sizeHint is the expected number of base rows. Row slabs start at this size, so a statement
 	// that returns as many rows as expected allocates each table's rows once.
 	sizeHint int
+	// tail is the number of result columns after the rows' columns, which tailScan decodes for
+	// each base row (a keyset page's order values that are not columns of the row).
+	tail     int
+	tailScan tailScanner
 }
+
+// tailScanner decodes the result columns a statement returns after its rows' columns: fds and raw
+// are those columns' descriptions and values, row the base row they came with.
+type tailScanner func(conn *pgx.Conn, fds []pgconn.FieldDescription, raw [][]byte, row unsafe.Pointer) error
 
 type lcol struct {
 	node int
@@ -59,8 +68,8 @@ func (p *selectPlan) scan(sc *scopeState, sql string, rows pgx.Rows, emit func(r
 	if p.keyed {
 		off = len(p.keyKinds)
 	}
-	if len(fds) != len(p.cols)+off {
-		return errf("statement returned %d columns, expected %d", len(fds), len(p.cols)+off)
+	if len(fds) != len(p.cols)+off+p.tail {
+		return errf("statement returned %d columns, expected %d", len(fds), len(p.cols)+off+p.tail)
 	}
 	plans := cachedPlans(rows.Conn(), sql, p.nodes[0].table, len(p.cols))
 	shared := make([]int8, len(p.cols))
@@ -132,6 +141,12 @@ func (p *selectPlan) scan(sc *scopeState, sql string, rows pgx.Rows, emit func(r
 		for ni, keep := range p.keep {
 			if keep && cur[ni] != nil {
 				p.rows[ni] = append(p.rows[ni], cur[ni])
+			}
+		}
+		if p.tail > 0 {
+			n := len(p.cols)
+			if err := p.tailScan(rows.Conn(), fds[off+n:], raw[n:], cur[0]); err != nil {
+				return err
 			}
 		}
 		emit(cur[0], key)

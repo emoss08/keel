@@ -292,7 +292,7 @@ Builders are mutable and chainable; `Clone` copies one. `ToSQL` renders the main
 | `First` | the first row by the query's order, `ErrNotFound` when none |
 | `List` | rows; returns `ErrUnbounded` without `Limit` |
 | `All` | every row; for sets known to be small |
-| `Page` | a keyset page with an opaque cursor and an optional capped total, counted in the same round trip |
+| `Page` | a keyset page with an opaque cursor, a cursor per row (`CursorAt`) and an optional capped total, counted in the same round trip |
 | `Count`, `CountUpTo`, `Exists` | scalars |
 | `Each` | keyset batches at constant memory |
 | `Update`, `Delete` | bulk writes over the query's filter; rows affected. A query without `Where` is refused |
@@ -358,6 +358,21 @@ it, and writes that name it are refused.
   renders the expression.
 - `keel.Scalar(q)` is `(SELECT …)` as an expression, typically correlated, to fill a computed field
   with an aggregate over related rows.
+
+### Keyset pages
+
+`Page` turns the query's order into keyset terms (`pageKeys`) and appends the primary key columns it
+does not name. A term on a column of the table reads the cursor value from the row (`Table.Value`,
+the read's extra columns make sure it is selected). Any other term, a to-one relation's column (its
+path is checked to cross no to-many relation, and the render joins it as every read does) or an
+expression, is selected as a hidden value after the rows' columns (`selectOpts.tail`); the scan plan
+decodes those values per row (`selectPlan.tailScan`) through pgx into cursor values, refusing types
+a cursor cannot hold, and keeps them beside the rows. Such terms count as nullable. `CursorAt(i)`
+encodes row `i`'s values on demand, so a page costs no encoding for rows nobody asks about, and
+`Next` is the cursor of the last kept row. The keyset predicate is a row comparison when every term
+sorts one way and none can be NULL, an `OR` chain that places NULLs as `NULLS FIRST`/`LAST` (or
+Postgres's default) does otherwise, with expressions in parentheses. A dynamic page keeps its order
+columns (hidden ones included) beside its result for `DynResult.CursorAt`.
 
 ## Relation loading
 
