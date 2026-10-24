@@ -340,13 +340,17 @@ own transaction with a 5s lock timeout retried on contention; `--keel:notx` file
 transaction for `CREATE INDEX CONCURRENTLY`, and `R_<name>.sql` files re-run when they change.
 
 ```sh
-keel migrate create add_shipment_index -notx
+keel migrate create add_shipment_index -kind notx
 keel migrate plan -dsn "$KEEL_DSN"
-keel migrate up -dsn "$KEEL_DSN"
+keel up -dsn "$KEEL_DSN"                 # a live view in a terminal, one line per event elsewhere
 keel migrate status -dsn "$KEEL_DSN"
-keel migrate squash -dump "docker exec pg pg_dump -U app -d {db}"
-keel migrate stamp -package schema -out schema/version_gen.go
+keel migrate squash -yes -dump "docker exec pg pg_dump -U app -d {db}"
+keel migrate stamp -out schema/version_gen.go
+keel                                     # the console, in a terminal
 ```
+
+An application's database binary is one `keelcli.App` naming its migrations, seeds and database
+configuration ([keelcli](keelcli/README.md)).
 
 From Go:
 

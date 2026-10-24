@@ -66,7 +66,7 @@ services/tms/
 
 ## keel/migrate
 
-> **Status: built** (`migrate`, `migrate/migratecli`, `keel migrate`; usage in
+> **Status: built** (`migrate`, and `keel migrate` through keelcli; usage in
 > [guide.md](guide.md#migrations)). Everything below is implemented and tested against Postgres 18,
 > with these deviations and additions:
 >
@@ -403,6 +403,42 @@ tracker, persistent entity tracker, `seed_rollbacks`, `Down` methods and the `se
 `seed status`, and `seed prune` deletes them.
 
 ## keel/keelcli
+
+> **Status: built** (`keelcli`, `keelcli/internal/adapt`, and the `keel` command; usage in
+> [keelcli/README.md](../keelcli/README.md)). The `App` below works as written, tested end to end
+> against Postgres 18 with a sample application. Deviations and additions:
+>
+> - **App.** Besides the fields shown, `App` takes `Dirs` (the sources' directories, for `migrate
+>   create` and `migrate squash`; with no `Migrations` the set is read from them on every call),
+>   `Stamp`, `Dump`, `Lint`, `System` and `Parallel` (the seed options), `Extensions`, and
+>   `Flags`/`Setup` for application-wide flags. `Engines` replaces any engine with another
+>   implementation of keelcli's ports (`migrateport`, `seedport`, `factsport`); the tests and the
+>   demo pass package `fake`. `Env.DB` hands application commands the database.
+> - **Lazy database.** `Config` is called the first time a command needs the database, so `help`,
+>   `migrate create`, `migrate stamp`, `migrate lint` and `migrate check -base-dir` work without one.
+>   A `Config` with nothing to connect to returns an error wrapping `keelcli.ErrNoDatabase`.
+> - **Admin DSN.** Templates, `reset` and `squash` connect to the server's `postgres` database with
+>   the application's credentials; `-admin` or `KEEL_ADMIN_DSN` overrides it.
+> - **Templates.** A template's key is the binary's name, plus the fingerprint of the reference
+>   seeds it carries; `template` and `template prune` see only the binary's own templates. (The
+>   template name stays `keel_tpl_<hash>`, which `migrate` derives from the key;
+>   `TemplateOptions.Prefix` names the copies, `keel_<name>_…`.) `migrate.DropTemplate` was added
+>   so pruning drops exactly the templates it chose. `reset` builds the template when needed and
+>   keeps the database's environment mark.
+> - **The generic command.** `keel` is a keelcli binary with `gen` as its own command and the
+>   migration flags (`-dsn`, `-dir`, `-schema`, `-lock-timeout`, `-retries`,
+>   `-allow-out-of-order`, `-after`) as global flags. `migrate/migratecli` is gone: keelcli's plain
+>   and JSON output replace it. `migrate templates [prune]` became `template [build|prune]`,
+>   `create -notx`/`-repeatable` became `create -kind notx|repeatable`, `stamp -package` is
+>   derived from the stamp file's directory, `squash -dump`/`-to`/`-admin` and `check -base-dir`
+>   stay, and checks that find problems exit 3 instead of 1.
+> - **Events.** keelcli's ports number migrations and seeds from 1 over what the run executes,
+>   report the attempt that failed on a retry, the migrations or seeds applied on `RunEnd`, and a
+>   zero wait when a lock was free; the adapters translate keel/migrate's and keel/seed's events
+>   to that, and report each `After` statement once it finished.
+> - **Console.** Tabs without an engine behind them (Seeds without seeds, Doctor without a
+>   database) are left out, so `keel` alone opens a console of migrations, templates, lint and
+>   doctor.
 
 `keelcli` turns an application's migrations and seeds into a command line. Every command works two ways:
 plain, scriptable output when stdout is not a terminal or `-json`/`-plain` is given (CI, Kubernetes

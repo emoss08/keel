@@ -31,38 +31,75 @@ scenario switches: `drift`, `fail-migration`, `fail-seed`, `production`, `no-loc
 
 ## Wiring an application
 
-`keelcli` reaches the database only through three ports, so an application passes engines, not
-connection strings:
-
-| Field | Port | Implemented by |
-|---|---|---|
-| `Migrations` (required) | `migrateport.Engine` | an adapter over `keel/migrate` |
-| `Seeds` | `seedport.Engine` | an adapter over a `keel/seed` registry |
-| `Facts` | `factsport.Facts` | an adapter over the connection pool (`pg_settings`, `pg_stat_activity`, `pg_locks`, `keel_meta`) |
+An application describes its database in a `keelcli.App` and calls `Main`; keelcli builds the
+engines over `keel/migrate` and `keel/seed` and opens the database the first time a command needs
+it, so `help`, `migrate create` and `migrate stamp` work without one:
 
 ```go
 // services/tms/cmd/db/main.go
 func main() {
-	cfg := dbconfig.MustFromEnv()
 	keelcli.Main(keelcli.App{
-		Name:        "trenova-db",
-		Description: "Trenova's database: migrations and reference seeds.",
-		Version:     buildinfo.Version,
-		Migrations: migrateadapter.New(cfg, // placeholder: the keel/migrate adapter
-			migrate.Sources(migrate.Source{Name: "core", FS: schema.Migrations}),
-			migrate.Options{After: []string{"SELECT trenova_rls.reconcile()"}},
-		),
-		Seeds:      seedadapter.New(cfg, reference.Seeds, tenants.All), // placeholder: the keel/seed adapter
-		Facts:      factsadapter.New(cfg),                              // placeholder: the facts adapter
+		Name:       "trenova-db",
+		Version:    buildinfo.Version,
+		Config:     dbconfig.FromEnv, // func() (keel.Config, error)
+		Migrations: migrate.Sources(migrate.Source{Name: "core", FS: schema.Migrations}),
+		Migrate:    migrate.Options{After: []string{"SELECT trenova_rls.reconcile()"}},
+		Seeds:      reference.Seeds,  // *seed.Registry; nil for none
+		Tenants:    tenants.All,      // func(ctx, *keel.DB) iter.Seq2[seed.Tenant, error]
+		System:     sysctx.With,      // func(ctx) ctx: the system scope seeds run under
 		Extensions: []string{"pg_trgm", "btree_gin", "pgcrypto"},
 	})
 }
 ```
 
-`trenova-devdb` is the same with `seed.Merge(reference.Seeds, fixtures.Seeds)` and its own commands:
+`trenova-devdb` is the same with `seed.Merge(reference.Seeds, fixtures.Seeds)`, the source
+directories for the commands that write files, and its own commands:
 
 ```go
-Commands: []keelcli.Command{{
+// services/tms/cmd/devdb/main.go
+keelcli.Main(keelcli.App{
+	Name:       "trenova-devdb",
+	Config:     dbconfig.FromEnv,
+	Migrations: migrate.Sources(migrate.Source{Name: "core", FS: schema.Migrations}),
+	Migrate:    migrate.Options{After: []string{"SELECT trenova_rls.reconcile()"}},
+	Dirs:       []migrate.Dir{{Name: "core", Path: "schema/migrations"}}, // create, squash
+	Stamp:      "schema/version_gen.go",                                 // stamp; the default
+	Dump:       []string{"docker", "exec", "trenova-db-1", "pg_dump", "-U", "trenova", "-d", "{db}"},
+	Lint:       []migrate.LintRule{tenantRLS},
+	Seeds:      seed.Merge(reference.Seeds, fixtures.Seeds),
+	Tenants:    tenants.All,
+	System:     sysctx.With,
+	Parallel:   8,
+	Commands:   []keelcli.Command{volume.Command},
+})
+```
+
+| Field | Is |
+|---|---|
+| `Name`, `Description`, `Version` | the binary in help and `version`; `Name` is also the `application_name` of its connections, so a lock holder shows who it is |
+| `Config` | the database configuration, called on first use |
+| `Migrations` | the migrations; when it is the zero `Set` they are read from `Dirs`, again on every call |
+| `Migrate` | the migrator's options: `After`, `LockTimeout`, `Retries`, `Schema`, `AllowOutOfOrder` |
+| `Dirs` | the sources' directories on disk: `migrate create` writes into the first (or `-source name`), `migrate squash` rewrites them |
+| `Stamp` | the schema version file `migrate stamp` writes, default `schema/version_gen.go`; its package is the one the Go files beside it declare, or the directory's name |
+| `Dump` | the pg_dump command `migrate squash` runs, default `pg_dump`; `{db}` and `{dsn}` name the scratch database, so `docker exec <container> pg_dump -U <user> -d {db}` uses the server's own pg_dump, which must match its major version |
+| `Lint` | the application's lint rules, run after the built-in ones |
+| `Seeds`, `Tenants`, `System`, `Parallel` | the seeds and the `seed.Options` every run uses; without `Seeds` there are no seed commands and the console has no Seeds tab |
+| `Extensions` | the extensions `doctor` requires |
+| `Commands` | the application's own commands |
+| `Flags`, `Setup` | global flags of the application and the hook that finishes the `App` from them once the command line is parsed (the `keel` command uses them for `-dsn` and `-dir`) |
+| `Engines` | replaces any engine keelcli would build, as the tests and the demo do with package `fake` |
+
+Templates and `reset` connect to the server's `postgres` database with the application's
+credentials; `-admin dsn` on those commands, or `KEEL_ADMIN_DSN`, names another (a role with
+CREATEDB). A template belongs to the application whose name starts its key, so `template` lists
+and `template prune` drops only the application's own templates, never another application's or
+those a test harness built with keys of its own.
+
+An application command gets the same streams, output mode, guard and database:
+
+```go
+var Command = keelcli.Command{
 	Name:    "volume",
 	Usage:   "[-orgs n]",
 	Summary: "seed volume data for load tests",
@@ -75,96 +112,136 @@ Commands: []keelcli.Command{{
 		if err := env.Confirm(ctx, "seed volume data", "Seed volume data into this database?"); err != nil {
 			return err
 		}
-		return volume.Seed(ctx, *orgs)
+		db, err := env.DB(ctx) // opened on first use, closed when the command returns
+		if err != nil {
+			return err
+		}
+		return Seed(ctx, db, *orgs)
 	},
-}},
+}
 ```
 
 An application command returns `keelcli.Usagef(...)` for a usage error (exit 2) and an error that
 wraps `keelcli.ErrProblems` when a check found problems (exit 3); `Env.Confirm` applies the same
-production guard and prompt as the built-in destructive commands.
+production guard and prompt as the built-in destructive commands. A `Config` that has no connection
+to offer returns an error wrapping `keelcli.ErrNoDatabase`, which commands that can work without one
+honour (`migrate lint` then lints every migration).
 
 `App.Run(ctx, args, stdin, stdout, stderr)` returns the exit code instead of exiting, for tests and
 embedding. `Main` cancels the running command on SIGINT or SIGTERM, so a Kubernetes Job that is
 stopped mid-run lets the engine roll back the current migration and reports what was left undone; a
 second signal kills the process.
 
+### The generic `keel` command
+
+`keel` is a keelcli binary too, for applications without seeds: every command but `gen` is
+keelcli's, over the migrations its flags name. `keel` with no arguments in a terminal opens the
+console with migrations, templates, lint and doctor:
+
+```sh
+export KEEL_DSN=postgres://app:secret@localhost:5432/app
+keel migrate create add_holds -dir core=migrations
+keel up -dir core=migrations -after "SELECT reconcile()"
+keel migrate check -base-dir core=../main/migrations   # in CI, without a database
+keel                                                    # the console
+```
+
+Its global flags are `-dsn` (default `$KEEL_DSN`), `-dir [name=]path` (repeatable, default
+`migrations`), `-schema`, `-lock-timeout` (`0` for none), `-retries` (`0` for none),
+`-allow-out-of-order` and `-after statement` (repeatable), before or after the command, next to
+keelcli's own.
+
 ### The ports
 
-Each port is split by use, so a command depends only on what it calls (`migrateport.Runner` for a
-run, `migrateport.Repairer` for `baseline` and `repair`, and so on); `Engine` and `Facts` join them
-for `App`. The event and value types mirror `keel/migrate` and `keel/seed` field for field: the
-adapters are conversions, plus a `Plan` call for a dry run (a dry run is a plan, whose migrations
-carry their SQL).
+The commands, the live views and the console reach the database only through three ports, which
+`internal/adapt` implements over the real engines and package `fake` over in-memory state. Each
+port is split by use, so a command depends only on what it calls (`migrateport.Runner` for a run,
+`migrateport.Repairer` for `baseline` and `repair`, and so on); `Engine` and `Facts` join them.
 
 ```go
 type migrateport.Engine interface {
-	Status(ctx) ([]Status, error)                 // Reader
+	Status(ctx) ([]Status, error)                      // Reader
 	History(ctx) ([]Record, error)
-	Plan(ctx, PlanOptions) (Plan, error)          // Planner
-	Up(ctx, UpOptions, Observer) error            // Runner
-	Create(ctx, CreateRequest) (Created, error)   // Author
-	Squash(ctx) (Squashed, error)
+	Plan(ctx, PlanOptions) (Plan, error)               // Planner
+	Up(ctx, UpOptions, Observer) error                 // Runner
+	Create(ctx, CreateRequest) (Created, error)        // Author
+	Squash(ctx, SquashOptions) (Squashed, error)
 	Stamp(ctx, StampOptions) (Stamp, error)
-	Check(ctx, CheckOptions) ([]Problem, error)   // Checker
-	Lint(ctx) ([]Finding, error)
-	Baseline(ctx, version) (Baselined, error)     // Repairer
+	Check(ctx, CheckOptions) ([]Problem, error)        // Checker
+	Lint(ctx, LintOptions) ([]Finding, error)
+	Baseline(ctx, version) (Baselined, error)          // Repairer
 	Repair(ctx, version) (Repaired, error)
-	Templates(ctx) ([]Template, error)            // Templater
+	Templates(ctx) ([]Template, error)                 // Templater
 	BuildTemplate(ctx) (Template, error)
 	PruneTemplates(ctx) ([]Template, error)
 	Reset(ctx) (Reset, error)
 }
 
 type seedport.Engine interface {
-	Graph() []Seed                                // Grapher
-	Status(ctx) ([]Status, error)                 // Reader
-	Plan(ctx, PlanOptions) ([]PlanItem, error)    // Planner
-	Apply(ctx, ApplyOptions, Observer) error      // Applier
-	Prune(ctx) ([]Status, error)                  // Pruner
-	Environment(ctx) (Environment, error)         // Environments
+	Graph() []Seed                                     // Grapher
+	Status(ctx) ([]Status, error)                      // Reader
+	Plan(ctx, PlanOptions) ([]PlanItem, error)         // Planner
+	Apply(ctx, ApplyOptions, Observer) error           // Applier
+	Prune(ctx) ([]Status, error)                       // Pruner
+	Environment(ctx) (Environment, error)              // Environments
 	MarkEnvironment(ctx, Environment) error
 }
 
 type factsport.Facts interface {
-	Connection(ctx) (Connection, error)           // Connector
-	Settings(ctx, names...) ([]Setting, error)    // Inspector
+	Connection(ctx) (Connection, error)                // Connector
+	Settings(ctx, names...) ([]Setting, error)         // Inspector
 	Extensions(ctx) ([]Extension, error)
-	Activity(ctx, longer) (Activity, error)       // Monitor
-	Environment(ctx) (seedport.Environment, error) // EnvironmentReader
+	Activity(ctx, longer) (Activity, error)            // Monitor
+	Environment(ctx) (seedport.Environment, error)     // EnvironmentReader
 }
 ```
 
-Package `keelcli/fake` implements all three over in-memory state with simulated timing; it backs the
-tests and the demo.
+The event types are the views' contract, and the engines do not emit them as they are, so the
+adapters translate (each rule is tested in `internal/adapt`):
+
+| Port semantics | keel/migrate and keel/seed emit |
+|---|---|
+| `Index` counts from 1 over the migrations the run executes | from 0, counting baselines it marks |
+| migration `RunEnd.Total` is the migrations applied | the size of the plan |
+| `Retry.Attempt` is the attempt that failed | the attempt about to run |
+| `LockWait.Attempt` numbers the reports | no attempt |
+| `LockAcquired.Duration` is zero when the lock was free | the time spent taking it |
+| `After` reports a statement once it finished, with its duration | before each statement, with its SQL |
+| `Retry` with a nil `Migration` retries the After statements | the same |
+| one `Planned` per seed, numbered from 1 | one event holding the plan |
+| `TenantStart`/`TenantEnd` carry the seed's rows and tenants applied so far | the tenant's own rows, failures counted as done |
+| seed `RunEnd.Total` is the seeds applied | unset |
+
+A seed run reports waiting for its lock before its plan, since it plans once it holds the lock.
 
 ## Commands
 
 Global flags go before or after the command: `-json`, `-plain`, `-no-color` (`NO_COLOR` works too),
 `-yes` (answer confirmations), `-yes-production` (allow destructive commands on a production
-database).
+database), and the application's own. A command's flags may follow its arguments too
+(`migrate create add_holds -kind notx`).
 
 | Command | Does |
 |---|---|
 | (none) | opens the console in a terminal; prints help and exits 2 otherwise |
-| `up [-to version] [-dry-run] [-env name]` | migrate, then apply seeds: the deploy step. `-env` marks an unmarked database and refuses one marked otherwise; `-to` stops after a version and skips seeds; `-dry-run` prints the plan with its SQL and the seed plan |
+| `up [-to version] [-dry-run] [-env name]` | migrate, then apply seeds: the deploy step. `-env` (production, staging, development or test) marks an unmarked database and refuses one marked otherwise; `-to` stops after a version and skips seeds; `-dry-run` prints the plan with its SQL and the seed plan |
 | `migrate up [-to version] [-dry-run]` | apply pending migrations |
 | `migrate plan [-to version]` | what `migrate up` would do |
 | `migrate status` | every migration with its state: applied, pending, changed, repeatable-due, missing |
 | `migrate history` | applied migrations with source, time and duration |
-| `migrate create [-kind tx\|notx\|repeatable] [name]` | write a migration file; in a terminal without a name, asks for the name and kind |
-| `migrate squash` | replace applied migrations with one baseline (confirms) |
-| `migrate stamp [-check]` | write the schema version file; `-check` exits 3 when it is stale |
-| `migrate check [-base version]` | ordering and checksum problems; exits 3 when there are any |
-| `migrate lint` | lint pending migrations; exits 3 on an error finding |
+| `migrate create [-kind tx\|notx\|repeatable] [-source name] [name]` | write a migration file; in a terminal without a name, asks for the name and kind |
+| `migrate squash [-to version] [-dump command] [-admin dsn]` | replace applied migrations with one baseline (confirms) |
+| `migrate stamp [-check] [-out path]` | write the schema version file; `-check` exits 3 when it is stale |
+| `migrate check [-base-dir [name=]path]...` | ordering and checksum problems against the database, or the base branch's directories without one; exits 3 when there are any |
+| `migrate lint [-all]` | lint pending migrations, or all of them (also without a database); exits 3 on an error finding |
 | `migrate baseline <version>` | record migrations up to version as applied (confirms) |
 | `migrate repair <version>` | accept the current checksum of a changed migration (confirms) |
 | `seed apply [-force] [-dry-run] [names...]` | apply seeds that changed, or the named ones with their dependencies |
 | `seed plan [-force] [names...]` | which seeds would run and why |
 | `seed status` | seeds with state, reason, rows and tenants |
 | `seed prune` | delete records of seeds no longer registered (confirms) |
-| `reset` | recreate the database from the current template (confirms; never on production) |
-| `template` / `template build` / `template prune` | list, build, or drop stale templates (prune confirms) |
+| `reset [-admin dsn]` | recreate the database from the current template, building it first, keeping the environment mark (confirms; never on production) |
+| `template` / `template build` / `template prune` | list, build (migrations and reference seeds), or drop the application's stale templates (prune confirms); each takes `-admin` |
 | `doctor` | connection, server, `plan_cache_mode`, extensions, migrations, templates, environment, lock holders and long queries; exits 3 when a check fails |
 | `version` | the binary's name and version |
 | `help [command]` | help for a command |
