@@ -778,6 +778,7 @@ model is written twice. `fleetdb.ShipmentsSchema()` returns it at run time for a
 | Label | `Table.Label`, `Column.Label`, `Relation.Label` | the model or field name, split at case changes, digits and underscores; acronyms in capitals (`ProNumber` → "PRO Number" with `-acronyms PRO`, `CustomerID` → "Customer ID", `Address2` → "Address 2") | `label=` |
 | Plural label | `Table.Plural` | the label with its last word in the plural ("Shipments", "Categories") | `plural=` |
 | Description | `Table.Doc`, `Column.Doc`, `Relation.Doc`, `EnumValue.Doc` | the doc comment (a field's line comment when it has no doc comment), paragraphs kept, lines joined | — |
+| JSON name | `Column.JSON`, `Relation.JSON` | the field's `json` tag: its name (`json:"proNumber,omitempty"` → "proNumber"), the field name when the tag names none (`json:",omitempty"`), empty without a `json` tag or for `json:"-"` | — |
 | Enum values | `Column.Enum` | the constants of the column's named string or integer type, in declaration order, from any package; labels from the constant names without the type name (`StatusInTransit` → "In Transit") | — |
 | Reportable entity | `Table.Report` | `report[=Category]` on the table tag | — |
 | Included | `Column.Report.Included` | every column except tenant, version, `noselect`, bytea and tsvector columns and foreign keys a reported `belongs` relation exposes | `noreport`, `report` |
@@ -785,6 +786,10 @@ model is written twice. `fleetdb.ShipmentsSchema()` returns it at run time for a
 | Measure or dimension | `Column.Report.Kind` | numeric columns that are neither keys (primary keys, foreign keys of `belongs`, `one` and `many` relations) nor enums are measures; everything else is a dimension | `dimension`, `measure` |
 | Aggregations | `Column.Report.Aggs` | numbers: count, count distinct, sum, avg, min, max; strings, times, dates and epochs: count, count distinct, min, max; everything else: count, count distinct | `agg=` |
 | Format | `Column.Report.Format` | a `KeelFormat() string` method on the column's type, value or pointer receiver, returning a string literal: `func (Money) KeelFormat() string { return "money" }` | `format=` |
+
+An API that takes field names in filters and sorts (`?sort=customer.name`) maps them to columns
+and relations with the JSON names, then builds the query with
+[`keel.ResolvePath`](#column-paths-from-names): no reflection over the models, no cache of their tags.
 
 The default acronyms are ID, URL, API, JSON and UUID; `keel gen -acronyms PRO,BOL,SCAC,DOT,MC,ID,URL`
 (or `gen.Options.Acronyms`) replaces the list. Words already in capitals in the source stay in

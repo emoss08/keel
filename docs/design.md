@@ -49,7 +49,8 @@ The wire layer is pgx v5 (`pgxpool`, `pgx.Batch`, pgx scan plans). keel never us
 A model is a plain struct that embeds `keel.Table`, an empty marker whose `keel` tag names the
 table. Every stored field carries a `keel` tag. keel owns the tag key, so it validates every option:
 an unknown option or a malformed value fails `keel gen` with the field's position. Tags under other
-keys (`db`, `json`) are ignored.
+keys are not validated; `keel gen` reads only the `json` tag's name, into the schema (Derived
+metadata).
 
 ```go
 // Shipment is a customer's freight moving from origin to destination.
@@ -203,6 +204,9 @@ already says, so nothing is declared twice:
 - `Table.Label`, `Table.Plural`, `Column.Label`, `Relation.Label`: from the names, split at case
   changes and digits, with an acronym list (`-acronyms`, default ID, URL, API, JSON, UUID).
 - `Doc` on tables, columns, relations and enum values: from doc comments.
+- `Column.JSON`, `Relation.JSON`: the name encoding/json gives the field (the `json` tag's name, the
+  field name for a tag that names none, empty without a tag or for `-`), so an API resolves its
+  field names to columns and relations from the static schema, without reflection.
 - `Column.Enum []schema.EnumValue{Value, Label, Doc}`: the constants of a column's named string or
   integer type, from any package, in declaration order.
 - `Table.Report` and `Column.Report *schema.ReportInfo{Included, Kind, Type, Aggs, Format}` for

@@ -63,6 +63,10 @@ type Column struct {
 	Label string
 	// Doc is the field's doc comment.
 	Doc string
+	// JSON is the name encoding/json gives the field, from its json tag: the tag's name, or the
+	// field's name when the tag names none (",omitempty"). It is empty when the field has no json
+	// tag or the tag is "-". APIs resolve their field names to columns with it.
+	JSON string
 	// Enum lists the constants of the column's named Go type, in declaration order.
 	Enum []EnumValue
 	// Report is how reports present the column; nil when the model is not reportable.
@@ -113,6 +117,8 @@ type Relation struct {
 	Label string
 	// Doc is the field's doc comment.
 	Doc string
+	// JSON is the name encoding/json gives the relation's field, as Column.JSON.
+	JSON string
 	// NoReport hides the relation from reports.
 	NoReport bool
 

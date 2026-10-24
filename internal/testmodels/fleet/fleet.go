@@ -46,10 +46,10 @@ type Customer struct {
 	OrganizationID ids.ID `keel:"organization_id,pk,tenant"`
 	BusinessUnitID ids.ID `keel:"business_unit_id,pk,tenant"`
 	// Name is the customer's trading name.
-	Name string `keel:"name"`
+	Name string `keel:"name" json:"name"`
 	// Code is the customer's short code, unique per tenant.
 	Code      string  `keel:"code"`
-	Email     *string `keel:"email"`
+	Email     *string `keel:"email" json:"email,omitempty"`
 	Version   int64   `keel:"version,version"`
 	CreatedAt int64   `keel:"created_at,autocreate"`
 	UpdatedAt int64   `keel:"updated_at,autoupdate"`
@@ -65,7 +65,7 @@ type Shipment struct {
 	CustomerID     ids.ID  `keel:"customer_id"`
 	BillToID       *ids.ID `keel:"bill_to_id"`
 	// ProNumber is the carrier's progressive number, unique per tenant.
-	ProNumber string   `keel:"pro_number,label=PRO Number"`
+	ProNumber string   `keel:"pro_number,label=PRO Number" json:"proNumber"`
 	Status    Status   `keel:"status"`
 	Priority  Priority `keel:"priority"`
 	// Weight is the shipment's gross weight in pounds.
@@ -74,14 +74,14 @@ type Shipment struct {
 	Hazmat       bool           `keel:"hazmat"`
 	Labels       []string       `keel:"labels"`
 	Attributes   map[string]any `keel:"attributes,jsonb,noreport"`
-	SearchVector string         `keel:"search_vector,noselect,readonly,tsvector"`
+	SearchVector string         `keel:"search_vector,noselect,readonly,tsvector" json:"-"`
 	StageRank    int16          `keel:"stage_rank,readonly,dimension"`
 	CanceledAt   *int64         `keel:"canceled_at"`
 	Version      int64          `keel:"version,version"`
 	CreatedAt    int64          `keel:"created_at,autocreate"`
 	UpdatedAt    int64          `keel:"updated_at,autoupdate"`
 
-	Customer *Customer `keel:"belongs:customer_id"`
+	Customer *Customer `keel:"belongs:customer_id" json:"customer"`
 	BillTo   *Customer `keel:"belongs:bill_to_id,label=Bill-to Customer"`
 	Moves    []*Move   `keel:"many:shipment_id"`
 	Tags     []*Tag    `keel:"m2m:shipment_tags.shipment_id.tag_id,noreport"`

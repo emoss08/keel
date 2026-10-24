@@ -7,6 +7,7 @@ import (
 	"github.com/emoss08/keel"
 	"github.com/emoss08/keel/internal/testmodels/fleet"
 	"github.com/emoss08/keel/internal/testmodels/fleet/fleetdb"
+	"github.com/emoss08/keel/schema"
 )
 
 // samePros fails unless got and want hold the same shipments in the same order.
@@ -77,4 +78,31 @@ func TestResolvePath(t *testing.T) {
 	if keel.ResolvePath(nil, "id").Err() == nil {
 		t.Fatal("ResolvePath of nil resolved")
 	}
+}
+
+func TestSchemaJSONNames(t *testing.T) {
+	st := fleetdb.ShipmentsSchema()
+	byJSON := func(table *schema.Table, name string) (string, bool) {
+		for _, r := range table.Relations {
+			if r.JSON == name {
+				return r.Name, true
+			}
+		}
+		for _, c := range table.Columns {
+			if c.JSON == name {
+				return c.Name, true
+			}
+		}
+		return "", false
+	}
+	rel, ok1 := byJSON(st, "customer")
+	col, ok2 := byJSON(fleetdb.CustomersSchema(), "name")
+	eq(t, ok1 && ok2, true)
+	e := keel.ResolvePath(fleetdb.Shipments, rel, col)
+	eq(t, e.Err(), nil)
+	pro, _ := byJSON(st, "proNumber")
+	eq(t, pro, "pro_number")
+	eq(t, st.Columns[st.Column("search_vector")].JSON, "")
+	eq(t, st.Columns[st.Column("status")].JSON, "")
+	eq(t, fleetdb.CustomersSchema().Columns[fleetdb.CustomersSchema().Column("email")].JSON, "email")
 }

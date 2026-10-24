@@ -52,7 +52,7 @@ type Shipment struct {
 	Unit string ~keel:"unit_id,pk,tenant,report"~
 	// ProNumber is the carrier's
 	// progressive number.
-	ProNumber  string        ~keel:"pro_number"~
+	ProNumber  string        ~keel:"pro_number" json:"proNumber,omitempty"~
 	CustomerID string        ~keel:"customer_id"~
 	BillToID   *string       ~keel:"bill_to_id"~
 	Status     Status        ~keel:"status"~
@@ -72,16 +72,16 @@ type Shipment struct {
 	When       time.Time     ~keel:"when_ts"~
 	Raw        []byte        ~keel:"raw"~
 	RawShown   []byte        ~keel:"raw_shown,report"~
-	Hidden     string        ~keel:"hidden,noreport"~
+	Hidden     string        ~keel:"hidden,noreport" json:"-"~
 	Doc        string        ~keel:"doc,noselect,readonly,tsvector"~
-	Meta       map[string]any ~keel:"meta,jsonb"~
-	Flag       bool          ~keel:"flag"~
+	Meta       map[string]any ~keel:"meta,jsonb" json:",omitempty"~
+	Flag       bool          ~json:"-," keel:"flag"~
 	URLPath    string        ~keel:"url_path,label=Link"~
 	Version    int64         ~keel:"version,version"~
 
 	Customer *Customer ~keel:"belongs:customer_id"~
 	// BillTo is who pays.
-	BillTo *Customer ~keel:"belongs:bill_to_id,noreport,label=Payer"~
+	BillTo *Customer ~keel:"belongs:bill_to_id,noreport,label=Payer" json:"billTo"~
 	Moves  []*Move   ~keel:"many:shipment_id"~
 }
 
@@ -123,6 +123,17 @@ type BOLLine struct {
 	SCACCode  string ~keel:"scac_code"~
 }
 `
+
+func TestJSONNames(t *testing.T) {
+	src := metaSource(t, nil)
+	has(t, line(t, src, "shipmentsTable", `Name: "pro_number"`), "JSON: `proNumber`")
+	has(t, line(t, src, "shipmentsTable", `Name: "meta"`), "JSON: `Meta`")
+	has(t, line(t, src, "shipmentsTable", `Name: "flag"`), "JSON: `-`")
+	has(t, line(t, src, "shipmentsTable", `Name: "BillTo"`), "JSON: `billTo`")
+	lacks(t, line(t, src, "shipmentsTable", `Name: "hidden"`), "JSON:")
+	lacks(t, line(t, src, "shipmentsTable", `Name: "customer_id"`), "JSON:")
+	lacks(t, line(t, src, "shipmentsTable", `Name: "Customer"`), "JSON:")
+}
 
 // kindsPackage is a package the models import but keel gen does not load as a model package, so
 // its enum and format are read from export data and parsed source.

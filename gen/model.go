@@ -67,6 +67,7 @@ type column struct {
 
 	label   string
 	doc     string
+	json    string
 	enum    *types.Named
 	values  []schema.EnumValue
 	format  string
@@ -108,6 +109,7 @@ type relation struct {
 
 	label string
 	doc   string
+	json  string
 }
 
 // isKeelTable reports whether t is the keel.Table marker.
@@ -151,7 +153,7 @@ func (rd *reader) readModel(p *pkgModels, obj *types.TypeName) (*model, error) {
 		if f.Embedded() && isKeelTable(f.Type()) {
 			continue
 		}
-		if err := rd.readField(m, f, lookupTag(st.Tag(i), "keel")); err != nil {
+		if err := rd.readField(m, f, st.Tag(i)); err != nil {
 			return nil, rd.src.errorf(f.Pos(), "%s.%s: %v", m.name, f.Name(), err)
 		}
 	}
@@ -187,9 +189,10 @@ func (rd *reader) readTable(m *model, st *types.Struct) (bool, error) {
 	return false, nil
 }
 
-// readField reads one field of a model: a column, a relation, or nothing when it is not stored.
-func (rd *reader) readField(m *model, f *types.Var, raw string) error {
-	ft, ok, err := schema.ParseFieldTag(raw)
+// readField reads one field of a model, whose struct tag is tag: a column, a relation, or nothing
+// when it is not stored.
+func (rd *reader) readField(m *model, f *types.Var, tag string) error {
+	ft, ok, err := schema.ParseFieldTag(lookupTag(tag, "keel"))
 	if err != nil || !ok {
 		return err
 	}
@@ -206,7 +209,7 @@ func (rd *reader) readField(m *model, f *types.Var, raw string) error {
 		if err != nil {
 			return err
 		}
-		r.pos, r.doc, r.label = f.Pos(), doc, label
+		r.pos, r.doc, r.label, r.json = f.Pos(), doc, label, jsonName(f.Name(), lookupTag(tag, "json"))
 		m.rels = append(m.rels, r)
 		return nil
 	}
@@ -215,6 +218,7 @@ func (rd *reader) readField(m *model, f *types.Var, raw string) error {
 		return err
 	}
 	c.pos, c.doc, c.label, c.idx = f.Pos(), doc, label, int32(len(m.columns))
+	c.json = jsonName(f.Name(), lookupTag(tag, "json"))
 	if err := rd.readTypeFacts(c); err != nil {
 		return err
 	}
@@ -491,6 +495,20 @@ func checkNullZero(c *column) error {
 		return fmt.Errorf("nullzero needs a non-nullable type; %s already stores NULL", c.named.Obj().Name())
 	}
 	return resolveZero(c)
+}
+
+// jsonName returns the name encoding/json gives the field named field whose json tag is tag: the
+// tag's name, the field's name when the tag names none (",omitempty"), and "" when the field has
+// no json tag or encoding/json skips it ("-").
+func jsonName(field, tag string) string {
+	if tag == "" || tag == "-" {
+		return ""
+	}
+	name, _, _ := strings.Cut(tag, ",")
+	if name == "" {
+		return field
+	}
+	return name
 }
 
 // lookupTag returns the value of key in a struct tag, as reflect.StructTag.Get does.
