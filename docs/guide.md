@@ -2224,7 +2224,10 @@ inserted, err := c.Upsert(ctx, db, rows,
     keel.OnConflict(c.OrganizationID, c.BusinessUnitID, c.Code).Update(c.Name))
 ```
 
-- `keel.OnConflict(cols...)` names the unique columns; it is required.
+- `keel.OnConflict(targets...)` names what the unique index covers; it is required. Targets are
+  columns, or expressions for an index on expressions: `keel.OnConflict(p.OrganizationID,
+  p.BusinessUnitID, keel.Raw("md5(?)", p.Endpoint))` is `ON CONFLICT (organization_id,
+  business_unit_id, (md5(endpoint)))`. An expression must not bind values.
 - `Update(cols...)` names the columns a conflicting row takes from the proposed row
   (`col = EXCLUDED.col`).
 - `Set(assignments...)` gives a conflicting row explicit assignments, the same `Assignment` values
@@ -2262,11 +2265,14 @@ Many rows go through `unnest`, as in `CreateMany`.
 
 ### CreateOrSkip
 
-`CreateOrSkip` inserts rows, skips those that conflict on the given columns (`ON CONFLICT DO
-NOTHING`), and returns how many it inserted:
+`CreateOrSkip` inserts rows, skips those that conflict on the given targets (`ON CONFLICT (…) DO
+NOTHING`), and returns how many it inserted. Targets are columns or index expressions, as for
+`OnConflict`; without any, a row that violates any unique constraint is skipped (`ON CONFLICT DO
+NOTHING`):
 
 ```go
 n, err := c.CreateOrSkip(ctx, db, rows, c.OrganizationID, c.BusinessUnitID, c.Code)
+n, err = c.CreateOrSkip(ctx, db, rows) // any unique violation
 ```
 
 ### InsertFrom
@@ -3507,7 +3513,9 @@ The same pattern works for an application:
 | `.On("CONFLICT (...) DO UPDATE").Set("x = EXCLUDED.x")` | `s.Upsert(ctx, db, rows, keel.OnConflict(...).Update(s.X))` |
 | `.Set("hits = sp.hits + 1, name = EXCLUDED.name")` on a conflict | `keel.OnConflict(...).Set(s.Hits.Add(1), s.Name.ToExpr(s.Name.Excluded()))` |
 | pgx `CopyFrom` on the underlying pool for large loads | `s.Copy(ctx, db, rows)`, with tenant columns, IDs, timestamps and hooks |
-| `.On("CONFLICT DO NOTHING")` | `s.CreateOrSkip(ctx, db, rows, cols...)` |
+| `.On("CONFLICT (cols) DO NOTHING")` | `s.CreateOrSkip(ctx, db, rows, cols...)` |
+| `.On("CONFLICT DO NOTHING")` | `s.CreateOrSkip(ctx, db, rows)` |
+| `.On("CONFLICT (md5(endpoint)) DO UPDATE")` | `keel.OnConflict(keel.Raw("md5(?)", s.Endpoint)).Update(…)` |
 | `INSERT … SELECT` through `NewInsert().Table(...)` | `s.InsertFrom(ctx, db, q, cols...)` |
 | `db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {...})` | `keel.Write(ctx, db, func(ctx context.Context) error {...})`; pass `ctx`, not a `tx` |
 | `bun.IDB` parameters to share a transaction | nothing; the transaction travels on the context |

@@ -399,14 +399,15 @@ n, err := s.Where(...).Update(ctx, db, s.Status.To(shipment.StatusCanceled))
 n, err = s.Where(...).Delete(ctx, db)
 ins, err := s.Upsert(ctx, db, rows, keel.OnConflict(s.OrganizationID, s.BusinessUnitID, s.ProNumber).Update(s.Status))
 ins, err = s.Upsert(ctx, db, rows, keel.OnConflict(...).Set(s.Status.ToExpr(s.Status.Excluded()), s.Priority.Add(1)))
-n, err = s.CreateOrSkip(ctx, db, rows, s.OrganizationID, s.BusinessUnitID, s.ProNumber)
+n, err = s.CreateOrSkip(ctx, db, rows, s.OrganizationID, s.BusinessUnitID, s.ProNumber) // no targets: any unique violation
 n, err = s.InsertFrom(ctx, db, src.Pick(...), s.Name, s.Code)
 n, err = s.Copy(ctx, db, rows)                     // binary COPY; prepared as Create, nothing read back
 ```
 
 After a write keel reads back only what Postgres may have changed: `readonly` columns, and the
 version where it changed it. `Upsert` reports per row whether it inserted (`xmax = 0`); a row that
-conflicted keeps the primary key it was sent with. `Conflict.Update` takes columns from the proposed
+conflicted keeps the primary key it was sent with. `OnConflict` targets are columns or index
+expressions (written in parentheses, without aliases, refusing binds). `Conflict.Update` takes columns from the proposed
 row (`col = EXCLUDED.col`); `Conflict.Set` takes `Assignment`s, in which the table's columns read
 the stored row and `Col.Excluded()` the proposed row, with values bound as parameters; a column
 assigned twice is refused, and the `autoupdate` and `version` columns are maintained unless `Set`

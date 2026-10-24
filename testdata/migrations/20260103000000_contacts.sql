@@ -26,3 +26,5 @@ CREATE TABLE contacts (
     CONSTRAINT ck_contacts_phone CHECK (phone <> ''),
     CONSTRAINT ck_contacts_score CHECK (score <> 0)
 );
+
+CREATE UNIQUE INDEX uq_contacts_name_md5 ON contacts (organization_id, business_unit_id, md5(name));

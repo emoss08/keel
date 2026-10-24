@@ -51,20 +51,19 @@ func (h Handle[T]) DeleteRow(ctx context.Context, db *DB, row *T) error {
 
 // Conflict is the ON CONFLICT clause of an upsert. Its methods return a changed copy.
 type Conflict struct {
-	cols    []Col
+	targets []Expr
 	where   []Pred
 	update  []Col
 	set     []Assignment
 	nothing bool
 }
 
-// OnConflict names the unique columns an upsert conflicts on.
-func OnConflict(cols ...interface{ column() Col }) Conflict {
-	c := Conflict{}
-	for _, col := range cols {
-		c.cols = append(c.cols, col.column())
-	}
-	return c
+// OnConflict names what an upsert conflicts on, as a unique index declares it: columns of the
+// table, or expressions for an index on expressions, such as keel.Raw("md5(?)", t.Endpoint) for
+// ON CONFLICT (md5(endpoint)). Expressions must not bind values; columns in them are written
+// without an alias, as the index names them.
+func OnConflict(targets ...Expr) Conflict {
+	return Conflict{targets: targets}
 }
 
 // Where matches a partial unique index: ON CONFLICT (…) WHERE …. The predicates must not bind
@@ -102,15 +101,18 @@ func (c Conflict) Set(sets ...Assignment) Conflict {
 // updatable column without either), then the autoupdate column.
 func (c *Conflict) check(ref *Ref) ([]int32, error) {
 	t := ref.Table
-	if len(c.cols) == 0 {
+	if len(c.targets) == 0 && !c.nothing {
 		return nil, errf("OnConflict needs the conflicting columns")
 	}
-	for _, col := range c.cols {
-		if col.Ref.Table != t {
-			return nil, errf("OnConflict names a column of %s on %s", col.Ref.Table.Name, t.Name)
+	for _, e := range c.targets {
+		col, ok := e.(columnar)
+		if !ok {
+			continue
 		}
-		if !t.Columns[col.Index].Stored() {
-			return nil, errf("OnConflict names the computed field %s.%s", t.Name, t.Columns[col.Index].Name)
+		if cc := col.column(); cc.Ref.Table != t {
+			return nil, errf("OnConflict names a column of %s on %s", cc.Ref.Table.Name, t.Name)
+		} else if !t.Columns[cc.Index].Stored() {
+			return nil, errf("OnConflict names the computed field %s.%s", t.Name, t.Columns[cc.Index].Name)
 		}
 	}
 	if c.nothing {
@@ -154,14 +156,10 @@ func (c *Conflict) check(ref *Ref) ([]int32, error) {
 // in the SET clause.
 func (c *Conflict) write(r *render, ref *Ref, changed []int32) {
 	t := ref.Table
-	r.s(" ON CONFLICT (")
-	for i, col := range c.cols {
-		if i > 0 {
-			r.s(", ")
-		}
-		r.s(t.Columns[col.Index].Quoted)
+	r.s(" ON CONFLICT")
+	if len(c.targets) > 0 {
+		c.writeTargets(r)
 	}
-	r.b(')')
 	if hasPreds(c.where) {
 		bound := len(r.args)
 		r.bare = true
@@ -211,6 +209,30 @@ func (c *Conflict) write(r *render, ref *Ref, changed []int32) {
 	}
 }
 
+// writeTargets writes the conflict target, (col, (expr), …), without aliases and refusing values.
+func (c *Conflict) writeTargets(r *render) {
+	bound := len(r.args)
+	r.bare = true
+	r.s(" (")
+	for i, e := range c.targets {
+		if i > 0 {
+			r.s(", ")
+		}
+		if _, ok := e.(columnar); ok {
+			e.writeSQL(r)
+			continue
+		}
+		r.b('(')
+		e.writeSQL(r)
+		r.b(')')
+	}
+	r.b(')')
+	r.bare = false
+	if len(r.args) > bound {
+		r.fail(errf("OnConflict expressions must not bind values; use constants"))
+	}
+}
+
 // assignment returns the Set assignment of column ci, or nil when the column takes the proposed
 // row's value.
 func (c *Conflict) assignment(ci int32) *Assignment {
@@ -238,11 +260,11 @@ func (h Handle[T]) Upsert(ctx context.Context, db *DB, rows []*T, c Conflict) ([
 	return db.upsert(ctx, h.Ref, ps, c)
 }
 
-// CreateOrSkip inserts rows, skipping those that conflict on cols, and returns how many were
-// inserted. Inserted rows run the create hooks; skipped rows run none.
-func (h Handle[T]) CreateOrSkip(ctx context.Context, db *DB, rows []*T,
-	cols ...interface{ column() Col },
-) (int64, error) {
+// CreateOrSkip inserts rows, skipping those that conflict on targets (columns or index
+// expressions, as OnConflict takes them), and returns how many were inserted. Without targets it
+// skips rows that violate any unique constraint (ON CONFLICT DO NOTHING). Inserted rows run the
+// create hooks; skipped rows run none.
+func (h Handle[T]) CreateOrSkip(ctx context.Context, db *DB, rows []*T, targets ...Expr) (int64, error) {
 	if len(rows) == 0 {
 		return 0, nil
 	}
@@ -250,7 +272,7 @@ func (h Handle[T]) CreateOrSkip(ctx context.Context, db *DB, rows []*T,
 	for i, r := range rows {
 		ps[i] = unsafe.Pointer(r)
 	}
-	c := OnConflict(cols...)
+	c := OnConflict(targets...)
 	c.nothing = true
 	ins, err := db.upsert(ctx, h.Ref, ps, c)
 	var n int64
