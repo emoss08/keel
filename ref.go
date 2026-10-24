@@ -6,10 +6,10 @@ import (
 	"github.com/emoss08/keel/schema"
 )
 
-// Table marks a struct as a keel model. Its `db` tag names the table:
+// Table marks a struct as a keel model. Its `keel` tag names the table:
 //
 //	type Shipment struct {
-//	    keel.Table `db:"shipments"`
+//	    keel.Table `keel:"shipments"`
 //	    ...
 //	}
 type Table struct{}

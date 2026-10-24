@@ -53,6 +53,15 @@ type Column struct {
 	Field  string
 	Kind   Kind
 	Flags  ColFlag
+
+	// Label is derived from the field's name, or set by the tag's label= option.
+	Label string
+	// Doc is the field's doc comment.
+	Doc string
+	// Enum lists the constants of the column's named Go type, in declaration order.
+	Enum []EnumValue
+	// Report is how reports present the column; nil when the model is not reportable.
+	Report *ReportInfo
 }
 
 // RelKind is the shape of a relation.
@@ -63,12 +72,15 @@ const (
 	HasOne
 	HasMany
 	ManyToMany
+	Pick
 )
 
 // ToMany reports whether the relation loads a slice.
 func (k RelKind) ToMany() bool { return k == HasMany || k == ManyToMany }
 
-// Relation links a model to another model.
+// Relation links a model to another model. A Pick relation walks Path, one relation index per
+// hop starting from the parent's relations, and picks the first row in Order (the last when Last
+// is set); Local holds the parent's key, which the first hop starts from.
 type Relation struct {
 	Name   string
 	Alias  string
@@ -76,6 +88,17 @@ type Relation struct {
 	Target *Table
 	Local  []int32
 	Remote []int32
+
+	Path  []int32
+	Order []PickKey
+	Last  bool
+
+	// Label is derived from the field's name, or set by the tag's label= option.
+	Label string
+	// Doc is the field's doc comment.
+	Doc string
+	// NoReport hides the relation from reports.
+	NoReport bool
 
 	JoinTable   string
 	JoinAlias   string
@@ -95,6 +118,15 @@ type Table struct {
 	Quoted string
 	Alias  string
 	Model  string
+
+	// Label and Plural are derived from the model's name, or set by the tag's label= and plural=
+	// options.
+	Label  string
+	Plural string
+	// Doc is the model's doc comment.
+	Doc string
+	// Report marks the model as a report's starting entity; nil when it is not reportable.
+	Report *TableReport
 
 	Columns   []Column
 	Relations []Relation

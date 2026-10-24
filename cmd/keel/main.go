@@ -48,6 +48,7 @@ func runGen(args []string) error {
 	kinds := fs.String("kinds", "keelkinds", "shared column kinds package directory, relative to the module root")
 	tags := fs.String("tags", "", "comma-separated build tags")
 	check := fs.Bool("check", false, "fail when generated files are out of date instead of writing them")
+	acronyms := fs.String("acronyms", "", "comma-separated words labels write in capitals (default ID,URL,API,JSON,UUID)")
 	_ = fs.Parse(args)
 	patterns := fs.Args()
 	if len(patterns) == 0 {
@@ -56,6 +57,9 @@ func runGen(args []string) error {
 	o := gen.Options{Patterns: patterns, Out: *out, Kinds: *kinds}
 	if *tags != "" {
 		o.Tags = strings.Split(*tags, ",")
+	}
+	if *acronyms != "" {
+		o.Acronyms = strings.Split(*acronyms, ",")
 	}
 	files, err := gen.Generate(o)
 	if err != nil {

@@ -263,6 +263,7 @@ func (e *emitter) emitPackage(p *pkgModels) ([]byte, error) {
 
 	var body bytes.Buffer
 	w := func(format string, args ...any) { fmt.Fprintf(&body, format, args...) }
+	sh := newShared(sch, p)
 
 	for _, m := range p.models {
 		model := types.TypeString(m.named, q)
@@ -276,11 +277,12 @@ func (e *emitter) emitPackage(p *pkgModels) ([]byte, error) {
 		w("var %s = %s.Table{\n", tblVar, sch)
 		w("\tName: %q,\n\tQuoted: %s,\n\tAlias: %q,\n\tModel: %q,\n", m.table, lit(schema.Quote(m.table)),
 			schema.AliasFor(m.table), m.pkg.name+"."+m.name)
+		body.WriteString(sh.tableMeta(m))
 		w("\tColumns: []%s.Column{\n", sch)
 		for i, c := range m.columns {
-			w("\t\t{Name: %q, Quoted: %s, Field: %q, Kind: %s.%s, Flags: %s},\n",
+			w("\t\t{Name: %q, Quoted: %s, Field: %q, Kind: %s.%s, Flags: %s%s},\n",
 				c.tag.Name, lit(schema.Quote(c.tag.Name)), c.field, sch, kindName(c.kind),
-				strings.ReplaceAll(flagNames(d.Columns[i].Flags), "schema.", sch+"."))
+				strings.ReplaceAll(flagNames(d.Columns[i].Flags), "schema.", sch+"."), sh.columnMeta(c))
 		}
 		w("\t},\n")
 		if len(m.rels) > 0 {
@@ -295,7 +297,7 @@ func (e *emitter) emitPackage(p *pkgModels) ([]byte, error) {
 						lit(schema.Quote(r.tag.JoinTable)), strs([]string{schema.Quote(r.tag.JoinLocal)}),
 						strs([]string{schema.Quote(r.tag.JoinRemote)}))
 				}
-				w("},\n")
+				w("%s},\n", sh.relationMeta(r))
 			}
 			w("\t},\n")
 		}
@@ -438,6 +440,7 @@ func (e *emitter) emitPackage(p *pkgModels) ([]byte, error) {
 		w("}\n\n")
 	}
 
+	sh.write(&body)
 	for _, wr := range e.sortedWrappers() {
 		if wr.outPath == p.outPath {
 			e.emitWrapper(&body, im, wr)
@@ -537,6 +540,7 @@ func (e *emitter) emitWrapper(b *bytes.Buffer, im *imports, wr *wrapper) {
 	w("\n")
 }
 
+// relKindName is the schema identifier of a relation kind.
 func relKindName(k schema.RelKind) string {
 	switch k {
 	case schema.BelongsTo:
@@ -545,6 +549,8 @@ func relKindName(k schema.RelKind) string {
 		return "HasOne"
 	case schema.HasMany:
 		return "HasMany"
+	case schema.Pick:
+		return "Pick"
 	}
 	return "ManyToMany"
 }

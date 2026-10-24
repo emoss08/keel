@@ -2,7 +2,9 @@
 package gen
 
 import (
+	"cmp"
 	"fmt"
+	"go/token"
 	"go/types"
 	"sort"
 	"strings"
@@ -30,10 +32,16 @@ type model struct {
 	pkg     *pkgModels
 	named   *types.Named
 	name    string
+	pos     token.Pos
 	table   string
 	plural  string
 	columns []*column
 	rels    []*relation
+
+	label       string
+	pluralLabel string
+	doc         string
+	report      *schema.TableReport
 
 	hooks map[string]bool
 }
@@ -41,6 +49,7 @@ type model struct {
 // column is one stored field.
 type column struct {
 	field    string
+	pos      token.Pos
 	tag      schema.FieldTag
 	typ      types.Type
 	kind     schema.Kind
@@ -51,12 +60,22 @@ type column struct {
 	basic    string
 	scanner  bool
 	idx      int32
+
+	label   string
+	doc     string
+	enum    *types.Named
+	values  []schema.EnumValue
+	format  string
+	key     bool
+	exposed bool
+	report  *schema.ReportInfo
 }
 
 // relation is one relation field.
 type relation struct {
 	named  *types.Named
 	field  string
+	pos    token.Pos
 	tag    schema.FieldTag
 	target *model
 	slice  bool
@@ -64,8 +83,14 @@ type relation struct {
 	kind   schema.RelKind
 	local  []int32
 	remote []int32
+	path   []int32
+	order  []schema.PickKey
+
+	label string
+	doc   string
 }
 
+// isKeelTable reports whether t is the keel.Table marker.
 func isKeelTable(t types.Type) bool {
 	n, ok := t.(*types.Named)
 	if !ok {
@@ -75,8 +100,16 @@ func isKeelTable(t types.Type) bool {
 	return obj.Pkg() != nil && obj.Pkg().Path() == keelPath && obj.Name() == "Table"
 }
 
+// reader reads models with the source, labels and per-type facts of one generation run.
+type reader struct {
+	src     *source
+	labels  *labeler
+	enums   map[*types.Named][]schema.EnumValue
+	formats map[*types.Named]string
+}
+
 // readModel reads the model named obj, or returns nil when it is not a model.
-func readModel(p *pkgModels, obj *types.TypeName) (*model, error) {
+func (rd *reader) readModel(p *pkgModels, obj *types.TypeName) (*model, error) {
 	named, ok := obj.Type().(*types.Named)
 	if !ok {
 		return nil, nil
@@ -85,71 +118,104 @@ func readModel(p *pkgModels, obj *types.TypeName) (*model, error) {
 	if !ok {
 		return nil, nil
 	}
-	m := &model{pkg: p, named: named, name: obj.Name(), hooks: map[string]bool{}}
-	isModel := false
-	for i := 0; i < st.NumFields(); i++ {
-		f := st.Field(i)
-		if f.Embedded() && isKeelTable(f.Type()) {
-			tag := lookupTag(st.Tag(i), "db")
-			tt, err := schema.ParseTableTag(tag)
-			if err != nil {
-				return nil, fmt.Errorf("%s.%s: %w", p.path, obj.Name(), err)
-			}
-			m.table = tt.Name
-			isModel = true
-		}
+	m := &model{pkg: p, named: named, name: obj.Name(), pos: obj.Pos(), hooks: map[string]bool{}}
+	isModel, err := rd.readTable(m, st)
+	if err != nil || !isModel {
+		return nil, err
 	}
-	if !isModel {
-		return nil, nil
-	}
-	m.plural = plural(m.name)
 	for i := 0; i < st.NumFields(); i++ {
 		f := st.Field(i)
 		if f.Embedded() && isKeelTable(f.Type()) {
 			continue
 		}
-		raw := lookupTag(st.Tag(i), "db")
-		ft, ok, err := schema.ParseFieldTag(raw)
-		if err != nil {
-			return nil, fmt.Errorf("%s.%s.%s: %w", p.path, m.name, f.Name(), err)
+		if err := rd.readField(m, f, lookupTag(st.Tag(i), "keel")); err != nil {
+			return nil, rd.src.errorf(f.Pos(), "%s.%s: %v", m.name, f.Name(), err)
 		}
-		if !ok {
-			continue
-		}
-		if !f.Exported() {
-			return nil, fmt.Errorf("%s.%s.%s: stored fields must be exported", p.path, m.name, f.Name())
-		}
-		if ft.IsRelation() {
-			r, err := readRelation(m, f, ft)
-			if err != nil {
-				return nil, err
-			}
-			m.rels = append(m.rels, r)
-			continue
-		}
-		c, err := readColumn(m, f, ft)
-		if err != nil {
-			return nil, err
-		}
-		c.idx = int32(len(m.columns))
-		m.columns = append(m.columns, c)
 	}
-	ptr := types.NewPointer(named)
-	ms := types.NewMethodSet(ptr)
-	for _, h := range []string{"BeforeCreate", "BeforeUpdate", "BeforeSave", "BeforeDelete", "AfterLoad"} {
-		sel := ms.Lookup(p.pkg, h)
-		if sel == nil {
-			continue
-		}
-		sig := sel.Type().(*types.Signature)
-		if !isHookSig(sig) {
-			return nil, fmt.Errorf("%s.%s.%s must be func(context.Context) error", p.path, m.name, h)
-		}
-		m.hooks[h] = true
+	if err := rd.readHooks(m); err != nil {
+		return nil, err
 	}
 	return m, nil
 }
 
+// readTable reads the keel.Table marker of st into m and reports whether st is a model.
+func (rd *reader) readTable(m *model, st *types.Struct) (bool, error) {
+	for i := 0; i < st.NumFields(); i++ {
+		f := st.Field(i)
+		if !f.Embedded() || !isKeelTable(f.Type()) {
+			continue
+		}
+		tt, err := schema.ParseTableTag(lookupTag(st.Tag(i), "keel"))
+		if err != nil {
+			return false, rd.src.errorf(f.Pos(), "%s: %v", m.name, err)
+		}
+		doc, err := rd.src.doc(m.pos, m.name)
+		if err != nil {
+			return false, err
+		}
+		m.table, m.doc, m.plural = tt.Name, doc, plural(m.name)
+		m.label = cmp.Or(tt.Label, rd.labels.label(m.name))
+		m.pluralLabel = cmp.Or(tt.Plural, pluralLabel(m.label))
+		if tt.Report {
+			m.report = &schema.TableReport{Category: tt.Category}
+		}
+		return true, nil
+	}
+	return false, nil
+}
+
+// readField reads one field of a model: a column, a relation, or nothing when it is not stored.
+func (rd *reader) readField(m *model, f *types.Var, raw string) error {
+	ft, ok, err := schema.ParseFieldTag(raw)
+	if err != nil || !ok {
+		return err
+	}
+	if !f.Exported() {
+		return fmt.Errorf("stored fields must be exported")
+	}
+	doc, err := rd.src.doc(f.Pos(), f.Name())
+	if err != nil {
+		return err
+	}
+	label := cmp.Or(ft.Label, rd.labels.label(f.Name()))
+	if ft.IsRelation() {
+		r, err := readRelation(f, ft)
+		if err != nil {
+			return err
+		}
+		r.pos, r.doc, r.label = f.Pos(), doc, label
+		m.rels = append(m.rels, r)
+		return nil
+	}
+	c, err := readColumn(f, ft)
+	if err != nil {
+		return err
+	}
+	c.pos, c.doc, c.label, c.idx = f.Pos(), doc, label, int32(len(m.columns))
+	if err := rd.readTypeFacts(c); err != nil {
+		return err
+	}
+	m.columns = append(m.columns, c)
+	return nil
+}
+
+// readHooks records the model hooks m declares, refusing a hook name with the wrong signature.
+func (rd *reader) readHooks(m *model) error {
+	ms := types.NewMethodSet(types.NewPointer(m.named))
+	for _, h := range []string{"BeforeCreate", "BeforeUpdate", "BeforeSave", "BeforeDelete", "AfterLoad"} {
+		sel := ms.Lookup(m.pkg.pkg, h)
+		if sel == nil {
+			continue
+		}
+		if !isHookSig(sel.Type().(*types.Signature)) {
+			return rd.src.errorf(sel.Obj().Pos(), "%s.%s must be func(context.Context) error", m.name, h)
+		}
+		m.hooks[h] = true
+	}
+	return nil
+}
+
+// isHookSig reports whether sig is func(context.Context) error.
 func isHookSig(sig *types.Signature) bool {
 	if sig.Params().Len() != 1 || sig.Results().Len() != 1 {
 		return false
@@ -161,7 +227,8 @@ func isHookSig(sig *types.Signature) bool {
 	return types.Identical(sig.Results().At(0).Type(), types.Universe.Lookup("error").Type())
 }
 
-func readRelation(m *model, f *types.Var, ft schema.FieldTag) (*relation, error) {
+// readRelation reads a relation field.
+func readRelation(f *types.Var, ft schema.FieldTag) (*relation, error) {
 	r := &relation{field: f.Name(), tag: ft, kind: ft.Rel}
 	t := f.Type()
 	if s, ok := t.(*types.Slice); ok {
@@ -174,19 +241,20 @@ func readRelation(m *model, f *types.Var, ft schema.FieldTag) (*relation, error)
 	}
 	n, ok := t.(*types.Named)
 	if !ok {
-		return nil, fmt.Errorf("%s.%s: relation must point to a model", m.name, f.Name())
+		return nil, fmt.Errorf("relation must point to a model")
 	}
 	r.named = n
 	if ft.Rel.ToMany() != r.slice {
-		return nil, fmt.Errorf("%s.%s: %s relations need a %s field", m.name, f.Name(),
-			relName(ft.Rel), map[bool]string{true: "slice", false: "pointer"}[ft.Rel.ToMany()])
+		return nil, fmt.Errorf("%s relations need a %s field", relName(ft.Rel),
+			map[bool]string{true: "slice", false: "pointer"}[ft.Rel.ToMany()])
 	}
 	if !r.slice && !r.ptrEl {
-		return nil, fmt.Errorf("%s.%s: to-one relations need a pointer field", m.name, f.Name())
+		return nil, fmt.Errorf("to-one relations need a pointer field")
 	}
 	return r, nil
 }
 
+// relName is the tag name of a relation kind.
 func relName(k schema.RelKind) string {
 	switch k {
 	case schema.BelongsTo:
@@ -195,10 +263,13 @@ func relName(k schema.RelKind) string {
 		return "one"
 	case schema.HasMany:
 		return "many"
+	case schema.Pick:
+		return "pick"
 	}
 	return "m2m"
 }
 
+// scannerIface is sql.Scanner.
 var scannerIface = func() *types.Interface {
 	any := types.Universe.Lookup("any").Type()
 	errT := types.Universe.Lookup("error").Type()
@@ -209,7 +280,8 @@ var scannerIface = func() *types.Interface {
 	return types.NewInterfaceType([]*types.Func{fn}, nil).Complete()
 }()
 
-func readColumn(m *model, f *types.Var, ft schema.FieldTag) (*column, error) {
+// readColumn reads a column field: its kind, nullability and Go type.
+func readColumn(f *types.Var, ft schema.FieldTag) (*column, error) {
 	c := &column{field: f.Name(), tag: ft, typ: f.Type()}
 	t := f.Type()
 	if p, ok := t.(*types.Pointer); ok {
@@ -263,22 +335,22 @@ func readColumn(m *model, f *types.Var, ft schema.FieldTag) (*column, error) {
 		case types.Bool:
 			c.kind = schema.KindBool
 		default:
-			return nil, fmt.Errorf("%s.%s: unsupported type %s", m.name, f.Name(), f.Type())
+			return nil, fmt.Errorf("unsupported type %s", f.Type())
 		}
 		if u.Kind() == types.Int && c.named != nil {
-			return nil, fmt.Errorf("%s.%s: use int64, not int, for named integer types", m.name, f.Name())
+			return nil, fmt.Errorf("use int64, not int, for named integer types")
 		}
 		if u.Kind() == types.Int {
-			return nil, fmt.Errorf("%s.%s: use int64, not int", m.name, f.Name())
+			return nil, fmt.Errorf("use int64, not int")
 		}
 	case *types.Slice:
 		if c.ptr {
-			return nil, fmt.Errorf("%s.%s: pointer to slice is not supported", m.name, f.Name())
+			return nil, fmt.Errorf("pointer to slice is not supported")
 		}
 		c.nullable = true
 		eb, ok := u.Elem().Underlying().(*types.Basic)
 		if !ok {
-			return nil, fmt.Errorf("%s.%s: slices of %s need the jsonb option", m.name, f.Name(), u.Elem())
+			return nil, fmt.Errorf("slices of %s need the jsonb option", u.Elem())
 		}
 		if en, ok := u.Elem().(*types.Named); ok {
 			c.elem = en
@@ -291,14 +363,15 @@ func readColumn(m *model, f *types.Var, ft schema.FieldTag) (*column, error) {
 		case types.Int64:
 			c.kind = schema.KindInt64Array
 		default:
-			return nil, fmt.Errorf("%s.%s: unsupported slice type %s", m.name, f.Name(), f.Type())
+			return nil, fmt.Errorf("unsupported slice type %s", f.Type())
 		}
 	default:
-		return nil, fmt.Errorf("%s.%s: %s needs the jsonb option", m.name, f.Name(), f.Type())
+		return nil, fmt.Errorf("%s needs the jsonb option", f.Type())
 	}
 	return c, nil
 }
 
+// lookupTag returns the value of key in a struct tag, as reflect.StructTag.Get does.
 func lookupTag(tag, key string) string {
 	for tag != "" {
 		i := 0
@@ -350,99 +423,7 @@ func plural(name string) string {
 	return name + "s"
 }
 
-// resolve links relations to their target models and computes their keys.
-func resolve(all map[*types.Named]*model, models []*model) error {
-	for _, m := range models {
-		if err := checkColumns(m); err != nil {
-			return err
-		}
-	}
-	for _, m := range models {
-		for _, r := range m.rels {
-			n := relTarget(m, r)
-			target, ok := all[n]
-			if !ok {
-				return fmt.Errorf("%s.%s: %s is not a model in the generated packages", m.name, r.field, n)
-			}
-			r.target = target
-			switch r.kind {
-			case schema.BelongsTo:
-				fk := m.column(r.tag.RelKey)
-				if fk == nil {
-					return fmt.Errorf("%s.%s: %s has no column %s", m.name, r.field, m.name, r.tag.RelKey)
-				}
-				pk, err := target.singleKey()
-				if err != nil {
-					return fmt.Errorf("%s.%s: %w", m.name, r.field, err)
-				}
-				r.local, r.remote = []int32{fk.idx}, []int32{pk.idx}
-			case schema.HasOne, schema.HasMany:
-				fk := target.column(r.tag.RelKey)
-				if fk == nil {
-					return fmt.Errorf("%s.%s: %s has no column %s", m.name, r.field, target.name, r.tag.RelKey)
-				}
-				pk, err := m.singleKey()
-				if err != nil {
-					return fmt.Errorf("%s.%s: %w", m.name, r.field, err)
-				}
-				r.local, r.remote = []int32{pk.idx}, []int32{fk.idx}
-			case schema.ManyToMany:
-				pk, err := m.singleKey()
-				if err != nil {
-					return fmt.Errorf("%s.%s: %w", m.name, r.field, err)
-				}
-				tpk, err := target.singleKey()
-				if err != nil {
-					return fmt.Errorf("%s.%s: %w", m.name, r.field, err)
-				}
-				r.local, r.remote = []int32{pk.idx}, []int32{tpk.idx}
-			}
-		}
-	}
-	return nil
-}
-
-func relTarget(_ *model, r *relation) *types.Named { return r.named }
-
-func checkColumns(m *model) error {
-	seen := map[string]bool{}
-	special := map[schema.ColFlag]string{}
-	for _, c := range m.columns {
-		if seen[c.tag.Name] {
-			return fmt.Errorf("%s: column %s is declared twice", m.name, c.tag.Name)
-		}
-		seen[c.tag.Name] = true
-		for _, f := range []schema.ColFlag{schema.FlagVersion, schema.FlagAutoID, schema.FlagAutoCreate,
-			schema.FlagAutoUpdate} {
-			if c.tag.Flags.Has(f) {
-				if prev, ok := special[f]; ok {
-					return fmt.Errorf("%s: %s and %s both carry the same option", m.name, prev, c.field)
-				}
-				special[f] = c.field
-			}
-		}
-		if c.tag.Flags.Has(schema.FlagVersion) && (c.kind != schema.KindInt64 || c.ptr) {
-			return fmt.Errorf("%s.%s: version columns must be int64", m.name, c.field)
-		}
-		if c.tag.Flags.Has(schema.FlagAutoID) && (c.kind != schema.KindString || c.ptr) {
-			return fmt.Errorf("%s.%s: autoid columns must be strings", m.name, c.field)
-		}
-		for _, f := range []schema.ColFlag{schema.FlagAutoCreate, schema.FlagAutoUpdate} {
-			if c.tag.Flags.Has(f) && c.kind != schema.KindInt64 && c.kind != schema.KindTime {
-				return fmt.Errorf("%s.%s: timestamp columns must be int64 (Unix seconds) or time.Time",
-					m.name, c.field)
-			}
-		}
-		if c.tag.Flags.Has(schema.FlagAutoCreate) && c.named != nil {
-			return fmt.Errorf("%s.%s: timestamp columns must be int64 or time.Time", m.name, c.field)
-		}
-		if c.tag.Flags.Has(schema.FlagAutoUpdate) && c.named != nil {
-			return fmt.Errorf("%s.%s: timestamp columns must be int64 or time.Time", m.name, c.field)
-		}
-	}
-	return nil
-}
-
+// column returns the column named name, or nil.
 func (m *model) column(name string) *column {
 	for _, c := range m.columns {
 		if c.tag.Name == name {
@@ -452,6 +433,7 @@ func (m *model) column(name string) *column {
 	return nil
 }
 
+// singleKey returns the one primary key column besides the tenant columns.
 func (m *model) singleKey() (*column, error) {
 	var keys []*column
 	for _, c := range m.columns {
@@ -479,6 +461,7 @@ func (m *model) derived() *schema.Table {
 	return t
 }
 
+// sortedPkgs returns the packages ordered by import path.
 func sortedPkgs(m map[string]*pkgModels) []*pkgModels {
 	out := make([]*pkgModels, 0, len(m))
 	for _, p := range m {
@@ -488,6 +471,7 @@ func sortedPkgs(m map[string]*pkgModels) []*pkgModels {
 	return out
 }
 
+// exportedName returns s with its first letter in upper case.
 func exportedName(s string) string {
 	if s == "" {
 		return s

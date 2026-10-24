@@ -14,130 +14,155 @@ import (
 type Status string
 
 const (
-	StatusNew       Status = "New"
-	StatusAssigned  Status = "Assigned"
+	// StatusNew is a shipment nobody has planned yet.
+	StatusNew Status = "New"
+	// StatusAssigned is a shipment with a driver.
+	StatusAssigned Status = "Assigned"
+	// StatusInTransit is a shipment on the road.
 	StatusInTransit Status = "InTransit"
+	// StatusDelivered is a shipment at its destination.
 	StatusDelivered Status = "Delivered"
-	StatusCanceled  Status = "Canceled"
+	// StatusCanceled is a shipment that will not move.
+	StatusCanceled Status = "Canceled"
 )
 
 // Priority is a shipment's priority.
 type Priority int16
 
+const (
+	// PriorityNormal is the default priority.
+	PriorityNormal Priority = 0
+	// PriorityHigh moves ahead of normal shipments.
+	PriorityHigh Priority = 1
+	// PriorityUrgent moves first.
+	PriorityUrgent Priority = 2
+)
+
 // Customer is a tenant's customer.
 type Customer struct {
-	keel.Table `db:"customers"`
+	keel.Table `keel:"customers,report=Sales"`
 
-	ID             ids.ID  `db:"id,pk,autoid:cus_"`
-	OrganizationID ids.ID  `db:"organization_id,pk,tenant"`
-	BusinessUnitID ids.ID  `db:"business_unit_id,pk,tenant"`
-	Name           string  `db:"name"`
-	Code           string  `db:"code"`
-	Email          *string `db:"email"`
-	Version        int64   `db:"version,version"`
-	CreatedAt      int64   `db:"created_at,autocreate"`
-	UpdatedAt      int64   `db:"updated_at,autoupdate"`
+	ID             ids.ID `keel:"id,pk,autoid:cus_"`
+	OrganizationID ids.ID `keel:"organization_id,pk,tenant"`
+	BusinessUnitID ids.ID `keel:"business_unit_id,pk,tenant"`
+	// Name is the customer's trading name.
+	Name string `keel:"name"`
+	// Code is the customer's short code, unique per tenant.
+	Code      string  `keel:"code"`
+	Email     *string `keel:"email"`
+	Version   int64   `keel:"version,version"`
+	CreatedAt int64   `keel:"created_at,autocreate"`
+	UpdatedAt int64   `keel:"updated_at,autoupdate"`
 }
 
 // Shipment is a load moved for a customer.
 type Shipment struct {
-	keel.Table `db:"shipments"`
+	keel.Table `keel:"shipments,report=Operations"`
 
-	ID             ids.ID         `db:"id,pk,autoid:shp_"`
-	OrganizationID ids.ID         `db:"organization_id,pk,tenant"`
-	BusinessUnitID ids.ID         `db:"business_unit_id,pk,tenant"`
-	CustomerID     ids.ID         `db:"customer_id"`
-	BillToID       *ids.ID        `db:"bill_to_id"`
-	ProNumber      string         `db:"pro_number"`
-	Status         Status         `db:"status"`
-	Priority       Priority       `db:"priority"`
-	Weight         *int64         `db:"weight"`
-	Total          Money          `db:"total"`
-	Hazmat         bool           `db:"hazmat"`
-	Labels         []string       `db:"labels"`
-	Attributes     map[string]any `db:"attributes,jsonb"`
-	SearchVector   string         `db:"search_vector,noselect,readonly,tsvector"`
-	StageRank      int16          `db:"stage_rank,readonly"`
-	CanceledAt     *int64         `db:"canceled_at"`
-	Version        int64          `db:"version,version"`
-	CreatedAt      int64          `db:"created_at,autocreate"`
-	UpdatedAt      int64          `db:"updated_at,autoupdate"`
+	ID             ids.ID  `keel:"id,pk,autoid:shp_"`
+	OrganizationID ids.ID  `keel:"organization_id,pk,tenant"`
+	BusinessUnitID ids.ID  `keel:"business_unit_id,pk,tenant"`
+	CustomerID     ids.ID  `keel:"customer_id"`
+	BillToID       *ids.ID `keel:"bill_to_id"`
+	// ProNumber is the carrier's progressive number, unique per tenant.
+	ProNumber string   `keel:"pro_number,label=PRO Number"`
+	Status    Status   `keel:"status"`
+	Priority  Priority `keel:"priority"`
+	// Weight is the shipment's gross weight in pounds.
+	Weight       *int64         `keel:"weight,format=weight"`
+	Total        Money          `keel:"total,type=decimal"`
+	Hazmat       bool           `keel:"hazmat"`
+	Labels       []string       `keel:"labels"`
+	Attributes   map[string]any `keel:"attributes,jsonb,noreport"`
+	SearchVector string         `keel:"search_vector,noselect,readonly,tsvector"`
+	StageRank    int16          `keel:"stage_rank,readonly,dimension"`
+	CanceledAt   *int64         `keel:"canceled_at"`
+	Version      int64          `keel:"version,version"`
+	CreatedAt    int64          `keel:"created_at,autocreate"`
+	UpdatedAt    int64          `keel:"updated_at,autoupdate"`
 
-	Customer *Customer `db:"belongs:customer_id"`
-	BillTo   *Customer `db:"belongs:bill_to_id"`
-	Moves    []*Move   `db:"many:shipment_id"`
-	Tags     []*Tag    `db:"m2m:shipment_tags.shipment_id.tag_id"`
+	Customer *Customer `keel:"belongs:customer_id"`
+	BillTo   *Customer `keel:"belongs:bill_to_id,label=Bill-to Customer"`
+	Moves    []*Move   `keel:"many:shipment_id"`
+	Tags     []*Tag    `keel:"m2m:shipment_tags.shipment_id.tag_id,noreport"`
+	// OriginStop is the first stop of the shipment's first move.
+	OriginStop *Stop `keel:"pick:moves.stops,first=moves.sequence|stops.sequence"`
+	// DestinationStop is the last stop of the shipment's last move.
+	DestinationStop *Stop `keel:"pick:moves.stops,last=moves.sequence|stops.sequence"`
 }
 
 // Move is one leg of a shipment.
 type Move struct {
-	keel.Table `db:"moves"`
+	keel.Table `keel:"moves,report=Operations"`
 
-	ID             ids.ID `db:"id,pk,autoid:mov_"`
-	OrganizationID ids.ID `db:"organization_id,pk,tenant"`
-	BusinessUnitID ids.ID `db:"business_unit_id,pk,tenant"`
-	ShipmentID     ids.ID `db:"shipment_id"`
-	Sequence       int32  `db:"sequence"`
-	Status         Status `db:"status"`
-	Loaded         bool   `db:"loaded"`
-	CreatedAt      int64  `db:"created_at,autocreate"`
+	ID             ids.ID `keel:"id,pk,autoid:mov_"`
+	OrganizationID ids.ID `keel:"organization_id,pk,tenant"`
+	BusinessUnitID ids.ID `keel:"business_unit_id,pk,tenant"`
+	ShipmentID     ids.ID `keel:"shipment_id"`
+	// Sequence orders the moves of a shipment.
+	Sequence  int32  `keel:"sequence,dimension,agg=min|max"`
+	Status    Status `keel:"status"`
+	Loaded    bool   `keel:"loaded"`
+	CreatedAt int64  `keel:"created_at,autocreate"`
 
-	Shipment *Shipment `db:"belongs:shipment_id"`
-	Stops    []*Stop   `db:"many:move_id"`
+	Shipment *Shipment `keel:"belongs:shipment_id"`
+	Stops    []*Stop   `keel:"many:move_id"`
+	// FirstStop is the move's first stop.
+	FirstStop *Stop `keel:"pick:stops,first=stops.sequence"`
 }
 
 // Stop is a pickup or delivery on a move.
 type Stop struct {
-	keel.Table `db:"stops"`
+	keel.Table `keel:"stops,report=Operations"`
 
-	ID             ids.ID     `db:"id,pk,autoid:stp_"`
-	OrganizationID ids.ID     `db:"organization_id,pk,tenant"`
-	BusinessUnitID ids.ID     `db:"business_unit_id,pk,tenant"`
-	MoveID         ids.ID     `db:"move_id"`
-	LocationID     ids.ID     `db:"location_id"`
-	Sequence       int32      `db:"sequence"`
-	Kind           string     `db:"kind"`
-	ArrivedAt      *time.Time `db:"arrived_at"`
+	ID             ids.ID     `keel:"id,pk,autoid:stp_"`
+	OrganizationID ids.ID     `keel:"organization_id,pk,tenant"`
+	BusinessUnitID ids.ID     `keel:"business_unit_id,pk,tenant"`
+	MoveID         ids.ID     `keel:"move_id"`
+	LocationID     ids.ID     `keel:"location_id"`
+	Sequence       int32      `keel:"sequence"`
+	Kind           string     `keel:"kind"`
+	ArrivedAt      *time.Time `keel:"arrived_at"`
 
-	Location *Location `db:"belongs:location_id"`
+	Location *Location `keel:"belongs:location_id"`
 }
 
 // Location is a place stops happen at.
 type Location struct {
-	keel.Table `db:"locations"`
+	keel.Table `keel:"locations,report=Operations"`
 
-	ID             ids.ID `db:"id,pk,autoid:loc_"`
-	OrganizationID ids.ID `db:"organization_id,pk,tenant"`
-	BusinessUnitID ids.ID `db:"business_unit_id,pk,tenant"`
-	Name           string `db:"name"`
-	City           string `db:"city"`
+	ID             ids.ID `keel:"id,pk,autoid:loc_"`
+	OrganizationID ids.ID `keel:"organization_id,pk,tenant"`
+	BusinessUnitID ids.ID `keel:"business_unit_id,pk,tenant"`
+	Name           string `keel:"name"`
+	City           string `keel:"city"`
 }
 
 // Tag labels shipments.
 type Tag struct {
-	keel.Table `db:"tags"`
+	keel.Table `keel:"tags"`
 
-	ID             ids.ID `db:"id,pk,autoid:tag_"`
-	OrganizationID ids.ID `db:"organization_id,pk,tenant"`
-	BusinessUnitID ids.ID `db:"business_unit_id,pk,tenant"`
-	Name           string `db:"name"`
+	ID             ids.ID `keel:"id,pk,autoid:tag_"`
+	OrganizationID ids.ID `keel:"organization_id,pk,tenant"`
+	BusinessUnitID ids.ID `keel:"business_unit_id,pk,tenant"`
+	Name           string `keel:"name"`
 }
 
 // Worker drives moves; it reports to another worker.
 type Worker struct {
-	keel.Table `db:"workers"`
+	keel.Table `keel:"workers"`
 
-	ID             ids.ID    `db:"id,pk,autoid:wrk_"`
-	OrganizationID ids.ID    `db:"organization_id,pk,tenant"`
-	BusinessUnitID ids.ID    `db:"business_unit_id,pk,tenant"`
-	ManagerID      *ids.ID   `db:"manager_id"`
-	FirstName      string    `db:"first_name"`
-	LastName       string    `db:"last_name"`
-	WholeName      string    `db:"whole_name,readonly"`
-	HiredAt        time.Time `db:"hired_at,autocreate"`
-	Initials       string    `db:"-"`
+	ID             ids.ID    `keel:"id,pk,autoid:wrk_"`
+	OrganizationID ids.ID    `keel:"organization_id,pk,tenant"`
+	BusinessUnitID ids.ID    `keel:"business_unit_id,pk,tenant"`
+	ManagerID      *ids.ID   `keel:"manager_id"`
+	FirstName      string    `keel:"first_name"`
+	LastName       string    `keel:"last_name"`
+	WholeName      string    `keel:"whole_name,readonly"`
+	HiredAt        time.Time `keel:"hired_at,autocreate"`
+	Initials       string    `keel:"-"`
 
-	Manager *Worker `db:"belongs:manager_id"`
+	Manager *Worker `keel:"belongs:manager_id"`
 }
 
 // BeforeSave trims the names before every write.
@@ -157,8 +182,8 @@ func (w *Worker) AfterLoad(_ context.Context) error {
 
 // Plant is a table without tenant columns, shared by every tenant.
 type Plant struct {
-	keel.Table `db:"plants"`
+	keel.Table `keel:"plants"`
 
-	Code string `db:"code,pk"`
-	Name string `db:"name"`
+	Code string `keel:"code,pk"`
+	Name string `keel:"name"`
 }

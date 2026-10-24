@@ -19,16 +19,20 @@ var customersTable = schema.Table{
 	Quoted: `"customers"`,
 	Alias:  "c",
 	Model:  "fleet.Customer",
+	Label:  `Customer`,
+	Plural: `Customers`,
+	Doc:    `Customer is a tenant's customer.`,
+	Report: &schema.TableReport{Category: `Sales`},
 	Columns: []schema.Column{
-		{Name: "id", Quoted: `"id"`, Field: "ID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagAutoID},
-		{Name: "organization_id", Quoted: `"organization_id"`, Field: "OrganizationID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagTenant},
-		{Name: "business_unit_id", Quoted: `"business_unit_id"`, Field: "BusinessUnitID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagTenant},
-		{Name: "name", Quoted: `"name"`, Field: "Name", Kind: schema.KindString, Flags: 0},
-		{Name: "code", Quoted: `"code"`, Field: "Code", Kind: schema.KindString, Flags: 0},
-		{Name: "email", Quoted: `"email"`, Field: "Email", Kind: schema.KindString, Flags: schema.FlagNullable},
-		{Name: "version", Quoted: `"version"`, Field: "Version", Kind: schema.KindInt64, Flags: schema.FlagVersion},
-		{Name: "created_at", Quoted: `"created_at"`, Field: "CreatedAt", Kind: schema.KindInt64, Flags: schema.FlagAutoCreate},
-		{Name: "updated_at", Quoted: `"updated_at"`, Field: "UpdatedAt", Kind: schema.KindInt64, Flags: schema.FlagAutoUpdate},
+		{Name: "id", Quoted: `"id"`, Field: "ID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagAutoID, Label: `ID`, Report: &reportDimStringId},
+		{Name: "organization_id", Quoted: `"organization_id"`, Field: "OrganizationID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagTenant, Label: `Organization ID`, Report: &reportDimStringIdHidden},
+		{Name: "business_unit_id", Quoted: `"business_unit_id"`, Field: "BusinessUnitID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagTenant, Label: `Business Unit ID`, Report: &reportDimStringIdHidden},
+		{Name: "name", Quoted: `"name"`, Field: "Name", Kind: schema.KindString, Flags: 0, Label: `Name`, Doc: `Name is the customer's trading name.`, Report: &reportDimString},
+		{Name: "code", Quoted: `"code"`, Field: "Code", Kind: schema.KindString, Flags: 0, Label: `Code`, Doc: `Code is the customer's short code, unique per tenant.`, Report: &reportDimString},
+		{Name: "email", Quoted: `"email"`, Field: "Email", Kind: schema.KindString, Flags: schema.FlagNullable, Label: `Email`, Report: &reportDimString},
+		{Name: "version", Quoted: `"version"`, Field: "Version", Kind: schema.KindInt64, Flags: schema.FlagVersion, Label: `Version`, Report: &reportMeasureIntegerHidden},
+		{Name: "created_at", Quoted: `"created_at"`, Field: "CreatedAt", Kind: schema.KindInt64, Flags: schema.FlagAutoCreate, Label: `Created At`, Report: &reportDimEpoch},
+		{Name: "updated_at", Quoted: `"updated_at"`, Field: "UpdatedAt", Kind: schema.KindInt64, Flags: schema.FlagAutoUpdate, Label: `Updated At`, Report: &reportDimEpoch},
 	},
 	PK:         []int32{0, 1, 2},
 	Tenant:     []int32{1, 2},
@@ -172,12 +176,16 @@ var locationsTable = schema.Table{
 	Quoted: `"locations"`,
 	Alias:  "l",
 	Model:  "fleet.Location",
+	Label:  `Location`,
+	Plural: `Locations`,
+	Doc:    `Location is a place stops happen at.`,
+	Report: &schema.TableReport{Category: `Operations`},
 	Columns: []schema.Column{
-		{Name: "id", Quoted: `"id"`, Field: "ID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagAutoID},
-		{Name: "organization_id", Quoted: `"organization_id"`, Field: "OrganizationID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagTenant},
-		{Name: "business_unit_id", Quoted: `"business_unit_id"`, Field: "BusinessUnitID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagTenant},
-		{Name: "name", Quoted: `"name"`, Field: "Name", Kind: schema.KindString, Flags: 0},
-		{Name: "city", Quoted: `"city"`, Field: "City", Kind: schema.KindString, Flags: 0},
+		{Name: "id", Quoted: `"id"`, Field: "ID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagAutoID, Label: `ID`, Report: &reportDimStringId},
+		{Name: "organization_id", Quoted: `"organization_id"`, Field: "OrganizationID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagTenant, Label: `Organization ID`, Report: &reportDimStringIdHidden},
+		{Name: "business_unit_id", Quoted: `"business_unit_id"`, Field: "BusinessUnitID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagTenant, Label: `Business Unit ID`, Report: &reportDimStringIdHidden},
+		{Name: "name", Quoted: `"name"`, Field: "Name", Kind: schema.KindString, Flags: 0, Label: `Name`, Report: &reportDimString},
+		{Name: "city", Quoted: `"city"`, Field: "City", Kind: schema.KindString, Flags: 0, Label: `City`, Report: &reportDimString},
 	},
 	PK:         []int32{0, 1, 2},
 	Tenant:     []int32{1, 2},
@@ -290,19 +298,24 @@ var movesTable = schema.Table{
 	Quoted: `"moves"`,
 	Alias:  "m",
 	Model:  "fleet.Move",
+	Label:  `Move`,
+	Plural: `Moves`,
+	Doc:    `Move is one leg of a shipment.`,
+	Report: &schema.TableReport{Category: `Operations`},
 	Columns: []schema.Column{
-		{Name: "id", Quoted: `"id"`, Field: "ID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagAutoID},
-		{Name: "organization_id", Quoted: `"organization_id"`, Field: "OrganizationID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagTenant},
-		{Name: "business_unit_id", Quoted: `"business_unit_id"`, Field: "BusinessUnitID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagTenant},
-		{Name: "shipment_id", Quoted: `"shipment_id"`, Field: "ShipmentID", Kind: schema.KindString, Flags: 0},
-		{Name: "sequence", Quoted: `"sequence"`, Field: "Sequence", Kind: schema.KindInt32, Flags: 0},
-		{Name: "status", Quoted: `"status"`, Field: "Status", Kind: schema.KindString, Flags: 0},
-		{Name: "loaded", Quoted: `"loaded"`, Field: "Loaded", Kind: schema.KindBool, Flags: 0},
-		{Name: "created_at", Quoted: `"created_at"`, Field: "CreatedAt", Kind: schema.KindInt64, Flags: schema.FlagAutoCreate},
+		{Name: "id", Quoted: `"id"`, Field: "ID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagAutoID, Label: `ID`, Report: &reportDimStringId},
+		{Name: "organization_id", Quoted: `"organization_id"`, Field: "OrganizationID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagTenant, Label: `Organization ID`, Report: &reportDimStringIdHidden},
+		{Name: "business_unit_id", Quoted: `"business_unit_id"`, Field: "BusinessUnitID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagTenant, Label: `Business Unit ID`, Report: &reportDimStringIdHidden},
+		{Name: "shipment_id", Quoted: `"shipment_id"`, Field: "ShipmentID", Kind: schema.KindString, Flags: 0, Label: `Shipment ID`, Report: &reportDimStringIdHidden},
+		{Name: "sequence", Quoted: `"sequence"`, Field: "Sequence", Kind: schema.KindInt32, Flags: 0, Label: `Sequence`, Doc: `Sequence orders the moves of a shipment.`, Report: &reportDimIntegerAggMinMax},
+		{Name: "status", Quoted: `"status"`, Field: "Status", Kind: schema.KindString, Flags: 0, Label: `Status`, Enum: enumStatus[:], Report: &reportDimEnum},
+		{Name: "loaded", Quoted: `"loaded"`, Field: "Loaded", Kind: schema.KindBool, Flags: 0, Label: `Loaded`, Report: &reportDimBool},
+		{Name: "created_at", Quoted: `"created_at"`, Field: "CreatedAt", Kind: schema.KindInt64, Flags: schema.FlagAutoCreate, Label: `Created At`, Report: &reportDimEpoch},
 	},
 	Relations: []schema.Relation{
-		{Name: "Shipment", Alias: "s", Kind: schema.BelongsTo, Local: []int32{3}, Remote: []int32{0}},
-		{Name: "Stops", Alias: "s", Kind: schema.HasMany, Local: []int32{0}, Remote: []int32{3}},
+		{Name: "Shipment", Alias: "s", Kind: schema.BelongsTo, Local: []int32{3}, Remote: []int32{0}, Label: `Shipment`},
+		{Name: "Stops", Alias: "s", Kind: schema.HasMany, Local: []int32{0}, Remote: []int32{3}, Label: `Stops`},
+		{Name: "FirstStop", Alias: "fs", Kind: schema.Pick, Local: []int32{0}, Remote: nil, Label: `First Stop`, Doc: `FirstStop is the move's first stop.`, Path: []int32{1}, Order: []schema.PickKey{{Hop: 0, Column: 5}, {Hop: 0, Column: 0}}},
 	},
 	PK:         []int32{0, 1, 2},
 	Tenant:     []int32{1, 2},
@@ -378,6 +391,9 @@ func (t *MovesTable) Shipment() *ShipmentsTable { return keel.Path(t.Ref, 0, Bui
 // Stops is the many relation.
 func (t *MovesTable) Stops() *StopsTable { return keel.Path(t.Ref, 1, BuildStops) }
 
+// FirstStop is the pick relation.
+func (t *MovesTable) FirstStop() *StopsTable { return keel.Path(t.Ref, 2, BuildStops) }
+
 // Get returns the moves row with the given key, or keel.ErrNotFound.
 func (t *MovesTable) Get(ctx context.Context, db *keel.DB, key ids.ID) (*fleet.Move, error) {
 	return t.Where(t.ID.Eq(key)).One(ctx, db)
@@ -440,6 +456,8 @@ func attachMove(p unsafe.Pointer, rel int32, child unsafe.Pointer) {
 		r.Shipment = (*fleet.Shipment)(child)
 	case 1:
 		r.Stops = append(r.Stops, (*fleet.Stop)(child))
+	case 2:
+		r.FirstStop = (*fleet.Stop)(child)
 	}
 }
 
@@ -449,9 +467,12 @@ var plantsTable = schema.Table{
 	Quoted: `"plants"`,
 	Alias:  "p",
 	Model:  "fleet.Plant",
+	Label:  `Plant`,
+	Plural: `Plants`,
+	Doc:    `Plant is a table without tenant columns, shared by every tenant.`,
 	Columns: []schema.Column{
-		{Name: "code", Quoted: `"code"`, Field: "Code", Kind: schema.KindString, Flags: schema.FlagPK},
-		{Name: "name", Quoted: `"name"`, Field: "Name", Kind: schema.KindString, Flags: 0},
+		{Name: "code", Quoted: `"code"`, Field: "Code", Kind: schema.KindString, Flags: schema.FlagPK, Label: `Code`},
+		{Name: "name", Quoted: `"name"`, Field: "Name", Kind: schema.KindString, Flags: 0, Label: `Name`},
 	},
 	PK:         []int32{0},
 	Tenant:     nil,
@@ -539,32 +560,38 @@ var shipmentsTable = schema.Table{
 	Quoted: `"shipments"`,
 	Alias:  "s",
 	Model:  "fleet.Shipment",
+	Label:  `Shipment`,
+	Plural: `Shipments`,
+	Doc:    `Shipment is a load moved for a customer.`,
+	Report: &schema.TableReport{Category: `Operations`},
 	Columns: []schema.Column{
-		{Name: "id", Quoted: `"id"`, Field: "ID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagAutoID},
-		{Name: "organization_id", Quoted: `"organization_id"`, Field: "OrganizationID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagTenant},
-		{Name: "business_unit_id", Quoted: `"business_unit_id"`, Field: "BusinessUnitID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagTenant},
-		{Name: "customer_id", Quoted: `"customer_id"`, Field: "CustomerID", Kind: schema.KindString, Flags: 0},
-		{Name: "bill_to_id", Quoted: `"bill_to_id"`, Field: "BillToID", Kind: schema.KindString, Flags: schema.FlagNullable},
-		{Name: "pro_number", Quoted: `"pro_number"`, Field: "ProNumber", Kind: schema.KindString, Flags: 0},
-		{Name: "status", Quoted: `"status"`, Field: "Status", Kind: schema.KindString, Flags: 0},
-		{Name: "priority", Quoted: `"priority"`, Field: "Priority", Kind: schema.KindInt16, Flags: 0},
-		{Name: "weight", Quoted: `"weight"`, Field: "Weight", Kind: schema.KindInt64, Flags: schema.FlagNullable},
-		{Name: "total", Quoted: `"total"`, Field: "Total", Kind: schema.KindOther, Flags: 0},
-		{Name: "hazmat", Quoted: `"hazmat"`, Field: "Hazmat", Kind: schema.KindBool, Flags: 0},
-		{Name: "labels", Quoted: `"labels"`, Field: "Labels", Kind: schema.KindStringArray, Flags: schema.FlagNullable},
-		{Name: "attributes", Quoted: `"attributes"`, Field: "Attributes", Kind: schema.KindJSON, Flags: schema.FlagJSONB},
-		{Name: "search_vector", Quoted: `"search_vector"`, Field: "SearchVector", Kind: schema.KindTSVector, Flags: schema.FlagReadOnly | schema.FlagNoSelect},
-		{Name: "stage_rank", Quoted: `"stage_rank"`, Field: "StageRank", Kind: schema.KindInt16, Flags: schema.FlagReadOnly},
-		{Name: "canceled_at", Quoted: `"canceled_at"`, Field: "CanceledAt", Kind: schema.KindInt64, Flags: schema.FlagNullable},
-		{Name: "version", Quoted: `"version"`, Field: "Version", Kind: schema.KindInt64, Flags: schema.FlagVersion},
-		{Name: "created_at", Quoted: `"created_at"`, Field: "CreatedAt", Kind: schema.KindInt64, Flags: schema.FlagAutoCreate},
-		{Name: "updated_at", Quoted: `"updated_at"`, Field: "UpdatedAt", Kind: schema.KindInt64, Flags: schema.FlagAutoUpdate},
+		{Name: "id", Quoted: `"id"`, Field: "ID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagAutoID, Label: `ID`, Report: &reportDimStringId},
+		{Name: "organization_id", Quoted: `"organization_id"`, Field: "OrganizationID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagTenant, Label: `Organization ID`, Report: &reportDimStringIdHidden},
+		{Name: "business_unit_id", Quoted: `"business_unit_id"`, Field: "BusinessUnitID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagTenant, Label: `Business Unit ID`, Report: &reportDimStringIdHidden},
+		{Name: "customer_id", Quoted: `"customer_id"`, Field: "CustomerID", Kind: schema.KindString, Flags: 0, Label: `Customer ID`, Report: &reportDimStringIdHidden},
+		{Name: "bill_to_id", Quoted: `"bill_to_id"`, Field: "BillToID", Kind: schema.KindString, Flags: schema.FlagNullable, Label: `Bill To ID`, Report: &reportDimStringIdHidden},
+		{Name: "pro_number", Quoted: `"pro_number"`, Field: "ProNumber", Kind: schema.KindString, Flags: 0, Label: `PRO Number`, Doc: `ProNumber is the carrier's progressive number, unique per tenant.`, Report: &reportDimString},
+		{Name: "status", Quoted: `"status"`, Field: "Status", Kind: schema.KindString, Flags: 0, Label: `Status`, Enum: enumStatus[:], Report: &reportDimEnum},
+		{Name: "priority", Quoted: `"priority"`, Field: "Priority", Kind: schema.KindInt16, Flags: 0, Label: `Priority`, Enum: enumPriority[:], Report: &reportDimEnum},
+		{Name: "weight", Quoted: `"weight"`, Field: "Weight", Kind: schema.KindInt64, Flags: schema.FlagNullable, Label: `Weight`, Doc: `Weight is the shipment's gross weight in pounds.`, Report: &reportMeasureIntegerWeight},
+		{Name: "total", Quoted: `"total"`, Field: "Total", Kind: schema.KindOther, Flags: 0, Label: `Total`, Report: &reportMeasureDecimalMoney},
+		{Name: "hazmat", Quoted: `"hazmat"`, Field: "Hazmat", Kind: schema.KindBool, Flags: 0, Label: `Hazmat`, Report: &reportDimBool},
+		{Name: "labels", Quoted: `"labels"`, Field: "Labels", Kind: schema.KindStringArray, Flags: schema.FlagNullable, Label: `Labels`, Report: &reportDimArray},
+		{Name: "attributes", Quoted: `"attributes"`, Field: "Attributes", Kind: schema.KindJSON, Flags: schema.FlagJSONB, Label: `Attributes`, Report: &reportDimJsonbHidden},
+		{Name: "search_vector", Quoted: `"search_vector"`, Field: "SearchVector", Kind: schema.KindTSVector, Flags: schema.FlagReadOnly | schema.FlagNoSelect, Label: `Search Vector`, Report: &reportDimTsvectorHidden},
+		{Name: "stage_rank", Quoted: `"stage_rank"`, Field: "StageRank", Kind: schema.KindInt16, Flags: schema.FlagReadOnly, Label: `Stage Rank`, Report: &reportDimInteger},
+		{Name: "canceled_at", Quoted: `"canceled_at"`, Field: "CanceledAt", Kind: schema.KindInt64, Flags: schema.FlagNullable, Label: `Canceled At`, Report: &reportDimEpoch},
+		{Name: "version", Quoted: `"version"`, Field: "Version", Kind: schema.KindInt64, Flags: schema.FlagVersion, Label: `Version`, Report: &reportMeasureIntegerHidden},
+		{Name: "created_at", Quoted: `"created_at"`, Field: "CreatedAt", Kind: schema.KindInt64, Flags: schema.FlagAutoCreate, Label: `Created At`, Report: &reportDimEpoch},
+		{Name: "updated_at", Quoted: `"updated_at"`, Field: "UpdatedAt", Kind: schema.KindInt64, Flags: schema.FlagAutoUpdate, Label: `Updated At`, Report: &reportDimEpoch},
 	},
 	Relations: []schema.Relation{
-		{Name: "Customer", Alias: "c", Kind: schema.BelongsTo, Local: []int32{3}, Remote: []int32{0}},
-		{Name: "BillTo", Alias: "bt", Kind: schema.BelongsTo, Local: []int32{4}, Remote: []int32{0}},
-		{Name: "Moves", Alias: "m", Kind: schema.HasMany, Local: []int32{0}, Remote: []int32{3}},
-		{Name: "Tags", Alias: "t", Kind: schema.ManyToMany, Local: []int32{0}, Remote: []int32{0}, JoinAlias: "st", JoinTable: "shipment_tags", JoinLocal: []string{`shipment_id`}, JoinRemote: []string{`tag_id`}, JoinQuoted: `"shipment_tags"`, JoinLocalQ: []string{`"shipment_id"`}, JoinRemoteQ: []string{`"tag_id"`}},
+		{Name: "Customer", Alias: "c", Kind: schema.BelongsTo, Local: []int32{3}, Remote: []int32{0}, Label: `Customer`},
+		{Name: "BillTo", Alias: "bt", Kind: schema.BelongsTo, Local: []int32{4}, Remote: []int32{0}, Label: `Bill-to Customer`},
+		{Name: "Moves", Alias: "m", Kind: schema.HasMany, Local: []int32{0}, Remote: []int32{3}, Label: `Moves`},
+		{Name: "Tags", Alias: "t", Kind: schema.ManyToMany, Local: []int32{0}, Remote: []int32{0}, JoinAlias: "st", JoinTable: "shipment_tags", JoinLocal: []string{`shipment_id`}, JoinRemote: []string{`tag_id`}, JoinQuoted: `"shipment_tags"`, JoinLocalQ: []string{`"shipment_id"`}, JoinRemoteQ: []string{`"tag_id"`}, Label: `Tags`, NoReport: true},
+		{Name: "OriginStop", Alias: "os", Kind: schema.Pick, Local: []int32{0}, Remote: nil, Label: `Origin Stop`, Doc: `OriginStop is the first stop of the shipment's first move.`, Path: []int32{2, 1}, Order: []schema.PickKey{{Hop: 0, Column: 4}, {Hop: 1, Column: 5}, {Hop: 1, Column: 0}}},
+		{Name: "DestinationStop", Alias: "ds", Kind: schema.Pick, Local: []int32{0}, Remote: nil, Label: `Destination Stop`, Doc: `DestinationStop is the last stop of the shipment's last move.`, Path: []int32{2, 1}, Order: []schema.PickKey{{Hop: 0, Column: 4}, {Hop: 1, Column: 5}, {Hop: 1, Column: 0}}, Last: true},
 	},
 	PK:         []int32{0, 1, 2},
 	Tenant:     []int32{1, 2},
@@ -680,6 +707,12 @@ func (t *ShipmentsTable) Moves() *MovesTable { return keel.Path(t.Ref, 2, BuildM
 
 // Tags is the m2m relation.
 func (t *ShipmentsTable) Tags() *TagsTable { return keel.Path(t.Ref, 3, BuildTags) }
+
+// OriginStop is the pick relation.
+func (t *ShipmentsTable) OriginStop() *StopsTable { return keel.Path(t.Ref, 4, BuildStops) }
+
+// DestinationStop is the pick relation.
+func (t *ShipmentsTable) DestinationStop() *StopsTable { return keel.Path(t.Ref, 5, BuildStops) }
 
 // Get returns the shipments row with the given key, or keel.ErrNotFound.
 func (t *ShipmentsTable) Get(ctx context.Context, db *keel.DB, key ids.ID) (*fleet.Shipment, error) {
@@ -808,6 +841,10 @@ func attachShipment(p unsafe.Pointer, rel int32, child unsafe.Pointer) {
 		r.Moves = append(r.Moves, (*fleet.Move)(child))
 	case 3:
 		r.Tags = append(r.Tags, (*fleet.Tag)(child))
+	case 4:
+		r.OriginStop = (*fleet.Stop)(child)
+	case 5:
+		r.DestinationStop = (*fleet.Stop)(child)
 	}
 }
 
@@ -817,18 +854,22 @@ var stopsTable = schema.Table{
 	Quoted: `"stops"`,
 	Alias:  "s",
 	Model:  "fleet.Stop",
+	Label:  `Stop`,
+	Plural: `Stops`,
+	Doc:    `Stop is a pickup or delivery on a move.`,
+	Report: &schema.TableReport{Category: `Operations`},
 	Columns: []schema.Column{
-		{Name: "id", Quoted: `"id"`, Field: "ID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagAutoID},
-		{Name: "organization_id", Quoted: `"organization_id"`, Field: "OrganizationID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagTenant},
-		{Name: "business_unit_id", Quoted: `"business_unit_id"`, Field: "BusinessUnitID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagTenant},
-		{Name: "move_id", Quoted: `"move_id"`, Field: "MoveID", Kind: schema.KindString, Flags: 0},
-		{Name: "location_id", Quoted: `"location_id"`, Field: "LocationID", Kind: schema.KindString, Flags: 0},
-		{Name: "sequence", Quoted: `"sequence"`, Field: "Sequence", Kind: schema.KindInt32, Flags: 0},
-		{Name: "kind", Quoted: `"kind"`, Field: "Kind", Kind: schema.KindString, Flags: 0},
-		{Name: "arrived_at", Quoted: `"arrived_at"`, Field: "ArrivedAt", Kind: schema.KindTime, Flags: schema.FlagNullable},
+		{Name: "id", Quoted: `"id"`, Field: "ID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagAutoID, Label: `ID`, Report: &reportDimStringId},
+		{Name: "organization_id", Quoted: `"organization_id"`, Field: "OrganizationID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagTenant, Label: `Organization ID`, Report: &reportDimStringIdHidden},
+		{Name: "business_unit_id", Quoted: `"business_unit_id"`, Field: "BusinessUnitID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagTenant, Label: `Business Unit ID`, Report: &reportDimStringIdHidden},
+		{Name: "move_id", Quoted: `"move_id"`, Field: "MoveID", Kind: schema.KindString, Flags: 0, Label: `Move ID`, Report: &reportDimStringId},
+		{Name: "location_id", Quoted: `"location_id"`, Field: "LocationID", Kind: schema.KindString, Flags: 0, Label: `Location ID`, Report: &reportDimStringIdHidden},
+		{Name: "sequence", Quoted: `"sequence"`, Field: "Sequence", Kind: schema.KindInt32, Flags: 0, Label: `Sequence`, Report: &reportMeasureInteger},
+		{Name: "kind", Quoted: `"kind"`, Field: "Kind", Kind: schema.KindString, Flags: 0, Label: `Kind`, Report: &reportDimString},
+		{Name: "arrived_at", Quoted: `"arrived_at"`, Field: "ArrivedAt", Kind: schema.KindTime, Flags: schema.FlagNullable, Label: `Arrived At`, Report: &reportDimTime},
 	},
 	Relations: []schema.Relation{
-		{Name: "Location", Alias: "l", Kind: schema.BelongsTo, Local: []int32{4}, Remote: []int32{0}},
+		{Name: "Location", Alias: "l", Kind: schema.BelongsTo, Local: []int32{4}, Remote: []int32{0}, Label: `Location`},
 	},
 	PK:         []int32{0, 1, 2},
 	Tenant:     []int32{1, 2},
@@ -973,11 +1014,14 @@ var tagsTable = schema.Table{
 	Quoted: `"tags"`,
 	Alias:  "t",
 	Model:  "fleet.Tag",
+	Label:  `Tag`,
+	Plural: `Tags`,
+	Doc:    `Tag labels shipments.`,
 	Columns: []schema.Column{
-		{Name: "id", Quoted: `"id"`, Field: "ID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagAutoID},
-		{Name: "organization_id", Quoted: `"organization_id"`, Field: "OrganizationID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagTenant},
-		{Name: "business_unit_id", Quoted: `"business_unit_id"`, Field: "BusinessUnitID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagTenant},
-		{Name: "name", Quoted: `"name"`, Field: "Name", Kind: schema.KindString, Flags: 0},
+		{Name: "id", Quoted: `"id"`, Field: "ID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagAutoID, Label: `ID`},
+		{Name: "organization_id", Quoted: `"organization_id"`, Field: "OrganizationID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagTenant, Label: `Organization ID`},
+		{Name: "business_unit_id", Quoted: `"business_unit_id"`, Field: "BusinessUnitID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagTenant, Label: `Business Unit ID`},
+		{Name: "name", Quoted: `"name"`, Field: "Name", Kind: schema.KindString, Flags: 0, Label: `Name`},
 	},
 	PK:         []int32{0, 1, 2},
 	Tenant:     []int32{1, 2},
@@ -1079,18 +1123,21 @@ var workersTable = schema.Table{
 	Quoted: `"workers"`,
 	Alias:  "w",
 	Model:  "fleet.Worker",
+	Label:  `Worker`,
+	Plural: `Workers`,
+	Doc:    `Worker drives moves; it reports to another worker.`,
 	Columns: []schema.Column{
-		{Name: "id", Quoted: `"id"`, Field: "ID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagAutoID},
-		{Name: "organization_id", Quoted: `"organization_id"`, Field: "OrganizationID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagTenant},
-		{Name: "business_unit_id", Quoted: `"business_unit_id"`, Field: "BusinessUnitID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagTenant},
-		{Name: "manager_id", Quoted: `"manager_id"`, Field: "ManagerID", Kind: schema.KindString, Flags: schema.FlagNullable},
-		{Name: "first_name", Quoted: `"first_name"`, Field: "FirstName", Kind: schema.KindString, Flags: 0},
-		{Name: "last_name", Quoted: `"last_name"`, Field: "LastName", Kind: schema.KindString, Flags: 0},
-		{Name: "whole_name", Quoted: `"whole_name"`, Field: "WholeName", Kind: schema.KindString, Flags: schema.FlagReadOnly},
-		{Name: "hired_at", Quoted: `"hired_at"`, Field: "HiredAt", Kind: schema.KindTime, Flags: schema.FlagAutoCreate},
+		{Name: "id", Quoted: `"id"`, Field: "ID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagAutoID, Label: `ID`},
+		{Name: "organization_id", Quoted: `"organization_id"`, Field: "OrganizationID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagTenant, Label: `Organization ID`},
+		{Name: "business_unit_id", Quoted: `"business_unit_id"`, Field: "BusinessUnitID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagTenant, Label: `Business Unit ID`},
+		{Name: "manager_id", Quoted: `"manager_id"`, Field: "ManagerID", Kind: schema.KindString, Flags: schema.FlagNullable, Label: `Manager ID`},
+		{Name: "first_name", Quoted: `"first_name"`, Field: "FirstName", Kind: schema.KindString, Flags: 0, Label: `First Name`},
+		{Name: "last_name", Quoted: `"last_name"`, Field: "LastName", Kind: schema.KindString, Flags: 0, Label: `Last Name`},
+		{Name: "whole_name", Quoted: `"whole_name"`, Field: "WholeName", Kind: schema.KindString, Flags: schema.FlagReadOnly, Label: `Whole Name`},
+		{Name: "hired_at", Quoted: `"hired_at"`, Field: "HiredAt", Kind: schema.KindTime, Flags: schema.FlagAutoCreate, Label: `Hired At`},
 	},
 	Relations: []schema.Relation{
-		{Name: "Manager", Alias: "m", Kind: schema.BelongsTo, Local: []int32{3}, Remote: []int32{0}},
+		{Name: "Manager", Alias: "m", Kind: schema.BelongsTo, Local: []int32{3}, Remote: []int32{0}, Label: `Manager`},
 	},
 	PK:         []int32{0, 1, 2},
 	Tenant:     []int32{1, 2},
@@ -1244,13 +1291,62 @@ func afterLoadWorker(ctx context.Context, p unsafe.Pointer) error {
 func init() {
 	movesTable.Relations[0].Target = ShipmentsSchema()
 	movesTable.Relations[1].Target = StopsSchema()
+	movesTable.Relations[2].Target = StopsSchema()
 	shipmentsTable.Relations[0].Target = CustomersSchema()
 	shipmentsTable.Relations[1].Target = CustomersSchema()
 	shipmentsTable.Relations[2].Target = MovesSchema()
 	shipmentsTable.Relations[3].Target = TagsSchema()
+	shipmentsTable.Relations[4].Target = StopsSchema()
+	shipmentsTable.Relations[5].Target = StopsSchema()
 	stopsTable.Relations[0].Target = LocationsSchema()
 	workersTable.Relations[0].Target = WorkersSchema()
 }
+
+var enumPriority = [...]schema.EnumValue{
+	{Value: `0`, Label: `Normal`, Doc: `PriorityNormal is the default priority.`},
+	{Value: `1`, Label: `High`, Doc: `PriorityHigh moves ahead of normal shipments.`},
+	{Value: `2`, Label: `Urgent`, Doc: `PriorityUrgent moves first.`},
+}
+
+var enumStatus = [...]schema.EnumValue{
+	{Value: `New`, Label: `New`, Doc: `StatusNew is a shipment nobody has planned yet.`},
+	{Value: `Assigned`, Label: `Assigned`, Doc: `StatusAssigned is a shipment with a driver.`},
+	{Value: `InTransit`, Label: `In Transit`, Doc: `StatusInTransit is a shipment on the road.`},
+	{Value: `Delivered`, Label: `Delivered`, Doc: `StatusDelivered is a shipment at its destination.`},
+	{Value: `Canceled`, Label: `Canceled`, Doc: `StatusCanceled is a shipment that will not move.`},
+}
+
+var reportDimArray = schema.ReportInfo{Included: true, Kind: schema.Dimension, Type: schema.ValueArray, Aggs: schema.AggsCount}
+
+var reportDimBool = schema.ReportInfo{Included: true, Kind: schema.Dimension, Type: schema.ValueBool, Aggs: schema.AggsCount}
+
+var reportDimEnum = schema.ReportInfo{Included: true, Kind: schema.Dimension, Type: schema.ValueEnum, Aggs: schema.AggsCount}
+
+var reportDimEpoch = schema.ReportInfo{Included: true, Kind: schema.Dimension, Type: schema.ValueEpoch, Aggs: schema.AggsOrdered}
+
+var reportDimInteger = schema.ReportInfo{Included: true, Kind: schema.Dimension, Type: schema.ValueInt, Aggs: schema.AggsNumeric}
+
+var reportDimIntegerAggMinMax = schema.ReportInfo{Included: true, Kind: schema.Dimension, Type: schema.ValueInt, Aggs: schema.AggMin | schema.AggMax}
+
+var reportDimJsonbHidden = schema.ReportInfo{Kind: schema.Dimension, Type: schema.ValueJSON, Aggs: schema.AggsCount}
+
+var reportDimString = schema.ReportInfo{Included: true, Kind: schema.Dimension, Type: schema.ValueString, Aggs: schema.AggsOrdered}
+
+var reportDimStringId = schema.ReportInfo{Included: true, Kind: schema.Dimension, Type: schema.ValueString, Aggs: schema.AggsOrdered, Format: `id`}
+
+var reportDimStringIdHidden = schema.ReportInfo{Kind: schema.Dimension, Type: schema.ValueString, Aggs: schema.AggsOrdered, Format: `id`}
+
+var reportDimTime = schema.ReportInfo{Included: true, Kind: schema.Dimension, Type: schema.ValueTime, Aggs: schema.AggsOrdered}
+
+var reportDimTsvectorHidden = schema.ReportInfo{Kind: schema.Dimension, Type: schema.ValueTSVector, Aggs: schema.AggsCount}
+
+var reportMeasureDecimalMoney = schema.ReportInfo{Included: true, Kind: schema.Measure, Type: schema.ValueDecimal, Aggs: schema.AggsNumeric, Format: `money`}
+
+var reportMeasureInteger = schema.ReportInfo{Included: true, Kind: schema.Measure, Type: schema.ValueInt, Aggs: schema.AggsNumeric}
+
+var reportMeasureIntegerHidden = schema.ReportInfo{Kind: schema.Measure, Type: schema.ValueInt, Aggs: schema.AggsNumeric}
+
+var reportMeasureIntegerWeight = schema.ReportInfo{Included: true, Kind: schema.Measure, Type: schema.ValueInt, Aggs: schema.AggsNumeric, Format: `weight`}
 
 // MoneyCol is a column of fleet.Money values.
 type MoneyCol struct{ keel.AnyCol }
