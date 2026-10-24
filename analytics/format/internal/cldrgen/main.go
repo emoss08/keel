@@ -1,0 +1,197 @@
+// Command cldrgen writes currency_cldr.go: where each CLDR locale places the currency symbol
+// around a number. golang.org/x/text has the symbols, separators and percent patterns but not
+// the currency patterns, so they are read from the CLDR release x/text's tables come from
+// (currency.CLDRVersion), published on npm as cldr-numbers-full.
+//
+//	go generate ./analytics/format
+package main
+
+import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"go/format"
+	"io"
+	"log"
+	"net/http"
+	"os"
+	"path"
+	"sort"
+	"strconv"
+	"strings"
+
+	"golang.org/x/text/currency"
+	"golang.org/x/text/language"
+)
+
+// affix is the text before and after the number in a currency pattern.
+type affix struct {
+	prefix, suffix string
+}
+
+// numbersFile is the part of a CLDR numbers.json the generator reads.
+type numbersFile struct {
+	// Main maps the locale to its numbers data.
+	Main map[string]struct {
+		Numbers map[string]json.RawMessage `json:"numbers"`
+	} `json:"main"`
+}
+
+// main writes the generated file.
+func main() {
+	out := flag.String("out", "currency_cldr.go", "the file to write")
+	flag.Parse()
+	patterns, err := download(currency.CLDRVersion)
+	if err != nil {
+		log.Fatal(err)
+	}
+	src, err := emit(currency.CLDRVersion, reduce(patterns))
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := os.WriteFile(*out, src, 0o644); err != nil {
+		log.Fatal(err)
+	}
+}
+
+// download reads every locale's standard currency pattern from the cldr-numbers-full package of
+// CLDR release version.
+func download(version string) (map[string]affix, error) {
+	url := "https://registry.npmjs.org/cldr-numbers-full/-/cldr-numbers-full-" + version + ".0.0.tgz"
+	resp, err := http.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("cldrgen: %s: %s", url, resp.Status)
+	}
+	gz, err := gzip.NewReader(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	return readArchive(tar.NewReader(gz))
+}
+
+// readArchive reads every locale's standard currency pattern from the package archive.
+func readArchive(tr *tar.Reader) (map[string]affix, error) {
+	patterns := map[string]affix{}
+	for {
+		h, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			return patterns, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		dir, file := path.Split(h.Name)
+		if file != "numbers.json" || !strings.HasPrefix(dir, "package/main/") {
+			continue
+		}
+		data, err := io.ReadAll(tr)
+		if err != nil {
+			return nil, err
+		}
+		locale, pattern, err := standardPattern(data)
+		if err != nil {
+			return nil, fmt.Errorf("cldrgen: %s: %w", h.Name, err)
+		}
+		patterns[tagOf(locale)] = split(pattern)
+	}
+}
+
+// standardPattern returns the locale's standard currency pattern in its default numbering
+// system.
+func standardPattern(data []byte) (string, string, error) {
+	var f numbersFile
+	if err := json.Unmarshal(data, &f); err != nil {
+		return "", "", err
+	}
+	for locale, m := range f.Main {
+		var system string
+		if err := json.Unmarshal(m.Numbers["defaultNumberingSystem"], &system); err != nil {
+			return "", "", err
+		}
+		var formats struct {
+			Standard string `json:"standard"`
+		}
+		if err := json.Unmarshal(m.Numbers["currencyFormats-numberSystem-"+system], &formats); err != nil {
+			return "", "", err
+		}
+		return locale, formats.Standard, nil
+	}
+	return "", "", errors.New("no locale")
+}
+
+// split cuts a pattern's positive part around its number placeholder.
+func split(pattern string) affix {
+	pattern, _, _ = strings.Cut(pattern, ";")
+	first := strings.IndexAny(pattern, "#0,.")
+	last := strings.LastIndexAny(pattern, "#0,.")
+	return affix{prefix: pattern[:first], suffix: pattern[last+1:]}
+}
+
+// tagOf returns the x/text spelling of a CLDR locale ID.
+func tagOf(locale string) string {
+	if locale == "root" {
+		return language.Und.String()
+	}
+	return language.Make(locale).String()
+}
+
+// reduce keeps the locales whose pattern differs from the one they would inherit, following
+// x/text's CLDR parent chain.
+func reduce(patterns map[string]affix) map[string]affix {
+	out := map[string]affix{language.Und.String(): patterns[language.Und.String()]}
+	for tag, a := range patterns {
+		if tag == language.Und.String() {
+			continue
+		}
+		if inherited(patterns, language.Make(tag).Parent()) != a {
+			out[tag] = a
+		}
+	}
+	return out
+}
+
+// inherited returns the pattern tag inherits from its nearest listed ancestor.
+func inherited(patterns map[string]affix, tag language.Tag) affix {
+	for {
+		if a, ok := patterns[tag.String()]; ok {
+			return a
+		}
+		if tag == language.Und {
+			return affix{}
+		}
+		tag = tag.Parent()
+	}
+}
+
+// emit writes the Go source of the patterns, sorted by tag.
+func emit(version string, patterns map[string]affix) ([]byte, error) {
+	tags := make([]string, 0, len(patterns))
+	for tag := range patterns {
+		tags = append(tags, tag)
+	}
+	sort.Strings(tags)
+	var b bytes.Buffer
+	fmt.Fprintf(&b, "// Code generated by internal/cldrgen from CLDR %s; DO NOT EDIT.\n\n", version)
+	b.WriteString("package format\n\n")
+	b.WriteString("// currencyPatterns maps a locale to the text around the number in its standard CLDR\n")
+	b.WriteString("// currency pattern, \"¤\" standing for the symbol. A locale that is not listed inherits\n")
+	b.WriteString("// its parent's pattern.\n")
+	b.WriteString("var currencyPatterns = map[string]currencyPattern{\n")
+	for _, tag := range tags {
+		a := patterns[tag]
+		fmt.Fprintf(&b, "\t%s: {%s, %s},\n", strconv.Quote(tag), quote(a.prefix), quote(a.suffix))
+	}
+	b.WriteString("}\n")
+	return format.Source(b.Bytes())
+}
+
+// quote writes a Go string literal, escaping invisible characters.
+func quote(s string) string { return strconv.Quote(s) }
