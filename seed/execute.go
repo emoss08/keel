@@ -7,8 +7,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/emoss08/keel"
 )
 
 // job is one seed a run executes.
@@ -165,7 +163,7 @@ func (a *applier) record(ctx context.Context, p *prepared, d time.Duration, rows
 		return err
 	}
 	defer a.release()
-	return keel.Write(ctx, a.db, func(ctx context.Context) error {
+	return a.tx(ctx, func(ctx context.Context) error {
 		return writeSeed(ctx, a.db, p, d, rows)
 	})
 }

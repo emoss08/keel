@@ -1,10 +1,11 @@
 // Package seed applies the data a database needs, reference data and development fixtures, as
 // declared seeds that re-run exactly when what they are made from changes.
 //
-// A Registry holds Seeds. Apply runs each one in its own keel.Write, in After order, together with
-// its bookkeeping row, so a seed either applies and is recorded or leaves no trace. A Reference seed
-// runs again when its fingerprint (its name, Version, Inputs and Fingerprint function) changes; a
-// Fixture seed runs once and refuses to run against a database marked production.
+// A Registry holds Seeds. Apply runs each one in its own transaction (a keel.Write, or the
+// application's through Options.Transact), in After order, together with its bookkeeping row, so
+// a seed either applies and is recorded or leaves no trace. A Reference seed runs again when its
+// fingerprint (its name, Version, Inputs and Fingerprint function) changes; a Fixture seed runs
+// once and refuses to run against a database marked production.
 package seed
 
 import (

@@ -56,6 +56,15 @@ type Options struct {
 	// Observer receives progress events. It is called from the goroutine running the seed, so with
 	// Parallel above 1 from several at once: it must be safe for concurrent use and must not block.
 	Observer func(Event)
+	// Transact runs each seed transaction (a seed with its bookkeeping row, one tenant of a
+	// PerTenant seed, a PerTenant seed's final bookkeeping row) instead of keel.Write: it begins
+	// a transaction, calls fn with a context that runs keel in it and commits when fn returns
+	// nil. An application that also writes through another data layer begins that layer's
+	// transaction, joins it with keel.JoinTx, calls fn and commits, so a seed's rows and its
+	// bookkeeping commit or roll back together with the other layer's writes. ctx carries the
+	// seed's scope (the system scope, or the tenant's). Nil uses keel.Write. The seed lock is a
+	// session lock on a connection of its own and needs no transaction.
+	Transact func(ctx context.Context, fn func(ctx context.Context) error) error
 }
 
 // Result is what a run did with one seed.
@@ -88,7 +97,7 @@ type Report struct {
 	Duration time.Duration
 }
 
-// Apply runs the seeds whose plan says they run, in After order, each in one keel.Write together
+// Apply runs the seeds whose plan says they run, in After order, each in one transaction together
 // with its bookkeeping row. It holds the seed advisory lock for the whole run, so two processes
 // never seed at once; the second waits, reporting LockWait events. The bookkeeping tables are
 // created on first use.
@@ -255,8 +264,16 @@ func (a *applier) newRun(p *prepared, t Tenant) *Run {
 	return &Run{DB: a.db, Seed: p.seed, Tenant: t, Environment: a.env, prep: p, values: a.values}
 }
 
-// transact runs a seed's Run in one keel.Write bounded by its Timeout, with record writing the
-// bookkeeping in the same transaction. The caller holds a slot.
+// tx runs fn in one seed transaction: through Options.Transact, else keel.Write.
+func (a *applier) tx(ctx context.Context, fn func(ctx context.Context) error) error {
+	if a.opts.Transact != nil {
+		return a.opts.Transact(ctx, fn)
+	}
+	return keel.Write(ctx, a.db, fn)
+}
+
+// transact runs a seed's Run in one seed transaction bounded by its Timeout, with record writing
+// the bookkeeping in the same transaction. The caller holds a slot.
 func (a *applier) transact(ctx context.Context, r *Run, record func(ctx context.Context) error) error {
 	timeout := r.Seed.Timeout
 	if timeout > 0 {
@@ -264,7 +281,7 @@ func (a *applier) transact(ctx context.Context, r *Run, record func(ctx context.
 		ctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
-	err := keel.Write(ctx, a.db, func(ctx context.Context) error {
+	err := a.tx(ctx, func(ctx context.Context) error {
 		if err := call(ctx, r); err != nil {
 			return err
 		}
