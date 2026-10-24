@@ -222,6 +222,36 @@ AfterConnect: func(ctx context.Context, conn *pgx.Conn) error {
 },
 ```
 
+- **Extension types (PostGIS, pgvector):** a column of a Go type that implements `sql.Scanner`
+  and `driver.Valuer` (on the value or on the pointer, as Trenova's `postgis.Point` does) is a
+  custom column (`KindOther`). Register the extension's types and their array types in
+  `AfterConnect` so values travel in binary through a codec; pgvector-go's `pgxvec.RegisterTypes`
+  does it for vectors, and PostGIS's EWKB fits pgx's bytea codec:
+
+```go
+AfterConnect: func(ctx context.Context, conn *pgx.Conn) error {
+    for _, name := range []string{"geometry", "geography"} {
+        var oid, array uint32
+        if err := conn.QueryRow(ctx, `SELECT oid, typarray FROM pg_type WHERE typname = $1`, name).
+            Scan(&oid, &array); err != nil {
+            return err
+        }
+        t := &pgtype.Type{Name: name, OID: oid, Codec: pgtype.ByteaCodec{}}
+        conn.TypeMap().RegisterType(t)
+        conn.TypeMap().RegisterType(&pgtype.Type{Name: "_" + name, OID: array,
+            Codec: &pgtype.ArrayCodec{ElementType: t}})
+    }
+    return nil
+},
+```
+
+  With the codecs registered, every write path binds the type's `Value` (WKB) and every read
+  passes the bytes PostGIS sends (EWKB) to `Scan`; bulk inserts send the column as one array of
+  values that the codec encodes, since keel sees the type and its array registered when it reads
+  the table's column types. Without a codec, reads still work (the driver passes the text form to
+  `Scan`), and writes need a `Value` that returns the type's text input, as hex EWKB is for
+  PostGIS. `Copy` always needs the codec.
+
 ### Read replicas
 
 `Config.Replicas` lists streaming replicas of the primary. keel opens a pool per replica with the
@@ -528,7 +558,7 @@ array field is written as an empty array, unless the column is `nullzero`.
 | `string` with `tsvector` | `keel.TSVectorCol` |
 | any type with `jsonb` | `keel.JSONBCol` |
 | a named type over one of the above (`Status`, `ids.ID`) | a generated wrapper (`StatusCol`, `IdsIDCol`) whose methods take the named type |
-| a type implementing `sql.Scanner` (`Money`, a decimal) | a generated wrapper over `keel.AnyCol` (`MoneyCol`) |
+| a type implementing `sql.Scanner` (`Money`, a decimal, a PostGIS point) | a generated wrapper over `keel.AnyCol` (`MoneyCol`) whose methods take the type; when only the pointer implements `driver.Valuer`, the wrapper and the generated `Value` accessor bind a pointer |
 
 A pointer field (`*int64`, `*ids.ID`) or a `sql.Scanner` whose name starts with `Null` is nullable
 and has the same column type. Plain `int` is refused, because its width is not portable; use

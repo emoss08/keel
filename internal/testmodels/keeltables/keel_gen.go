@@ -4,6 +4,7 @@ package keeltables
 
 import (
 	"github.com/emoss08/keel/internal/testmodels/fleet/fleetdb"
+	"github.com/emoss08/keel/internal/testmodels/geo/geodb"
 	"github.com/emoss08/keel/schema"
 )
 
@@ -17,6 +18,7 @@ func All() []*schema.Table {
 		fleetdb.LocationsSchema(),
 		fleetdb.MovesSchema(),
 		fleetdb.NotesSchema(),
+		geodb.PlacesSchema(),
 		fleetdb.PlantsSchema(),
 		fleetdb.ShipmentsSchema(),
 		fleetdb.StopsSchema(),

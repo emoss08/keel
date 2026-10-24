@@ -43,6 +43,19 @@ func Int32s[S ~int32](vs []S) []int32 {
 	return out
 }
 
+// Pointers returns pointers to the elements of vs, for a custom type whose driver.Valuer has a
+// pointer receiver: the driver encodes each element through it.
+func Pointers[T any](vs []T) []*T {
+	if vs == nil {
+		return nil
+	}
+	out := make([]*T, len(vs))
+	for i := range vs {
+		out[i] = &vs[i]
+	}
+	return out
+}
+
 // Int16s converts a slice of an int16 type to []int16.
 func Int16s[S ~int16](vs []S) []int16 {
 	if vs == nil {

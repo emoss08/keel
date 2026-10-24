@@ -59,6 +59,7 @@ type column struct {
 	elem     *types.Named
 	basic    string
 	scanner  bool
+	valuePtr bool
 	idx      int32
 
 	zero zeroTest
@@ -308,6 +309,7 @@ func readColumn(f *types.Var, ft schema.FieldTag) (*column, error) {
 			c.kind = schema.KindOther
 			c.scanner = true
 			c.named = n
+			c.valuePtr = valuerOnPointer(n)
 			if strings.HasPrefix(obj.Name(), "Null") {
 				c.nullable = true
 			}
@@ -371,6 +373,27 @@ func readColumn(f *types.Var, ft schema.FieldTag) (*column, error) {
 		return nil, fmt.Errorf("%s needs the jsonb option", f.Type())
 	}
 	return c, checkNullZero(c)
+}
+
+// valuerOnPointer reports whether only *n, not n, has a method Value() (driver.Value, error), so
+// the generated Value accessor hands the driver a pointer to the field.
+func valuerOnPointer(n *types.Named) bool {
+	return !hasValuer(types.NewMethodSet(n)) && hasValuer(types.NewMethodSet(types.NewPointer(n)))
+}
+
+// hasValuer reports whether ms has a method Value with no parameters returning a value and an
+// error.
+func hasValuer(ms *types.MethodSet) bool {
+	for i := range ms.Len() {
+		fn, ok := ms.At(i).Obj().(*types.Func)
+		if !ok || fn.Name() != "Value" {
+			continue
+		}
+		sig := fn.Type().(*types.Signature)
+		return sig.Params().Len() == 0 && sig.Results().Len() == 2 &&
+			types.Identical(sig.Results().At(1).Type(), types.Universe.Lookup("error").Type())
+	}
+	return false
 }
 
 // zeroTest is how generated code tests a nullzero field for its zero value.

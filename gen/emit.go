@@ -104,13 +104,14 @@ func lastSegment(p string) string {
 
 // wrapper is a generated column type for a named Go type.
 type wrapper struct {
-	named   *types.Named
-	name    string
-	outPath string
-	outName string
-	base    string
-	basic   string
-	scanner bool
+	named    *types.Named
+	name     string
+	outPath  string
+	outName  string
+	base     string
+	basic    string
+	scanner  bool
+	valuePtr bool
 }
 
 // emitter writes the files of one generation run.
@@ -138,7 +139,7 @@ func (e *emitter) planWrappers() {
 					continue
 				}
 				obj := c.named.Obj()
-				w := &wrapper{named: c.named, scanner: c.scanner, basic: c.basic}
+				w := &wrapper{named: c.named, scanner: c.scanner, basic: c.basic, valuePtr: c.valuePtr}
 				if owner, ok := e.pkgs[obj.Pkg().Path()]; ok {
 					w.outPath, w.outName = owner.outPath, owner.outName
 					w.name = obj.Name() + "Col"
@@ -526,6 +527,8 @@ func (e *emitter) emitWrapper(b *bytes.Buffer, im *imports, wr *wrapper) {
 	w("type %s struct{ %s.%s }\n\n", wr.name, keel, wr.base)
 	conv := func(v string) string {
 		switch {
+		case wr.valuePtr:
+			return "&" + v
 		case wr.scanner:
 			return v
 		case wr.base == "Float64Col":
@@ -558,8 +561,12 @@ func (e *emitter) emitWrapper(b *bytes.Buffer, im *imports, wr *wrapper) {
 		w("func (c %s) In(vs ...%s) %s.Pred { return c.Int16Col.In(%s.Int16s(vs)...) }\n", wr.name, t, keel, keel)
 		w("func (c %s) NotIn(vs ...%s) %s.Pred { return c.Int16Col.NotIn(%s.Int16s(vs)...) }\n", wr.name, t, keel, keel)
 	case "AnyCol":
-		w("func (c %s) In(vs ...%s) %s.Pred { return c.AnyCol.In(vs) }\n", wr.name, t, keel)
-		w("func (c %s) NotIn(vs ...%s) %s.Pred { return c.AnyCol.NotIn(vs) }\n", wr.name, t, keel)
+		list := "vs"
+		if wr.valuePtr {
+			list = keel + ".Pointers(vs)"
+		}
+		w("func (c %s) In(vs ...%s) %s.Pred { return c.AnyCol.In(%s) }\n", wr.name, t, keel, list)
+		w("func (c %s) NotIn(vs ...%s) %s.Pred { return c.AnyCol.NotIn(%s) }\n", wr.name, t, keel, list)
 	}
 	w("\n")
 }
@@ -631,6 +638,10 @@ func (e *emitter) valueStmt(im *imports, c *column, keel string) string {
 	case c.ptr && c.named != nil && !c.scanner:
 		return fmt.Sprintf("\t\tif r.%s == nil {\n\t\t\treturn nil\n\t\t}\n\t\treturn %s(*r.%s)\n", c.field,
 			c.basic, c.field)
+	case c.ptr && c.valuePtr:
+		return fmt.Sprintf("\t\tif r.%s == nil {\n\t\t\treturn nil\n\t\t}\n\t\treturn r.%s\n", c.field, c.field)
+	case c.valuePtr:
+		return fmt.Sprintf("\t\treturn &r.%s\n", c.field)
 	case c.ptr:
 		return fmt.Sprintf("\t\tif r.%s == nil {\n\t\t\treturn nil\n\t\t}\n\t\treturn *r.%s\n", c.field, c.field)
 	case c.named != nil && !c.scanner:
@@ -673,6 +684,8 @@ func (e *emitter) zeroCond(im *imports, c *column) string {
 func (e *emitter) plainValue(c *column, keel string) string {
 	f := "r." + c.field
 	switch {
+	case c.valuePtr:
+		return "&" + f
 	case c.named != nil && !c.scanner:
 		return c.basic + "(" + f + ")"
 	case c.elem != nil && c.kind == schema.KindStringArray:

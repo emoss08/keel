@@ -417,7 +417,7 @@ type insertSpec struct {
 // insertStmts builds the INSERT statements of a write. One row is inserted with VALUES; more rows
 // are inserted through unnest with one array per column, in chunks that share one statement text.
 func (db *DB) insertStmts(ctx context.Context, t *schema.Table, rows []unsafe.Pointer, spec *insertSpec) ([]*stmt, error) {
-	var types []string
+	var types []columnType
 	if len(rows) > 1 {
 		var err error
 		if types, err = db.columnTypes(ctx, t); err != nil {

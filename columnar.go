@@ -12,6 +12,8 @@ import (
 	"unsafe"
 
 	"github.com/emoss08/keel/schema"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 // unnestChunk is the number of rows per INSERT … SELECT FROM unnest statement. Every chunk shares
@@ -21,38 +23,41 @@ const unnestChunk = 10_000
 // columnTypes caches the SQL type of every column of a table, read from the catalog once per DB.
 type columnTypes struct {
 	mu sync.Mutex
-	m  map[*schema.Table][]string
+	m  map[*schema.Table][]columnType
 }
 
+// columnType is the SQL type of a column (format_type) and, for an extension's base type whose
+// codec and array codec the connections register (Config.AfterConnect: PostGIS geometry, pgvector),
+// the name of its array type: bulk inserts send such a column as an array of driver values that
+// the registered codec encodes, instead of as text.
+type columnType struct {
+	sql   string
+	array string
+}
+
+// firstUserOID is the first OID Postgres gives objects created after initdb (FirstNormalObjectId):
+// types from extensions and migrations, never the built-in ones pgx knows.
+const firstUserOID = 16384
+
 // columnTypes returns the SQL type of each of t's columns (format_type), reading the catalog on
-// first use.
-func (db *DB) columnTypes(ctx context.Context, t *schema.Table) ([]string, error) {
+// first use, on a connection whose type map tells which extension types have codecs.
+func (db *DB) columnTypes(ctx context.Context, t *schema.Table) ([]columnType, error) {
 	db.types.mu.Lock()
 	types, ok := db.types.m[t]
 	db.types.mu.Unlock()
 	if ok {
 		return types, nil
 	}
-	rows, err := db.pool.Query(ctx, `SELECT a.attname, format_type(a.atttypid, a.atttypmod)
-	  FROM pg_attribute a
-	 WHERE a.attrelid = $1::regclass AND a.attnum > 0 AND NOT a.attisdropped`, t.Quoted)
+	conn, err := db.pool.Acquire(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("keel: read column types of %s: %w", t.Name, err)
 	}
-	byName := map[string]string{}
-	for rows.Next() {
-		var name, typ string
-		if err := rows.Scan(&name, &typ); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		byName[name] = typ
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
+	defer conn.Release()
+	byName, err := readColumnTypes(ctx, conn.Conn(), t)
+	if err != nil {
 		return nil, err
 	}
-	types = make([]string, len(t.Columns))
+	types = make([]columnType, len(t.Columns))
 	for i, c := range t.Columns {
 		if !c.Stored() {
 			continue
@@ -61,15 +66,53 @@ func (db *DB) columnTypes(ctx context.Context, t *schema.Table) ([]string, error
 		if !ok {
 			return nil, errf("table %s has no column %s; run migrations or regenerate", t.Name, c.Name)
 		}
+		if c.Kind != schema.KindOther {
+			typ.array = ""
+		}
 		types[i] = typ
 	}
 	db.types.mu.Lock()
 	if db.types.m == nil {
-		db.types.m = make(map[*schema.Table][]string)
+		db.types.m = make(map[*schema.Table][]columnType)
 	}
 	db.types.m[t] = types
 	db.types.mu.Unlock()
 	return types, nil
+}
+
+// readColumnTypes reads the types of t's columns from the catalog, by name, with the array type of
+// each extension base type that conn has a codec for, and for its array.
+func readColumnTypes(ctx context.Context, conn *pgx.Conn, t *schema.Table) (map[string]columnType, error) {
+	rows, err := conn.Query(ctx, `SELECT a.attname, format_type(a.atttypid, a.atttypmod), a.atttypid, ty.typtype,
+	       ty.typarray, coalesce(format_type(ty.typarray, NULL), '')
+	  FROM pg_attribute a
+	  JOIN pg_type ty ON ty.oid = a.atttypid
+	 WHERE a.attrelid = $1::regclass AND a.attnum > 0 AND NOT a.attisdropped`, t.Quoted)
+	if err != nil {
+		return nil, fmt.Errorf("keel: read column types of %s: %w", t.Name, err)
+	}
+	defer rows.Close()
+	m := conn.TypeMap()
+	byName := map[string]columnType{}
+	for rows.Next() {
+		var name, typ, kind, array string
+		var oid, arrayOID uint32
+		if err := rows.Scan(&name, &typ, &oid, &kind, &arrayOID, &array); err != nil {
+			return nil, err
+		}
+		ct := columnType{sql: typ}
+		if kind == "b" && oid >= firstUserOID && arrayOID != 0 && registered(m, oid) && registered(m, arrayOID) {
+			ct.array = array
+		}
+		byName[name] = ct
+	}
+	return byName, rows.Err()
+}
+
+// registered reports whether m has a codec for the type oid.
+func registered(m *pgtype.Map, oid uint32) bool {
+	_, ok := m.TypeForOID(oid)
+	return ok
 }
 
 // ForgetColumnTypes drops the cached column types, so the next bulk write reads them again. Call it
@@ -91,9 +134,19 @@ type columnArray struct {
 
 // buildColumn extracts one column of rows into a keel array parameter, reading through the
 // generated field pointers so no value is boxed. Values Postgres has no native array for (enums,
-// JSON, numeric, arrays, custom types) travel as text and are cast to the column's type.
-func (db *DB) buildColumn(t *schema.Table, col int32, sqlType string, rows []unsafe.Pointer) (columnArray, error) {
+// JSON, numeric, arrays, custom types) travel as text and are cast to the column's type, except
+// custom types whose codec the connections register, which travel as an array of their values for
+// that codec to encode.
+func (db *DB) buildColumn(t *schema.Table, col int32, ct columnType, rows []unsafe.Pointer) (columnArray, error) {
 	c := &t.Columns[col]
+	sqlType := ct.sql
+	if ct.array != "" {
+		vals := make([]any, len(rows))
+		for i, row := range rows {
+			vals[i] = t.Value(row, col)
+		}
+		return columnArray{arg: vals, param: ct.array}, nil
+	}
 	n := nullability(c)
 	native := func(own string) string {
 		if sqlType == own {
@@ -326,7 +379,7 @@ func intArrayLiteral(xs []int64) string {
 
 // writeUnnestSource writes SELECT u.c1[::type], … FROM unnest($1::t1[], …) AS u(c1, …) for the
 // insert columns of rows, binding one array per column.
-func (db *DB) writeUnnestSource(r *render, t *schema.Table, types []string, rows []unsafe.Pointer) error {
+func (db *DB) writeUnnestSource(r *render, t *schema.Table, types []columnType, rows []unsafe.Pointer) error {
 	arrays := make([]columnArray, len(t.Insert))
 	for i, c := range t.Insert {
 		a, err := db.buildColumn(t, c, types[c], rows)

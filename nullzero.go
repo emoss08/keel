@@ -13,7 +13,8 @@ func (c Col) nullZero() bool {
 }
 
 // isZeroValue reports whether v is the zero value of its type: an empty string, a zero number, false,
-// a zero time, a nil slice or map. Basic types are tested without reflection.
+// a zero time, a nil slice or map, or a pointer to a zero value, which is how a custom type with a
+// pointer-receiver driver.Valuer is bound. Basic types are tested without reflection.
 func isZeroValue(v any) bool {
 	switch x := v.(type) {
 	case nil:
@@ -44,7 +45,11 @@ func isZeroValue(v any) bool {
 	if z, ok := v.(interface{ IsZero() bool }); ok {
 		return z.IsZero()
 	}
-	return reflect.ValueOf(v).IsZero()
+	rv := reflect.ValueOf(v)
+	if rv.Kind() == reflect.Pointer && !rv.IsNil() {
+		rv = rv.Elem()
+	}
+	return rv.IsZero()
 }
 
 // containsZero reports whether list, a slice of values, holds a zero value.

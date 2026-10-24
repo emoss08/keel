@@ -228,6 +228,42 @@ type LeaveEntry struct {
 	}
 }
 
+func TestGeneratePointerValuer(t *testing.T) {
+	files, err := generate(t, `type Point struct{ X, Y float64 }
+
+func (p *Point) Scan(any) error { return nil }
+
+func (p *Point) Value() (any, error) { return nil, nil }
+
+type A struct {
+	keel.Table ~keel:"a"~
+
+	ID  string ~keel:"id,pk"~
+	P   *Point ~keel:"p"~
+	Q   Point  ~keel:"q"~
+	Z   Point  ~keel:"z,nullzero"~
+}
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(files[0].Content)
+	for _, want := range []string{
+		"if r.P == nil {\n\t\t\treturn nil\n\t\t}\n\t\treturn r.P\n",
+		"return &r.Q\n",
+		"if r.Z == (models.Point{}) {\n\t\t\treturn nil\n\t\t}\n\t\treturn &r.Z\n",
+		"func (c PointCol) Eq(v models.Point) keel.Pred             { return c.AnyCol.Eq(&v) }",
+		"func (c PointCol) In(vs ...models.Point) keel.Pred         { return c.AnyCol.In(keel.Pointers(vs)) }",
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("generated code lacks %q", want)
+		}
+	}
+	if t.Failed() {
+		t.Log(src)
+	}
+}
+
 func TestGenerateComputed(t *testing.T) {
 	files, err := generate(t, `type A struct {
 	keel.Table ~keel:"a,report"~
