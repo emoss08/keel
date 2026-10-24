@@ -17,7 +17,9 @@ type txKey struct{}
 // is used by one goroutine at a time.
 type txState struct {
 	db        *DB
-	conn      *pgxpool.Conn
+	conn      pgConn
+	pooled    *pgxpool.Conn
+	joined    bool
 	readOnly  bool
 	implicit  bool
 	begun     bool
@@ -161,9 +163,12 @@ func (db *DB) runTx(ctx context.Context, readOnly bool, fn func(context.Context)
 	}
 }
 
-func (tx *txState) acquire(ctx context.Context) (*pgxpool.Conn, error) {
+func (tx *txState) acquire(ctx context.Context) (pgConn, error) {
 	if tx.conn != nil {
 		return tx.conn, nil
+	}
+	if tx.joined {
+		return nil, errf("the joined transaction has ended")
 	}
 	pool := tx.db.pool
 	if tx.rep != nil {
@@ -173,7 +178,7 @@ func (tx *txState) acquire(ctx context.Context) (*pgxpool.Conn, error) {
 	if err != nil {
 		return nil, fmt.Errorf("keel: acquire connection: %w", err)
 	}
-	tx.conn = conn
+	tx.conn, tx.pooled = conn, conn
 	return conn, nil
 }
 
@@ -252,8 +257,10 @@ func (tx *txState) finish(ctx context.Context, err error) error {
 		return err
 	}
 	defer func() {
-		tx.conn.Release()
-		tx.conn = nil
+		if tx.pooled != nil {
+			tx.pooled.Release()
+		}
+		tx.conn, tx.pooled = nil, nil
 	}()
 	if !tx.begun || tx.committed {
 		return err
@@ -314,8 +321,8 @@ func (tx *txState) runAfterCommit(ctx context.Context) {
 }
 
 // Savepoint runs fn inside a savepoint of the transaction on ctx: an error from fn rolls back to
-// the savepoint and is returned, leaving the transaction usable. Outside a transaction it runs fn
-// in a new Write.
+// the savepoint, drops the Committed hooks and AfterCommit callbacks queued inside it, and is
+// returned, leaving the transaction usable. Outside a transaction it runs fn in a new Write.
 func Savepoint(ctx context.Context, db *DB, fn func(ctx context.Context) error) error {
 	tx := txFrom(ctx, db)
 	if tx == nil {
@@ -330,7 +337,9 @@ func Savepoint(ctx context.Context, db *DB, fn func(ctx context.Context) error) 
 	if err := run.one(ctx, &stmt{sql: "SAVEPOINT " + name, op: "savepoint"}, false); err != nil {
 		return err
 	}
+	queued := len(tx.afterCommit)
 	if err := fn(ctx); err != nil {
+		tx.afterCommit = tx.afterCommit[:queued]
 		if rbErr := run.one(ctx, &stmt{sql: "ROLLBACK TO SAVEPOINT " + name, op: "savepoint"}, false); rbErr != nil {
 			return errors.Join(err, rbErr)
 		}

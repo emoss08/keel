@@ -10,6 +10,15 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// pgConn is a connection keel sends statements through: a connection of its own pools, or one
+// another data layer owns and joined with JoinTx.
+type pgConn interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	SendBatch(ctx context.Context, b *pgx.Batch) pgx.BatchResults
+	CopyFrom(ctx context.Context, table pgx.Identifier, columns []string, src pgx.CopyFromSource) (int64, error)
+}
+
 // stmt is one statement of a batch.
 type stmt struct {
 	sql   string
@@ -105,7 +114,7 @@ func (r *runner) touch(k versionKey) {
 	r.sc.changes[k] = struct{}{}
 }
 
-func (r *runner) acquire(ctx context.Context) (*pgxpool.Conn, error) {
+func (r *runner) acquire(ctx context.Context) (pgConn, error) {
 	if r.tx != nil {
 		return r.tx.acquire(ctx)
 	}
@@ -126,7 +135,7 @@ func (r *runner) acquire(ctx context.Context) (*pgxpool.Conn, error) {
 
 // started returns the runner's connection with its transaction, if it has one, begun, for a
 // statement that cannot join a batch, such as COPY.
-func (r *runner) started(ctx context.Context) (*pgxpool.Conn, error) {
+func (r *runner) started(ctx context.Context) (pgConn, error) {
 	if r.tx != nil {
 		if err := r.tx.begin(ctx); err != nil {
 			return nil, err
@@ -148,7 +157,10 @@ func (r *runner) batch(ctx context.Context, stmts []*stmt, last bool) error {
 		}
 	}
 	if custom && r.tx == nil {
-		r.tx = &txState{db: r.db, readOnly: true, implicit: true, conn: r.conn, rep: r.rep}
+		r.tx = &txState{db: r.db, readOnly: true, implicit: true, rep: r.rep}
+		if r.conn != nil {
+			r.tx.conn, r.tx.pooled = r.conn, r.conn
+		}
 		r.conn = nil
 		r.own = true
 	}
@@ -216,7 +228,7 @@ func (r *runner) toPrimary(ctx context.Context) {
 // send sends stmts on conn in one round trip: BEGIN, the transaction options and the OnBegin
 // statements when the transaction begins, the guard when guard is set, the statements with their
 // plan-mode switches, and COMMIT when the runner's implicit transaction ends with this batch.
-func (r *runner) send(ctx context.Context, conn *pgxpool.Conn, stmts []*stmt, last, custom bool,
+func (r *runner) send(ctx context.Context, conn pgConn, stmts []*stmt, last, custom bool,
 	guard Position,
 ) error {
 	beginning := r.tx != nil && !r.tx.begun
@@ -337,7 +349,7 @@ func scanRows(rows pgx.Rows, s *stmt) error {
 
 // direct sends one statement outside a pipeline. pgx's pipeline keeps per-message bookkeeping a
 // lone statement does not need.
-func (r *runner) direct(ctx context.Context, conn *pgxpool.Conn, s *stmt) error {
+func (r *runner) direct(ctx context.Context, conn pgConn, s *stmt) error {
 	stmts := []*stmt{s}
 	events, qctx := r.db.startEvents(ctx, r.replica(), stmts)
 	start := time.Now()
