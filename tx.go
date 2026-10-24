@@ -198,11 +198,7 @@ func (db *DB) runTx(ctx context.Context, readOnly bool, fn func(context.Context)
 				tx.route = routeFrom(ctx)
 			}
 		}
-		err := fn(context.WithValue(ctx, txKey{}, tx))
-		err = tx.end(ctx, err)
-		if tx.rep != nil {
-			tx.rep.release()
-		}
+		err := tx.run(ctx, fn)
 		if err != nil && attempt < o.retries && IsRetryable(err) {
 			continue
 		}
@@ -211,6 +207,25 @@ func (db *DB) runTx(ctx context.Context, readOnly bool, fn func(context.Context)
 		}
 		return err
 	}
+}
+
+// run calls fn with the transaction on its context and ends the transaction: it commits when fn
+// returns nil and rolls back when it returns an error. When fn panics, it rolls back and lets the
+// connection and replica go before the panic continues, so a recovered panic leaves no connection
+// checked out in an open transaction.
+func (tx *txState) run(ctx context.Context, fn func(context.Context) error) (err error) {
+	returned := false
+	defer func() {
+		if !returned {
+			_ = tx.end(ctx, errPanicked)
+		}
+		if tx.rep != nil {
+			tx.rep.release()
+		}
+	}()
+	err = fn(context.WithValue(ctx, txKey{}, tx))
+	returned = true
+	return tx.end(ctx, err)
 }
 
 func (tx *txState) acquire(ctx context.Context) (pgConn, error) {

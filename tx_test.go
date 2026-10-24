@@ -364,3 +364,35 @@ func TestJSONCodec(t *testing.T) {
 		t.Fatalf("codec not used: %d marshals, %d unmarshals", marshals, unmarshals)
 	}
 }
+
+func TestPanicInsideATransactionReleasesItsConnection(t *testing.T) {
+	d := openDB(t, nil)
+	ctx := newTenant()
+	c := fleetdb.Customers
+	for _, detached := range []bool{false, true} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Fatal("the panic did not reach the caller")
+				}
+			}()
+			_ = keel.Write(ctx, d, func(ctx context.Context) error {
+				if err := c.Create(ctx, d, &fleet.Customer{Name: "Panicked", Code: "PANIC"}); err != nil {
+					return err
+				}
+				if !detached {
+					panic("boom")
+				}
+				return keel.Write(ctx, d, func(ctx context.Context) error {
+					if err := c.Create(ctx, d, &fleet.Customer{Name: "Panicked", Code: "PANIC2"}); err != nil {
+						return err
+					}
+					panic("boom")
+				}, keel.Detached())
+			})
+		}()
+		eq(t, d.Pool().Stat().AcquiredConns(), int32(0))
+	}
+	n := must(c.Where(c.Code.In("PANIC", "PANIC2")).Count(ctx, d))(t)
+	eq(t, n, int64(0))
+}

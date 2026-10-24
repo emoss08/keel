@@ -2398,6 +2398,8 @@ How transactions run:
   in one round trip. A transaction that runs no statement costs nothing.
 - The transaction holds one connection from its first statement to its end. Use its context from
   one goroutine at a time.
+- A panic in the function rolls the transaction back and returns its connection to the pool before
+  it goes on up the stack, so a recovered panic leaks nothing.
 - A `Read` or `Write` inside a `Write` joins it; a `Read` inside a `Read` joins it; a `Write` inside
   a `Read`, and any write inside a `Read`, returns `ErrReadOnly`. Options of a joined call are
   ignored. `keel.Detached()` starts a transaction of its own instead; see

@@ -32,7 +32,8 @@ var (
 	// such work in its own transaction with Detached.
 	ErrScopeMismatch = errors.New("keel: the context's scope differs from its transaction's; use keel.Detached for a transaction of its own")
 
-	errRawArgs = errors.New("keel: Raw has fewer arguments than placeholders")
+	errRawArgs  = errors.New("keel: Raw has fewer arguments than placeholders")
+	errPanicked = errors.New("keel: the transaction's function panicked")
 )
 
 // ConflictError reports a Save whose version no longer matched the stored row.
