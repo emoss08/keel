@@ -226,6 +226,7 @@ func (q *query) renderSelect(r *render, sn *lnode, o selectOpts) *selectPlan {
 		}
 		if !o.prefiltered {
 			wrote = r.preds(r.intercepted(sn.table, OpRead, true), wrote)
+			wrote = r.preds(r.readFiltered(sn.table), wrote)
 		}
 		var ps []Pred
 		if sn.spec != nil {
@@ -349,6 +350,9 @@ func (q *query) renderSelect(r *render, sn *lnode, o selectOpts) *selectPlan {
 				wrote := r.tenantPred(j.ref.Table, lateral[i], q.allTenants)
 				if !r.preds(j.on, wrote) && !wrote {
 					r.s("TRUE")
+				}
+				if j.ref.isPath() {
+					r.pinnedPreds(j.ref.Table, lateral[i], r.readFiltered(j.ref.Table))
 				}
 			}
 		})
@@ -483,6 +487,7 @@ func (r *render) writeJoin(sc *scope, j *join) {
 		r.s(" AND ")
 		p.writeSQL(r)
 	}
+	r.pinnedPreds(j.ref.Table, j.alias, r.readFiltered(j.ref.Table))
 }
 
 // writeSubquery writes q as a subquery of the statement r is rendering. A query on a relation path
