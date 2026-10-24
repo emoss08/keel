@@ -184,6 +184,7 @@ type parentIndex struct {
 	ints  []int8Array
 }
 
+// indexParents indexes parents by their key columns cols, skipping parents whose key is NULL.
 func indexParents(t *schema.Table, parents []unsafe.Pointer, cols []int32, kinds []keyKind) *parentIndex {
 	ix := &parentIndex{kinds: kinds, byKey: make(map[relKey][]unsafe.Pointer, len(parents)),
 		strs: make([]textArray, len(cols)), ints: make([]int8Array, len(cols))}

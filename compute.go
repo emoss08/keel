@@ -211,6 +211,7 @@ func Scalar(q subquery) Expr { return scalarExpr{q: q} }
 // scalarExpr is a scalar subquery.
 type scalarExpr struct{ q subquery }
 
+// writeSQL writes (SELECT …).
 func (e scalarExpr) writeSQL(r *render) {
 	r.b('(')
 	e.q.writeSubquery(r, false)

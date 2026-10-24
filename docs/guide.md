@@ -3523,6 +3523,12 @@ The same pattern works for an application:
 | `ColumnExpr("ts_rank(sv, …) AS rank")` | `Compute(s.Rank, s.SearchVector.Rank(q))` |
 | `to_tsquery('simple', 'word:*')` built by hand for search as you type | `keel.SearchModes(keel.WebSearch, keel.Prefix)` |
 | `bun.In(ids)` | `col.In(ids...)` |
+| `bun.List(ids)` in `IN (?)` | `col.In(ids...)`, one array parameter |
+| `?TableAlias`, `bun.Ident(col)` in raw fragments | typed columns, or expression arguments of `keel.Raw`; aliases are derived |
+| `payload->'a'->>'b' = ?` | `s.Payload.Text("a", "b").Eq(v)` |
+| `.For("UPDATE OF inv")` | `.Lock(keel.ForUpdate)`, which locks the base table (`FOR UPDATE OF` its alias) |
+| a `*postgis.Point` (`sql.Scanner` and `driver.Valuer`) with `type:geography` | the same field; register the PostGIS codecs in `Config.AfterConnect` ([Enums, domains and decimals](#enums-domains-and-decimals)) |
+| `.Value("geom", "ST_GeomFromGeoJSON(?)", js)` on an insert | a `Value` method that encodes the type, or `Update` with `ToExpr(keel.Raw("ST_GeomFromGeoJSON(?)", js))` in the same transaction |
 | `.Order("sp.created_at DESC")` | `.Order(s.CreatedAt.Desc())` |
 | `.Limit(n).Offset(m)`, `ScanAndCount` | `Page(ctx, db, keel.After(cursor, n).Total(cap))` (one round trip) |
 | `.Count(ctx)`, `.Exists(ctx)` | `Count`, `CountUpTo`, `Exists` |

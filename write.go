@@ -705,6 +705,8 @@ func (db *DB) upsert(ctx context.Context, ref *Ref, rows []unsafe.Pointer, c Con
 	return inserted, run.close(ctx, err)
 }
 
+// save writes row by its primary key: the columns cols name, or with except every updatable
+// column but those, or every updatable column when cols is empty.
 func (db *DB) save(ctx context.Context, ref *Ref, row unsafe.Pointer, cols []interface{ column() Col },
 	except bool,
 ) error {

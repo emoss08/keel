@@ -1823,15 +1823,15 @@ func ExampleDynQuery_Explain() {
 func Example_nullZero() {
 	ctx, db := requestContext(), appDB
 	c := fleetdb.Contacts
-	contact := &fleet.Contact{Name: "Dana"} // CustomerID, Phone, LastSeenAt… are stored as NULL
+	contact := &fleet.Contact{Name: "Dana"}
 	if err := c.Create(ctx, db, contact); err != nil {
 		log.Fatal(err)
 	}
-	unassigned, err := c.Where(c.CustomerID.Eq("")).Count(ctx, db) // customer_id IS NULL
+	unassigned, err := c.Where(c.CustomerID.Eq("")).Count(ctx, db)
 	if err != nil {
 		log.Fatal(err)
 	}
-	_, err = c.Where(c.Name.Eq("Dana")).Update(ctx, db, c.Phone.To("")) // phone = NULL
+	_, err = c.Where(c.Name.Eq("Dana")).Update(ctx, db, c.Phone.To(""))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -1878,7 +1878,7 @@ func ExampleTSVectorCol_Match() {
 func Example_relationKeys() {
 	ctx, db := requestContext(), appDB
 	l := fleetdb.Leaves
-	e := l.Entries() // many:source_leave_id|worker_id
+	e := l.Entries()
 	leaves, err := l.
 		Where(e.Any(e.Hours.Gte(8))).
 		Load(e.Order(e.PostedAt.Asc()), l.LastEntry()).
@@ -1911,7 +1911,7 @@ func ExampleHandle_SaveExcept() {
 		log.Fatal(err)
 	}
 	contact.Phone = "555-0100"
-	if err := c.SaveExcept(ctx, db, contact, c.Balance); err != nil { // never overwrite the balance
+	if err := c.SaveExcept(ctx, db, contact, c.Balance); err != nil {
 		log.Fatal(err)
 	}
 }

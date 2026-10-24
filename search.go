@@ -279,6 +279,7 @@ func (d DynExpr) RankCD(query string, opts ...SearchOption) DynExpr {
 	return d.dynRank("ts_rank_cd", query, opts)
 }
 
+// dynRank is fn(d, query): ts_rank or ts_rank_cd of a dynamic expression.
 func (d DynExpr) dynRank(fn, query string, opts []SearchOption) DynExpr {
 	if err := d.Err(); err != nil {
 		return dynFail(err)

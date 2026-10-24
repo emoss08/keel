@@ -88,6 +88,7 @@ func unnestType(elem reflect.Type) (string, bool) {
 	return "", false
 }
 
+// writeSubquery writes SELECT * FROM unnest($1::t1[], …), or fails with the body's error.
 func (b unnestBody) writeSubquery(r *render, _ bool) {
 	if b.err != nil {
 		r.fail(b.err)
