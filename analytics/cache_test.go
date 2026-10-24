@@ -12,7 +12,9 @@ import (
 
 	"github.com/xuri/excelize/v2"
 
+	"github.com/emoss08/keel"
 	"github.com/emoss08/keel/analytics"
+	"github.com/emoss08/keel/analytics/cache"
 	"github.com/emoss08/keel/analytics/export"
 	"github.com/emoss08/keel/internal/testmodels/fleet"
 	"github.com/emoss08/keel/internal/testmodels/fleet/fleetdb"
@@ -182,5 +184,101 @@ func TestRunStreamsAndExports(t *testing.T) {
 	}
 	if err := early.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// gate is an observer that counts the report statements on shipments and holds each one until
+// release is closed.
+type gate struct {
+	mu      sync.Mutex
+	reports int
+	started chan struct{}
+	release chan struct{}
+}
+
+// BeforeQuery counts a report statement and waits for the release.
+func (g *gate) BeforeQuery(ctx context.Context, e *keel.QueryEvent) context.Context {
+	if e.Op != "select" || !strings.Contains(e.SQL, `FROM "shipments"`) {
+		return ctx
+	}
+	g.mu.Lock()
+	g.reports++
+	g.mu.Unlock()
+	select {
+	case g.started <- struct{}{}:
+	default:
+	}
+	<-g.release
+	return ctx
+}
+
+// AfterQuery does nothing.
+func (g *gate) AfterQuery(context.Context, *keel.QueryEvent) {}
+
+// count returns the report statements seen.
+func (g *gate) count() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.reports
+}
+
+func TestConcurrentPreviewsComputeOnceWithThePostgresStore(t *testing.T) {
+	w := seedWorld(t)
+	g := &gate{started: make(chan struct{}, 1), release: make(chan struct{})}
+	cfg := testConfig(testDSN)
+	cfg.Observers = []keel.Observer{g}
+	d := must[*keel.DB](t)(keel.Open(context.Background(), cfg))
+	defer d.Close()
+	store := must[*cache.Postgres](t)(cache.NewPostgres(d.Pool(), cache.PostgresOptions{}))
+	defer store.Close()
+	r := must[*analytics.Runner](t)(analytics.NewRunner(d, catalog(t), analytics.RunnerOptions{Cache: store}))
+	req := analytics.Request{Definition: def(t, manyMeasures), Key: "preview:user"}
+
+	var wg sync.WaitGroup
+	var results [2]*analytics.Result
+	var errs [2]error
+	for i := range results {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results[i], errs[i] = r.Preview(w.ctx, req)
+		}()
+	}
+	<-g.started
+	time.Sleep(200 * time.Millisecond)
+	close(g.release)
+	wg.Wait()
+	for _, err := range errs {
+		ok(t, err)
+	}
+	if g.count() != 1 {
+		t.Fatalf("two concurrent identical previews ran %d statements", g.count())
+	}
+	if results[0].Cached() || results[1].Cached() {
+		t.Fatal("a preview computed now reported a cache hit")
+	}
+	want(t, rows(t, results[1]), rows(t, results[0])...)
+
+	hit := must[*analytics.Result](t)(r.Preview(w.ctx, req))
+	if !hit.Cached() || g.count() != 1 {
+		t.Fatalf("the stored result was not read: cached %v, %d statements", hit.Cached(), g.count())
+	}
+	before := must[map[string]int64](t)(d.DataVersions(w.ctx, d.TenantKey(w.ctx), "shipments"))
+	must[int64](t)(fleetdb.Shipments.Where(fleetdb.Shipments.ProNumber.Eq("P01")).
+		Update(w.ctx, d, fleetdb.Shipments.Total.To(fleet.Money{Cents: 12345})))
+	ok(t, d.FlushDataVersions(context.Background()))
+	after := must[map[string]int64](t)(d.DataVersions(w.ctx, d.TenantKey(w.ctx), "shipments"))
+	if after["shipments"] == before["shipments"] {
+		t.Fatal("the write did not move the data version")
+	}
+	miss := must[*analytics.Result](t)(r.Preview(w.ctx, req))
+	if miss.Cached() || g.count() != 2 {
+		t.Fatalf("a write left the cache fresh: cached %v, %d statements", miss.Cached(), g.count())
+	}
+	plain := must[*analytics.Runner](t)(analytics.NewRunner(d, catalog(t), analytics.RunnerOptions{}))
+	fresh := must[*analytics.Result](t)(plain.Preview(w.ctx, req))
+	want(t, rows(t, miss), rows(t, fresh)...)
+	if strings.Join(rows(t, miss), "\n") == strings.Join(rows(t, hit), "\n") {
+		t.Fatal("the write did not change the report")
 	}
 }

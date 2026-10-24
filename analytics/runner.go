@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/emoss08/keel"
+	"github.com/emoss08/keel/analytics/cache"
 	"github.com/emoss08/keel/analytics/ir"
 	"github.com/emoss08/keel/analytics/table"
 )
@@ -41,7 +42,8 @@ type RunnerOptions struct {
 	Timeouts Timeouts
 	// Primary reads the primary instead of a replica.
 	Primary bool
-	// Cache stores results; nil runs every request. It needs data versions on the DB.
+	// Cache stores results; nil runs every request. It needs data versions on the DB. Concurrent
+	// identical requests in this process that miss it compute the result once.
 	Cache Cache
 	// CacheTTL is how long a cached result lives (default 15m): the backstop for writes keel
 	// cannot see.
@@ -111,6 +113,7 @@ type Runner struct {
 	opts    RunnerOptions
 	plans   *planCache
 	slotSQL string
+	loader  *cache.Loader
 
 	mu      sync.Mutex
 	running map[string]*running
@@ -155,6 +158,9 @@ func NewRunner(db *keel.DB, cat *Catalog, opts RunnerOptions) (*Runner, error) {
 	}
 	r := &Runner{db: db, cat: cat, opts: opts, running: map[string]*running{},
 		plans: &planCache{entries: map[string]planEntry{}}}
+	if opts.Cache != nil {
+		r.loader = cache.NewLoader(opts.Cache, cache.LoaderOptions{OnError: r.report})
+	}
 	if opts.Slots > 0 {
 		r.slotSQL = slotSQL(opts.Slots)
 	}
@@ -214,23 +220,18 @@ func (r *Runner) materialize(ctx context.Context, req Request, entry string, tim
 		return nil, err
 	}
 	key := r.cacheKeyOf(ctx, comp, entry, req.Format, strconv.Itoa(rows))
-	if res := r.cachedResult(ctx, key); res != nil {
-		return res, nil
-	}
-	var out *Result
-	err = r.execute(ctx, req, comp, timeout, func(ctx context.Context, comp *Compiled) error {
-		res, err := comp.Query.Run(ctx, r.db)
-		if err != nil {
+	return cached(ctx, r, key, func(ctx context.Context) (*Result, error) {
+		var out *Result
+		err := r.execute(ctx, req, comp, timeout, func(ctx context.Context, comp *Compiled) error {
+			res, err := comp.Query.Run(ctx, r.db)
+			if err != nil {
+				return err
+			}
+			out, err = r.resultOf(comp, res)
 			return err
-		}
-		out, err = r.resultOf(comp, res)
-		return err
-	})
-	if err != nil {
-		return nil, err
-	}
-	r.storeResult(ctx, key, out)
-	return out, nil
+		})
+		return out, err
+	}, encodeResult, decodeCached)
 }
 
 // resultOf turns a decoded statement result into a Result, cut at the limit and the byte cap.
@@ -257,22 +258,15 @@ func (r *Runner) Count(ctx context.Context, req Request) (int64, error) {
 		return 0, err
 	}
 	key := r.cacheKeyOf(ctx, comp, "count", req.Format, "")
-	if b, ok := r.cacheGet(ctx, key); ok {
-		if n, err := decodeCount(b); err == nil {
-			return n, nil
-		}
-	}
-	var n int64
-	err = r.execute(ctx, req, comp, r.opts.Timeouts.Count, func(ctx context.Context, comp *Compiled) error {
-		var err error
-		n, err = comp.Query.Count(ctx, r.db)
-		return err
-	})
-	if err != nil {
-		return 0, err
-	}
-	r.cacheSet(ctx, key, encodeCount(n))
-	return n, nil
+	return cached(ctx, r, key, func(ctx context.Context) (int64, error) {
+		var n int64
+		err := r.execute(ctx, req, comp, r.opts.Timeouts.Count, func(ctx context.Context, comp *Compiled) error {
+			var err error
+			n, err = comp.Query.Count(ctx, r.db)
+			return err
+		})
+		return n, err
+	}, encodeCountValue, decodeCountValue)
 }
 
 // Page returns the page of size rows after cursor (empty for the first page) in the report's
@@ -288,23 +282,18 @@ func (r *Runner) Page(ctx context.Context, req Request, cursor string, size int)
 		return nil, err
 	}
 	key := r.cacheKeyOf(ctx, comp, "page", req.Format, cursor+"\x00"+strconv.Itoa(size))
-	if res := r.cachedResult(ctx, key); res != nil {
-		return res, nil
-	}
-	var out *Result
-	err = r.execute(ctx, req, comp, r.opts.Timeouts.Page, func(ctx context.Context, comp *Compiled) error {
-		res, err := comp.Query.Page(ctx, r.db, keel.After(cursor, size))
-		if err != nil {
+	return cached(ctx, r, key, func(ctx context.Context) (*Result, error) {
+		var out *Result
+		err := r.execute(ctx, req, comp, r.opts.Timeouts.Page, func(ctx context.Context, comp *Compiled) error {
+			res, err := comp.Query.Page(ctx, r.db, keel.After(cursor, size))
+			if err != nil {
+				return err
+			}
+			out, err = r.resultOf(comp, res)
 			return err
-		}
-		out, err = r.resultOf(comp, res)
-		return err
-	})
-	if err != nil {
-		return nil, err
-	}
-	r.storeResult(ctx, key, out)
-	return out, nil
+		})
+		return out, err
+	}, encodeResult, decodeCached)
 }
 
 // execute runs fn in a read-only transaction with the run's guards (see attempt). When the

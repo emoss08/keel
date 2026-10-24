@@ -6,24 +6,23 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
-	"time"
 
 	"github.com/emoss08/keel"
+	"github.com/emoss08/keel/analytics/cache"
 	"github.com/emoss08/keel/analytics/export"
 	"github.com/emoss08/keel/analytics/table"
 )
 
-// Cache stores run results under a key for a time. Implementations live in analytics/cache (an
-// in-memory LRU, a Postgres unlogged table, Redis); any key-value store with expiry fits. Get
-// reports a miss with false; errors are reported and treated as a miss by the runner. Values are
-// opaque bytes the runner encodes.
-type Cache interface {
-	Get(ctx context.Context, key string) ([]byte, bool, error)
-	Set(ctx context.Context, key string, value []byte, ttl time.Duration) error
-}
+// Cache stores run results under a key for a time: a cache.Store, so the stores of analytics/cache
+// (cache.NewMemory, cache.NewPostgres, cache.NewRedis) plug in as they are, and any key-value store
+// with expiry fits. Get reports a miss with false; errors are reported and treated as a miss by
+// the runner. Values are opaque bytes the runner encodes. The runner puts a cache.Loader in front
+// of it, so concurrent misses of one key in a process compute the result once.
+type Cache = cache.Store
 
 // CacheKey is everything a cached result depends on: the statement and its arguments (the
 // tenant's values and the policy's row rules are rendered into them), the entry point and the
@@ -171,6 +170,76 @@ func (r *Runner) cacheSet(ctx context.Context, key string, value []byte) {
 		r.report(err)
 	}
 }
+
+// errEncode marks a result that could not be encoded for the cache: the caller that computed it
+// keeps it, and the callers that waited for it compute their own.
+type errEncode struct{ err error }
+
+// Error returns the encoding error.
+func (e *errEncode) Error() string { return "analytics: cache: encode: " + e.err.Error() }
+
+// Unwrap returns the encoding error.
+func (e *errEncode) Unwrap() error { return e.err }
+
+// cached returns the value cached under key, or computes it. Concurrent misses of the key in this
+// process share one computation through the runner's cache.Loader: the first caller computes and
+// stores it, the others wait for it. Without a key it computes. The caller that computed the
+// value gets it as computed; the others decode the stored bytes.
+func cached[T any](ctx context.Context, r *Runner, key string, compute func(ctx context.Context) (T, error),
+	encode func(ctx context.Context, v T) ([]byte, error), decode func(b []byte, hit bool) (T, error),
+) (T, error) {
+	if key == "" {
+		return compute(ctx)
+	}
+	var own T
+	computed := false
+	b, hit, err := r.loader.Load(ctx, key, r.opts.CacheTTL, func(ctx context.Context) ([]byte, error) {
+		v, err := compute(ctx)
+		if err != nil {
+			return nil, err
+		}
+		own, computed = v, true
+		b, err := encode(ctx, v)
+		if err != nil {
+			r.report(err)
+			return nil, &errEncode{err: err}
+		}
+		return b, nil
+	})
+	var enc *errEncode
+	switch {
+	case computed:
+		return own, nil
+	case errors.As(err, &enc):
+		return compute(ctx)
+	case err != nil:
+		var zero T
+		return zero, err
+	}
+	v, err := decode(b, hit)
+	if err != nil {
+		r.report(err)
+		return compute(ctx)
+	}
+	return v, nil
+}
+
+// decodeCached decodes a cached result; hit marks one read from the store rather than shared
+// from a computation in flight.
+func decodeCached(b []byte, hit bool) (*Result, error) {
+	res, err := decodeResult(b)
+	if err != nil {
+		return nil, err
+	}
+	res.cached = hit
+	return res, nil
+}
+
+// encodeCountValue encodes a count for the cache.
+func encodeCountValue(_ context.Context, n int64) ([]byte, error) { return encodeCount(n), nil }
+
+// decodeCountValue reads a cached count.
+func decodeCountValue(b []byte, _ bool) (int64, error) { return decodeCount(b) }
 
 // cachedResult returns the cached result under key, or nil.
 func (r *Runner) cachedResult(ctx context.Context, key string) *Result {
