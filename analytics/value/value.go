@@ -11,7 +11,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/emoss08/keel"
 )
 
 // Type is the type of a report column's values. The zero Type is invalid.
@@ -23,7 +23,8 @@ const (
 	String Type = iota + 1
 	// Int is a whole number, held as int64.
 	Int
-	// Decimal is an exact decimal (Postgres numeric), held as pgtype.Numeric.
+	// Decimal is an exact decimal (Postgres numeric), held as keel.Decimal: the plain text
+	// Postgres writes, the representation the dynamic query layer decodes into.
 	Decimal
 	// Float is a floating-point number, held as float64.
 	Float
@@ -124,9 +125,11 @@ func ParseType(name string) (Type, error) {
 //	JSON               JSON
 //
 // Nulls marks the rows that are SQL NULL; the slot of a null row holds any value and is never
-// read. A nil Nulls means no row is null. A Numeric whose Valid field is false is also read as
-// null, which is how pgx decodes a NULL numeric. Strings are ordinary immutable Go strings: a
-// reader may share one string among many rows, but must not alias a buffer it reuses.
+// read. A nil Nulls means no row is null. An empty Decimal is also read as null, which is how the
+// dynamic query layer fills the slot of a NULL numeric. Strings and decimals are ordinary
+// immutable Go strings: a reader may share one string among many rows, but must not alias a
+// buffer it reuses. A keel.DynColumn's vectors and null bitmap have exactly these layouts, so a
+// dynamic query result becomes a Vector without copying.
 type Vector struct {
 	// Nulls marks null rows; nil when there are none.
 	Nulls Bitmap
@@ -135,7 +138,7 @@ type Vector struct {
 	// Int64 holds Int and Epoch values.
 	Int64 []int64
 	// Numeric holds Decimal values.
-	Numeric []pgtype.Numeric
+	Numeric []keel.Decimal
 	// Float64 holds Float values.
 	Float64 []float64
 	// Bool holds Bool values.
@@ -151,7 +154,7 @@ func (v *Vector) Null(i int) bool {
 	if v.Nulls.Has(i) {
 		return true
 	}
-	return v.Numeric != nil && !v.Numeric[i].Valid
+	return v.Numeric != nil && v.Numeric[i] == ""
 }
 
 // Bitmap is a set of row indexes, one bit per row, least significant bit first. A nil Bitmap is

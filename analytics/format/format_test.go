@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgtype"
 	"golang.org/x/text/language"
 
+	"github.com/emoss08/keel"
 	"github.com/emoss08/keel/analytics/format"
 	"github.com/emoss08/keel/analytics/value"
 )
@@ -576,10 +576,10 @@ func TestColumnAllocatesNothingOnceWarm(t *testing.T) {
 	}
 }
 
-func numerics(texts ...string) []pgtype.Numeric {
-	out := make([]pgtype.Numeric, len(texts))
+func numerics(texts ...string) []keel.Decimal {
+	out := make([]keel.Decimal, len(texts))
 	for i, s := range texts {
-		n, err := value.ParseNumeric(s)
+		n, err := value.ParseDecimal(s)
 		if err != nil {
 			panic(err)
 		}

@@ -9,9 +9,9 @@ import (
 	"io"
 	"math"
 	"math/big"
+	"strings"
 
-	"github.com/jackc/pgx/v5/pgtype"
-
+	"github.com/emoss08/keel"
 	"github.com/emoss08/keel/analytics/table"
 	"github.com/emoss08/keel/analytics/value"
 )
@@ -184,9 +184,11 @@ func keyValues(kv ...string) fbTables {
 func decimalScale(v *value.Vector, n int) int32 {
 	var scale int32
 	for i := range n {
-		x := v.Numeric[i]
-		if !v.Null(i) && value.NumericFinite(x) && -x.Exp > scale {
-			scale = -x.Exp
+		if v.Null(i) {
+			continue
+		}
+		if _, _, frac, ok := value.SplitDecimal(v.Numeric[i]); ok && int32(len(frac)) > scale {
+			scale = int32(len(frac))
 		}
 	}
 	return min(scale, decimalDigits)
@@ -322,7 +324,7 @@ func (aw *arrowWriter) column(t value.Type, v *value.Vector, scale int32) error 
 
 // arrowNull reports whether row i is written as null; a decimal Arrow cannot hold is.
 func arrowNull(t value.Type, v *value.Vector, i int) bool {
-	return v.Null(i) || (t == value.Decimal && !value.NumericFinite(v.Numeric[i]))
+	return v.Null(i) || (t == value.Decimal && !value.DecimalFinite(v.Numeric[i]))
 }
 
 // appendBits appends a bitmap, least significant bit first, of set over the selected rows.
@@ -402,17 +404,24 @@ var (
 
 // decimal128 returns n's unscaled value at scale as the low and high words of a 128-bit two's
 // complement integer, rounding half away from zero when n has more places.
-func decimal128(n pgtype.Numeric, scale int32) (uint64, uint64, error) {
-	shift := int64(n.Exp) + int64(scale)
-	if n.Int == nil {
+func decimal128(n keel.Decimal, scale int32) (uint64, uint64, error) {
+	neg, whole, frac, ok := value.SplitDecimal(n)
+	if !ok {
 		return 0, 0, nil
 	}
-	if n.Int.IsInt64() && shift >= 0 && shift <= 18 {
-		if x, ok := mulPow10(n.Int.Int64(), int(shift)); ok {
+	shift := int64(scale) - int64(len(frac))
+	if c, ok := smallCoefficient(whole, frac); ok && shift >= 0 && shift <= 18 {
+		if neg {
+			c = -c
+		}
+		if x, ok := mulPow10(c, int(shift)); ok {
 			return uint64(x), uint64(x >> 63), nil
 		}
 	}
-	x := new(big.Int).Set(n.Int)
+	x, _ := new(big.Int).SetString("0"+strings.TrimLeft(whole+frac, "0"), 10)
+	if neg {
+		x.Neg(x)
+	}
 	pow := new(big.Int).Exp(big.NewInt(10), big.NewInt(abs64(shift)), nil)
 	if shift >= 0 {
 		x.Mul(x, pow)
@@ -428,6 +437,25 @@ func decimal128(n pgtype.Numeric, scale int32) (uint64, uint64, error) {
 	lo := new(big.Int).And(x, mask64).Uint64()
 	hi := new(big.Int).Rsh(x, 64).Uint64()
 	return lo, hi, nil
+}
+
+// smallCoefficient returns the digits of whole followed by frac as an integer, when they have at
+// most 18 significant digits.
+func smallCoefficient(whole, frac string) (int64, bool) {
+	var c int64
+	n := 0
+	for _, part := range [2]string{whole, frac} {
+		for i := 0; i < len(part); i++ {
+			if n == 0 && part[i] == '0' {
+				continue
+			}
+			if n++; n > 18 {
+				return 0, false
+			}
+			c = c*10 + int64(part[i]-'0')
+		}
+	}
+	return c, true
 }
 
 // roundQuo sets x to x/d rounded half away from zero.

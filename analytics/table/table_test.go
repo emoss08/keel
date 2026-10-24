@@ -5,13 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"math/big"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgtype"
-
+	"github.com/emoss08/keel"
 	"github.com/emoss08/keel/analytics/format"
 	"github.com/emoss08/keel/analytics/table"
 	"github.com/emoss08/keel/analytics/value"
@@ -62,7 +60,7 @@ func TestBuilder(t *testing.T) {
 			t.Errorf("column %d row 1 is null", c)
 		}
 	}
-	if got := string(value.AppendNumeric(nil, cols[1].Numeric[2])); got != "2.25" {
+	if got := string(cols[1].Numeric[2]); got != "2.25" {
 		t.Errorf("float into decimal: %s", got)
 	}
 }
@@ -109,7 +107,6 @@ func TestBuilderStartsNewBatches(t *testing.T) {
 type reusingReader struct {
 	n     int
 	batch table.Batch
-	ints  []big.Int
 }
 
 func (r *reusingReader) Columns() []table.Column { return columns()[:2] }
@@ -122,12 +119,10 @@ func (r *reusingReader) Next(ctx context.Context) (*table.Batch, error) {
 	}
 	r.n++
 	if r.batch.Columns == nil {
-		r.ints = make([]big.Int, 1)
-		r.batch = table.Batch{Len: 1, Columns: []value.Vector{{String: make([]string, 1)}, {Numeric: make([]pgtype.Numeric, 1)}}}
+		r.batch = table.Batch{Len: 1, Columns: []value.Vector{{String: make([]string, 1)}, {Numeric: make([]keel.Decimal, 1)}}}
 	}
 	r.batch.Columns[0].String[0] = strings.Repeat("x", r.n)
-	r.ints[0].SetInt64(int64(r.n))
-	r.batch.Columns[1].Numeric[0] = pgtype.Numeric{Int: &r.ints[0], Valid: true}
+	r.batch.Columns[1].Numeric[0] = value.DecimalFromInt(int64(r.n))
 	return &r.batch, nil
 }
 
@@ -140,8 +135,8 @@ func TestCollectCopiesBatches(t *testing.T) {
 		t.Fatalf("%d batches", len(tbl.Batches))
 	}
 	first := tbl.Batches[0].Columns
-	if first[0].String[0] != "x" || first[1].Numeric[0].Int.Int64() != 1 {
-		t.Errorf("the first batch was overwritten: %q %v", first[0].String[0], first[1].Numeric[0].Int)
+	if first[0].String[0] != "x" || first[1].Numeric[0] != "1" {
+		t.Errorf("the first batch was overwritten: %q %v", first[0].String[0], first[1].Numeric[0])
 	}
 	r := tbl.Reader()
 	for range 2 {

@@ -3548,7 +3548,7 @@ A vector keeps one typed slice per column, chosen by the type, and a null bitmap
 | `value.String`, `value.Enum`, `value.Ref` | `String []string` | text, enums, keys |
 | `value.Int` | `Int64 []int64` | smallint, integer, bigint |
 | `value.Epoch` | `Int64 []int64` (seconds) | bigint columns named `*_at`, `*_date`, `*_time` |
-| `value.Decimal` | `Numeric []pgtype.Numeric` | numeric |
+| `value.Decimal` | `Numeric []keel.Decimal` (exact text, as Postgres writes it) | numeric |
 | `value.Float` | `Float64 []float64` | real, double precision |
 | `value.Bool` | `Bool []bool` | boolean |
 | `value.Time` | `Time []time.Time` | timestamptz, and a date bucket's start |
@@ -3565,7 +3565,7 @@ b := table.NewBuilder([]table.Column{
     {ID: "revenue", Label: "Revenue", Type: value.Decimal,
         Display: format.Resolve(value.Decimal, format.Hint{Kind: format.Money}, nil)},
 })
-_ = b.Append("ACME", "2840.125")                   // decimals as exact text, pgtype.Numeric or numbers
+_ = b.Append("ACME", "2840.125")                   // decimals as exact text, keel.Decimal or numbers
 _ = b.AppendLevel(table.Total, nil, "2840.125")    // a grand total
 r := b.Table().Reader()
 ```

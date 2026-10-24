@@ -306,7 +306,7 @@ func appendRawText(dst []byte, t value.Type, v *value.Vector, i int) []byte {
 	case value.Int, value.Epoch:
 		return strconv.AppendInt(dst, v.Int64[i], 10)
 	case value.Decimal:
-		return value.AppendNumeric(dst, v.Numeric[i])
+		return append(dst, v.Numeric[i]...)
 	case value.Float:
 		return appendFloat(dst, v.Float64[i])
 	case value.Bool:

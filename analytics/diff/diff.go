@@ -25,8 +25,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgtype"
-
+	"github.com/emoss08/keel"
 	"github.com/emoss08/keel/analytics/table"
 	"github.com/emoss08/keel/analytics/value"
 )
@@ -118,7 +117,7 @@ type Change struct {
 	// Measures are the measures that moved, or for an added or removed row every measure
 	// against zero.
 	Measures  []Measure `json:"measures,omitempty"`
-	magnitude pgtype.Numeric
+	magnitude keel.Decimal
 }
 
 // Measure is one measure before and after, as exact decimals without trailing zeros.
@@ -237,7 +236,7 @@ type comparison struct {
 type row struct {
 	key      string
 	values   []string
-	measures []pgtype.Numeric
+	measures []keel.Decimal
 }
 
 // side is one run's detail rows in order, indexed by key, with its repeated keys and sums.
@@ -245,14 +244,14 @@ type side struct {
 	rows  []row
 	index map[string]int
 	dups  map[string]bool
-	sums  []pgtype.Numeric
+	sums  []keel.Decimal
 }
 
 // read collects a run's detail rows.
 func (c *comparison) read(ctx context.Context, r table.Reader) (*side, error) {
-	s := &side{index: map[string]int{}, dups: map[string]bool{}, sums: make([]pgtype.Numeric, len(c.measures))}
+	s := &side{index: map[string]int{}, dups: map[string]bool{}, sums: make([]keel.Decimal, len(c.measures))}
 	for i := range s.sums {
-		s.sums[i] = value.NumericFromInt(0)
+		s.sums[i] = "0"
 	}
 	for {
 		b, err := r.Next(ctx)
@@ -273,7 +272,7 @@ func (c *comparison) read(ctx context.Context, r table.Reader) (*side, error) {
 // add adds a row to its run's sums, and records it under its key unless the key repeats.
 func (s *side) add(r row) {
 	for i, m := range r.measures {
-		s.sums[i], _ = value.AddNumeric(s.sums[i], m)
+		s.sums[i], _ = value.AddDecimal(s.sums[i], m)
 	}
 	if _, seen := s.index[r.key]; seen {
 		s.dups[r.key] = true
@@ -286,7 +285,7 @@ func (s *side) add(r row) {
 // row reads row i of b: its key, encoded so that no two different keys collide (each cell is a
 // null flag and a length-prefixed text), its key values and its measures.
 func (c *comparison) row(b *table.Batch, i int) row {
-	r := row{values: make([]string, len(c.keys)), measures: make([]pgtype.Numeric, len(c.measures))}
+	r := row{values: make([]string, len(c.keys)), measures: make([]keel.Decimal, len(c.measures))}
 	c.scratch = c.scratch[:0]
 	for k, col := range c.keys {
 		v := &b.Columns[col]
@@ -312,7 +311,7 @@ func keyText(t value.Type, v *value.Vector, i int) string {
 	case value.Int, value.Epoch:
 		return strconv.FormatInt(v.Int64[i], 10)
 	case value.Decimal:
-		return string(value.AppendNumeric(nil, value.NormalizeNumeric(v.Numeric[i])))
+		return string(value.NormalizeDecimal(v.Numeric[i]))
 	case value.Float:
 		return strconv.FormatFloat(v.Float64[i], 'g', -1, 64)
 	case value.Bool:
@@ -327,21 +326,21 @@ func keyText(t value.Type, v *value.Vector, i int) string {
 
 // measureOf reads a measure exactly. A null, NaN or infinite measure counts as zero: it adds
 // nothing to a sum.
-func measureOf(t value.Type, v *value.Vector, i int) pgtype.Numeric {
+func measureOf(t value.Type, v *value.Vector, i int) keel.Decimal {
 	if v.Null(i) {
-		return value.NumericFromInt(0)
+		return "0"
 	}
-	var n pgtype.Numeric
+	var n keel.Decimal
 	switch t {
 	case value.Int, value.Epoch:
-		n = value.NumericFromInt(v.Int64[i])
+		n = value.DecimalFromInt(v.Int64[i])
 	case value.Decimal:
 		n = v.Numeric[i]
 	case value.Float:
-		n = value.NumericFromFloat(v.Float64[i])
+		n = value.DecimalFromFloat(v.Float64[i])
 	}
-	if !value.NumericFinite(n) {
-		return value.NumericFromInt(0)
+	if !value.DecimalFinite(n) {
+		return "0"
 	}
 	return n
 }
@@ -381,8 +380,8 @@ func (c *comparison) changes(prior, current *side) []Change {
 // against states an added or removed row's measures against zero, so a row that appeared reads
 // like one that grew from nothing.
 func (c *comparison) against(kind Kind, r row) Change {
-	ch := Change{Kind: kind, Key: r.values, magnitude: value.NumericFromInt(0)}
-	zero := value.NumericFromInt(0)
+	ch := Change{Kind: kind, Key: r.values, magnitude: "0"}
+	zero := keel.Decimal("0")
 	for m, col := range c.measures {
 		before, after := zero, r.measures[m]
 		if kind == Removed {
@@ -395,9 +394,9 @@ func (c *comparison) against(kind Kind, r row) Change {
 
 // compare states the measures that moved between a row's two versions.
 func (c *comparison) compare(prior, current row) Change {
-	ch := Change{Kind: Unchanged, Key: current.values, magnitude: value.NumericFromInt(0)}
+	ch := Change{Kind: Unchanged, Key: current.values, magnitude: "0"}
 	for m, col := range c.measures {
-		if same, _ := value.CompareNumeric(prior.measures[m], current.measures[m]); same == 0 {
+		if same, _ := value.CompareDecimal(prior.measures[m], current.measures[m]); same == 0 {
 			continue
 		}
 		ch.Kind = Changed
@@ -407,29 +406,27 @@ func (c *comparison) compare(prior, current row) Change {
 }
 
 // add records a measure's move and widens the change's magnitude to it.
-func (ch *Change) add(col table.Column, before, after pgtype.Numeric) {
-	delta, _ := value.SubNumeric(after, before)
+func (ch *Change) add(col table.Column, before, after keel.Decimal) {
+	delta, _ := value.SubDecimal(after, before)
 	ch.Measures = append(ch.Measures, Measure{Column: col.ID, Label: col.Label,
 		Before: text(before), After: text(after), Delta: text(delta)})
 	size := delta
-	if size.Int.Sign() < 0 {
-		size.Int.Neg(size.Int)
+	if len(size) > 0 && size[0] == '-' {
+		size = size[1:]
 	}
-	if more, _ := value.CompareNumeric(size, ch.magnitude); more > 0 {
+	if more, _ := value.CompareDecimal(size, ch.magnitude); more > 0 {
 		ch.magnitude = size
 	}
 }
 
 // text writes a decimal without trailing zeros.
-func text(n pgtype.Numeric) string {
-	return string(value.AppendNumeric(nil, value.NormalizeNumeric(n)))
-}
+func text(n keel.Decimal) string { return string(value.NormalizeDecimal(n)) }
 
 // totals sums each measure over the rows present on each side.
 func (c *comparison) totals(prior, current *side) []Measure {
 	out := make([]Measure, len(c.measures))
 	for m, col := range c.measures {
-		delta, _ := value.SubNumeric(current.sums[m], prior.sums[m])
+		delta, _ := value.SubDecimal(current.sums[m], prior.sums[m])
 		out[m] = Measure{Column: c.cols[col].ID, Label: c.cols[col].Label,
 			Before: text(prior.sums[m]), After: text(current.sums[m]), Delta: text(delta)}
 	}
@@ -489,11 +486,11 @@ func rank(changes []Change, opts Options) []Change {
 }
 
 // compareMagnitude orders two magnitudes, a missing one (a duplicate's) first.
-func compareMagnitude(a, b pgtype.Numeric) int {
-	if !a.Valid || !b.Valid {
-		return cmp.Compare(boolInt(a.Valid), boolInt(b.Valid))
+func compareMagnitude(a, b keel.Decimal) int {
+	if a == "" || b == "" {
+		return cmp.Compare(boolInt(a != ""), boolInt(b != ""))
 	}
-	c, _ := value.CompareNumeric(a, b)
+	c, _ := value.CompareDecimal(a, b)
 	return c
 }
 

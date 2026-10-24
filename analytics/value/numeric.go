@@ -8,64 +8,80 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/emoss08/keel"
 )
 
-// bigTen is 10.
-var bigTen = big.NewInt(10)
+// The text of the decimals that are not finite numbers, as Postgres writes them.
+const (
+	nanText    = "NaN"
+	posInfText = "Infinity"
+	negInfText = "-Infinity"
+)
 
-// NumericFromInt returns i as a Decimal value.
-func NumericFromInt(i int64) pgtype.Numeric {
-	return pgtype.Numeric{Int: big.NewInt(i), Valid: true}
-}
+// ErrNotFinite reports arithmetic on NaN or an infinity.
+var ErrNotFinite = errors.New("value: decimal is not finite")
 
-// NumericFromFloat returns f as a Decimal value, read from its shortest decimal representation,
+// DecimalFromInt returns i as a Decimal value.
+func DecimalFromInt(i int64) keel.Decimal { return keel.Decimal(strconv.FormatInt(i, 10)) }
+
+// DecimalFromFloat returns f as a Decimal value, read from its shortest decimal representation,
 // so 0.1 is exactly 0.1 rather than the binary fraction nearest to it. NaN and the infinities
 // map to Postgres's NaN and infinities.
-func NumericFromFloat(f float64) pgtype.Numeric {
+func DecimalFromFloat(f float64) keel.Decimal {
 	switch {
 	case math.IsNaN(f):
-		return pgtype.Numeric{NaN: true, Valid: true}
+		return nanText
 	case math.IsInf(f, 1):
-		return pgtype.Numeric{InfinityModifier: pgtype.Infinity, Valid: true}
+		return posInfText
 	case math.IsInf(f, -1):
-		return pgtype.Numeric{InfinityModifier: pgtype.NegativeInfinity, Valid: true}
+		return negInfText
 	}
-	n, _ := ParseNumeric(strconv.FormatFloat(f, 'g', -1, 64))
-	return n
+	d, _ := ParseDecimal(strconv.FormatFloat(f, 'g', -1, 64))
+	return d
 }
 
-// ParseNumeric reads a decimal written in plain or exponent notation ("-12.50", "1.2e3"), or
-// "NaN", "Infinity" or "-Infinity". Surrounding spaces are ignored. The scale is kept as
-// written, so "1.50" has two places.
-func ParseNumeric(s string) (pgtype.Numeric, error) {
+// ParseDecimal reads a decimal written in plain or exponent notation ("-12.50", "1.2e3"), or
+// "NaN", "Infinity" or "-Infinity", and returns it in the plain text Postgres writes. Surrounding
+// spaces are ignored. The scale is kept as written, so "1.50" has two places.
+func ParseDecimal(s string) (keel.Decimal, error) {
 	s = strings.TrimSpace(s)
 	switch s {
-	case "NaN":
-		return pgtype.Numeric{NaN: true, Valid: true}, nil
-	case "Infinity", "+Infinity", "inf", "+inf":
-		return pgtype.Numeric{InfinityModifier: pgtype.Infinity, Valid: true}, nil
-	case "-Infinity", "-inf":
-		return pgtype.Numeric{InfinityModifier: pgtype.NegativeInfinity, Valid: true}, nil
+	case nanText:
+		return nanText, nil
+	case posInfText, "+Infinity", "inf", "+inf":
+		return posInfText, nil
+	case negInfText, "-inf":
+		return negInfText, nil
 	}
 	mantissa, exp, err := splitExponent(s)
 	if err != nil {
-		return pgtype.Numeric{}, err
+		return "", err
+	}
+	neg := false
+	if mantissa != "" && (mantissa[0] == '-' || mantissa[0] == '+') {
+		neg = mantissa[0] == '-'
+		mantissa = mantissa[1:]
 	}
 	whole, frac, _ := strings.Cut(mantissa, ".")
 	digits := whole + frac
-	if digits == "" || digits == "-" || digits == "+" || strings.ContainsAny(digits[1:], "+-") {
-		return pgtype.Numeric{}, fmt.Errorf("value: invalid decimal %q", s)
+	if digits == "" || !allDigits(digits) {
+		return "", fmt.Errorf("value: invalid decimal %q", s)
 	}
-	n, ok := new(big.Int).SetString(digits, 10)
-	if !ok {
-		return pgtype.Numeric{}, fmt.Errorf("value: invalid decimal %q", s)
+	scale := int64(len(frac)) - int64(exp)
+	if scale < -1e6 || scale > 1e6 {
+		return "", fmt.Errorf("value: decimal %q is out of range", s)
 	}
-	scale := int64(exp) - int64(len(frac))
-	if scale < math.MinInt32 || scale > math.MaxInt32 {
-		return pgtype.Numeric{}, fmt.Errorf("value: decimal %q is out of range", s)
+	return keel.Decimal(plain(neg, digits, int(scale))), nil
+}
+
+// allDigits reports whether s holds only ASCII digits.
+func allDigits(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
 	}
-	return pgtype.Numeric{Int: n, Exp: int32(scale), Valid: true}, nil
+	return true
 }
 
 // splitExponent splits a decimal into its mantissa and its exponent.
@@ -81,160 +97,230 @@ func splitExponent(s string) (string, int, error) {
 	return s[:at], exp, nil
 }
 
-// AppendNumeric appends n as plain decimal text, keeping its scale ("1.50", "-0.001", "1200").
-// NaN and the infinities are written "NaN", "Infinity" and "-Infinity"; a null value appends
-// nothing.
-func AppendNumeric(dst []byte, n pgtype.Numeric) []byte {
-	if special, ok := numericSpecial(n); ok {
-		return append(dst, special...)
+// plain writes ±digits × 10^-scale as plain decimal text: leading zeros dropped, a negative scale
+// written as trailing zeros, negative zero written as zero.
+func plain(neg bool, digits string, scale int) string {
+	digits = strings.TrimLeft(digits, "0")
+	if scale < 0 {
+		if digits != "" {
+			digits += strings.Repeat("0", -scale)
+		}
+		scale = 0
 	}
-	if n.Int == nil {
-		return append(dst, '0')
+	if strings.Trim(digits, "0") == "" {
+		neg = false
 	}
-	start := len(dst)
-	if n.Int.IsInt64() {
-		dst = strconv.AppendInt(dst, n.Int.Int64(), 10)
-	} else {
-		dst = n.Int.Append(dst, 10)
-	}
-	neg := len(dst) > start && dst[start] == '-'
-	digitsAt := start
+	var b strings.Builder
+	b.Grow(len(digits) + scale + 3)
 	if neg {
-		digitsAt++
+		b.WriteByte('-')
 	}
-	if n.Exp >= 0 {
-		if n.Int.Sign() == 0 {
-			return dst
+	if len(digits) <= scale {
+		b.WriteByte('0')
+		if scale > 0 {
+			b.WriteByte('.')
+			b.WriteString(strings.Repeat("0", scale-len(digits)))
+			b.WriteString(digits)
 		}
-		for range n.Exp {
-			dst = append(dst, '0')
-		}
-		return dst
+		return b.String()
 	}
-	return insertPoint(dst, digitsAt, int(-n.Exp))
+	b.WriteString(digits[:len(digits)-scale])
+	if scale > 0 {
+		b.WriteByte('.')
+		b.WriteString(digits[len(digits)-scale:])
+	}
+	return b.String()
 }
 
-// insertPoint inserts a decimal point before the last places digits of dst[digitsAt:], padding
-// with leading zeros.
-func insertPoint(dst []byte, digitsAt, places int) []byte {
-	have := len(dst) - digitsAt
-	if have <= places {
-		pad := places - have + 1
-		for range pad {
-			dst = append(dst, 0)
-		}
-		copy(dst[digitsAt+pad:], dst[digitsAt:len(dst)-pad])
-		for i := range pad {
-			dst[digitsAt+i] = '0'
-		}
-	}
-	dst = append(dst, 0)
-	point := len(dst) - 1 - places
-	copy(dst[point+1:], dst[point:len(dst)-1])
-	dst[point] = '.'
-	return dst
+// DecimalFinite reports whether d is a number other than NaN or an infinity. The empty Decimal,
+// which stands for NULL, is not.
+func DecimalFinite(d keel.Decimal) bool {
+	return d != "" && d != nanText && d != posInfText && d != negInfText
 }
 
-// numericSpecial returns the text of a null, NaN or infinite numeric.
-func numericSpecial(n pgtype.Numeric) (string, bool) {
-	switch {
-	case !n.Valid:
-		return "", true
-	case n.NaN:
-		return "NaN", true
-	case n.InfinityModifier == pgtype.Infinity:
-		return "Infinity", true
-	case n.InfinityModifier == pgtype.NegativeInfinity:
-		return "-Infinity", true
-	}
-	return "", false
-}
-
-// NumericFinite reports whether n is a valid number other than NaN or an infinity.
-func NumericFinite(n pgtype.Numeric) bool {
-	_, special := numericSpecial(n)
-	return !special
-}
-
-// NormalizeNumeric returns n without trailing zeros in its coefficient, so 1.50 becomes 1.5 and
-// 1200 becomes 12e2. Values that are not finite are returned as they are.
-func NormalizeNumeric(n pgtype.Numeric) pgtype.Numeric {
-	if !NumericFinite(n) {
-		return n
-	}
-	if n.Int == nil || n.Int.Sign() == 0 {
-		return pgtype.Numeric{Int: new(big.Int), Valid: true}
-	}
-	coef := new(big.Int).Set(n.Int)
-	exp := n.Exp
-	rem := new(big.Int)
-	quo := new(big.Int)
-	for {
-		quo.QuoRem(coef, bigTen, rem)
-		if rem.Sign() != 0 {
-			break
-		}
-		coef, quo = quo, coef
-		exp++
-	}
-	return pgtype.Numeric{Int: coef, Exp: exp, Valid: true}
-}
-
-// ErrNotFinite reports arithmetic on NaN or an infinity.
-var ErrNotFinite = errors.New("value: decimal is not finite")
-
-// AddNumeric returns a + b exactly. Both must be finite.
-func AddNumeric(a, b pgtype.Numeric) (pgtype.Numeric, error) {
-	x, y, exp, err := aligned(a, b)
-	if err != nil {
-		return pgtype.Numeric{}, err
-	}
-	return pgtype.Numeric{Int: x.Add(x, y), Exp: exp, Valid: true}, nil
-}
-
-// SubNumeric returns a - b exactly. Both must be finite.
-func SubNumeric(a, b pgtype.Numeric) (pgtype.Numeric, error) {
-	x, y, exp, err := aligned(a, b)
-	if err != nil {
-		return pgtype.Numeric{}, err
-	}
-	return pgtype.Numeric{Int: x.Sub(x, y), Exp: exp, Valid: true}, nil
-}
-
-// CompareNumeric returns -1, 0 or 1 as a is less than, equal to or greater than b. Both must be
+// SplitDecimal returns the parts of a finite decimal in plain text: its sign, the digits before
+// the point and the digits after it, without allocating. ok is false for a value that is not
 // finite.
-func CompareNumeric(a, b pgtype.Numeric) (int, error) {
-	x, y, _, err := aligned(a, b)
+func SplitDecimal(d keel.Decimal) (neg bool, whole, frac string, ok bool) {
+	if !DecimalFinite(d) {
+		return false, "", "", false
+	}
+	s := string(d)
+	if s[0] == '-' {
+		neg, s = true, s[1:]
+	} else if s[0] == '+' {
+		s = s[1:]
+	}
+	whole, frac, _ = strings.Cut(s, ".")
+	return neg, whole, frac, true
+}
+
+// NormalizeDecimal returns d without trailing zeros after the point, so 1.50 becomes 1.5 and
+// 2.000 becomes 2; negative zero becomes 0. Values that are not finite are returned as they are.
+func NormalizeDecimal(d keel.Decimal) keel.Decimal {
+	neg, whole, frac, ok := SplitDecimal(d)
+	if !ok {
+		return d
+	}
+	frac = strings.TrimRight(frac, "0")
+	return keel.Decimal(plain(neg, whole+frac, len(frac)))
+}
+
+// fixed is a finite decimal as ±coef × 10^-scale, with the coefficient in an int64 when it fits
+// and in a big.Int otherwise.
+type fixed struct {
+	small int64
+	big   *big.Int
+	scale int
+}
+
+// fixedOf reads a finite decimal.
+func fixedOf(d keel.Decimal) (fixed, error) {
+	neg, whole, frac, ok := SplitDecimal(d)
+	if !ok {
+		return fixed{}, ErrNotFinite
+	}
+	digits := strings.TrimLeft(whole+frac, "0")
+	f := fixed{scale: len(frac)}
+	if len(digits) <= 18 {
+		for i := 0; i < len(digits); i++ {
+			f.small = f.small*10 + int64(digits[i]-'0')
+		}
+		if neg {
+			f.small = -f.small
+		}
+		return f, nil
+	}
+	f.big, _ = new(big.Int).SetString(digits, 10)
+	if neg {
+		f.big.Neg(f.big)
+	}
+	return f, nil
+}
+
+// bigInt returns the coefficient as a new big.Int.
+func (f fixed) bigInt() *big.Int {
+	if f.big != nil {
+		return new(big.Int).Set(f.big)
+	}
+	return big.NewInt(f.small)
+}
+
+// rescale returns f at a larger scale, staying in an int64 when the result fits.
+func (f fixed) rescale(scale int) fixed {
+	up := scale - f.scale
+	if up <= 0 {
+		return f
+	}
+	if f.big == nil && up <= 18 {
+		p := int64(pow10s[up])
+		if hi, lo := mulCheck(f.small, p); hi {
+			return fixed{small: lo, scale: scale}
+		}
+	}
+	x := f.bigInt()
+	x.Mul(x, new(big.Int).Exp(bigTen, big.NewInt(int64(up)), nil))
+	return fixed{big: x, scale: scale}
+}
+
+// mulCheck returns a × b and whether it fits in an int64.
+func mulCheck(a, b int64) (bool, int64) {
+	if a == 0 || b == 0 {
+		return true, 0
+	}
+	c := a * b
+	if c/b != a {
+		return false, 0
+	}
+	return true, c
+}
+
+// pow10s are the powers of ten that fit in an int64.
+var pow10s = func() [19]uint64 {
+	var p [19]uint64
+	p[0] = 1
+	for i := 1; i < len(p); i++ {
+		p[i] = p[i-1] * 10
+	}
+	return p
+}()
+
+// bigTen is 10.
+var bigTen = big.NewInt(10)
+
+// text writes f as plain decimal text.
+func (f fixed) text() keel.Decimal {
+	var digits string
+	neg := false
+	if f.big != nil {
+		neg = f.big.Sign() < 0
+		digits = new(big.Int).Abs(f.big).String()
+	} else {
+		u := uint64(f.small)
+		if f.small < 0 {
+			neg, u = true, -u
+		}
+		digits = strconv.FormatUint(u, 10)
+	}
+	return keel.Decimal(plain(neg, digits, f.scale))
+}
+
+// aligned reads a and b at their common scale.
+func aligned(a, b keel.Decimal) (fixed, fixed, error) {
+	x, err := fixedOf(a)
+	if err != nil {
+		return fixed{}, fixed{}, err
+	}
+	y, err := fixedOf(b)
+	if err != nil {
+		return fixed{}, fixed{}, err
+	}
+	scale := max(x.scale, y.scale)
+	return x.rescale(scale), y.rescale(scale), nil
+}
+
+// AddDecimal returns a + b exactly. Both must be finite.
+func AddDecimal(a, b keel.Decimal) (keel.Decimal, error) {
+	x, y, err := aligned(a, b)
+	if err != nil {
+		return "", err
+	}
+	if x.big == nil && y.big == nil {
+		if s := x.small + y.small; (s > x.small) == (y.small > 0) {
+			return fixed{small: s, scale: x.scale}.text(), nil
+		}
+	}
+	return fixed{big: x.bigInt().Add(x.bigInt(), y.bigInt()), scale: x.scale}.text(), nil
+}
+
+// SubDecimal returns a - b exactly. Both must be finite.
+func SubDecimal(a, b keel.Decimal) (keel.Decimal, error) {
+	neg := b
+	if DecimalFinite(b) {
+		if b[0] == '-' {
+			neg = b[1:]
+		} else {
+			neg = "-" + b
+		}
+	}
+	return AddDecimal(a, neg)
+}
+
+// CompareDecimal returns -1, 0 or 1 as a is less than, equal to or greater than b. Both must be
+// finite.
+func CompareDecimal(a, b keel.Decimal) (int, error) {
+	x, y, err := aligned(a, b)
 	if err != nil {
 		return 0, err
 	}
-	return x.Cmp(y), nil
-}
-
-// aligned returns the coefficients of a and b at their common exponent.
-func aligned(a, b pgtype.Numeric) (*big.Int, *big.Int, int32, error) {
-	if !NumericFinite(a) || !NumericFinite(b) {
-		return nil, nil, 0, ErrNotFinite
+	if x.big == nil && y.big == nil {
+		switch {
+		case x.small < y.small:
+			return -1, nil
+		case x.small > y.small:
+			return 1, nil
+		}
+		return 0, nil
 	}
-	x, y := coefficient(a), coefficient(b)
-	exp := min(a.Exp, b.Exp)
-	scaleUp(x, int64(a.Exp)-int64(exp))
-	scaleUp(y, int64(b.Exp)-int64(exp))
-	return x, y, exp, nil
-}
-
-// coefficient returns a copy of n's coefficient.
-func coefficient(n pgtype.Numeric) *big.Int {
-	if n.Int == nil {
-		return new(big.Int)
-	}
-	return new(big.Int).Set(n.Int)
-}
-
-// scaleUp multiplies x by 10^places.
-func scaleUp(x *big.Int, places int64) {
-	if places <= 0 {
-		return
-	}
-	x.Mul(x, new(big.Int).Exp(bigTen, big.NewInt(places), nil))
+	return x.bigInt().Cmp(y.bigInt()), nil
 }

@@ -5,7 +5,8 @@ import (
 	"math/big"
 	"strconv"
 
-	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/emoss08/keel"
+	"github.com/emoss08/keel/analytics/value"
 )
 
 // num is an exact decimal as the formatter works on it: the magnitude's coefficient as ASCII
@@ -32,22 +33,21 @@ func numFromInt(buf []byte, i int64) num {
 	return num{neg: i < 0, digits: strconv.AppendUint(buf[:0], u, 10)}
 }
 
-// numFromNumeric reads a finite numeric into buf.
-func numFromNumeric(buf []byte, n pgtype.Numeric) num {
-	if n.Int == nil || n.Int.Sign() == 0 {
-		return num{digits: buf[:0]}
+// numFromNumeric reads a finite decimal's digits into buf, without leading zeros.
+func numFromNumeric(buf []byte, d keel.Decimal) num {
+	neg, whole, frac, _ := value.SplitDecimal(d)
+	digits := buf[:0]
+	for i := 0; i < len(whole); i++ {
+		if len(digits) > 0 || whole[i] != '0' {
+			digits = append(digits, whole[i])
+		}
 	}
-	if n.Int.IsInt64() {
-		out := numFromInt(buf, n.Int.Int64())
-		out.exp = int(n.Exp)
-		return out
+	for i := 0; i < len(frac); i++ {
+		if len(digits) > 0 || frac[i] != '0' {
+			digits = append(digits, frac[i])
+		}
 	}
-	digits := n.Int.Append(buf[:0], 10)
-	neg := digits[0] == '-'
-	if neg {
-		digits = digits[1:]
-	}
-	return num{neg: neg, digits: digits, exp: int(n.Exp)}
+	return num{neg: neg && len(digits) > 0, digits: digits, exp: -len(frac)}
 }
 
 // numFromFloat reads a finite float from its shortest decimal representation into buf.

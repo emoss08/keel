@@ -229,7 +229,7 @@ func appendJSONValue(dst []byte, t value.Type, v *value.Vector, i int) []byte {
 		return append(dst, v.JSON[i]...)
 	case value.Decimal:
 		dst = append(dst, '"')
-		dst = value.AppendNumeric(dst, v.Numeric[i])
+		dst = append(dst, v.Numeric[i]...)
 		return append(dst, '"')
 	case value.Time:
 		dst = append(dst, '"')

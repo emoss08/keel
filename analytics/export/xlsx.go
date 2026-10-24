@@ -12,8 +12,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/jackc/pgx/v5/pgtype"
-
+	"github.com/emoss08/keel"
 	"github.com/emoss08/keel/analytics/format"
 	"github.com/emoss08/keel/analytics/table"
 	"github.com/emoss08/keel/analytics/value"
@@ -553,10 +552,10 @@ func (x *xlsxWriter) number(c int, v *value.Vector, i int) ([]byte, bool) {
 	case value.Int, value.Epoch:
 		return strconv.AppendInt(x.scratch, v.Int64[i], 10), true
 	case value.Decimal:
-		if !value.NumericFinite(v.Numeric[i]) {
+		if !value.DecimalFinite(v.Numeric[i]) {
 			return nil, false
 		}
-		return value.AppendNumeric(x.scratch, v.Numeric[i]), true
+		return append(x.scratch, v.Numeric[i]...), true
 	case value.Float:
 		if _, special := floatSpecial(v.Float64[i]); special {
 			return nil, false
@@ -586,13 +585,15 @@ func (x *xlsxWriter) seconds(c int, v *value.Vector, i int) (int64, bool) {
 }
 
 // numericSeconds returns a decimal number of seconds truncated to whole seconds.
-func numericSeconds(n pgtype.Numeric) (int64, bool) {
-	if !value.NumericFinite(n) {
+func numericSeconds(n keel.Decimal) (int64, bool) {
+	neg, whole, _, ok := value.SplitDecimal(n)
+	if !ok {
 		return 0, false
 	}
-	text := value.AppendNumeric(nil, n)
-	whole, _, _ := strings.Cut(string(text), ".")
 	sec, err := strconv.ParseInt(whole, 10, 64)
+	if neg {
+		sec = -sec
+	}
 	return sec, err == nil
 }
 
