@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/emoss08/keel"
 	"github.com/emoss08/keel/analytics"
 	"github.com/emoss08/keel/analytics/ir"
 	"github.com/emoss08/keel/schema"
@@ -25,25 +26,33 @@ var shipmentsDaily = func() *schema.Table {
 	return t
 }()
 
-// fakeRouter answers reports grouped by created day buckets and status from shipmentsDaily.
-type fakeRouter struct{ asked int }
+// fakeRouter answers reports by created day and status from shipmentsDaily, whose day column
+// holds the epoch of each UTC day, so bucketing it gives what bucketing createdAt gives.
+type fakeRouter struct {
+	asked int
+	stale bool
+}
 
-func (f *fakeRouter) Route(_ context.Context, res *ir.Resolved) (analytics.RollupPlan, bool) {
+func (f *fakeRouter) Check(*analytics.Catalog) error { return nil }
+
+func (f *fakeRouter) Route(_ context.Context, q analytics.RollupQuery) (*analytics.RollupPlan, bool) {
 	f.asked++
-	if res.Definition.Entity != "shipment" {
-		return analytics.RollupPlan{}, false
+	if q.Resolved.Definition.Entity != "shipment" {
+		return nil, false
 	}
-	plan := analytics.RollupPlan{Name: "shipments_daily", Table: shipmentsDaily,
-		Fields: map[string]string{"createdAt": "day", "status": "status"}, Measures: map[string]analytics.RollupMeasure{}}
-	for _, c := range res.Definition.Columns {
+	plan := &analytics.RollupPlan{Name: "shipments_daily", Table: shipmentsDaily, Unit: ir.BucketDay, Location: q.Location,
+		Fields:   map[string]analytics.RollupField{"createdAt": {Path: []string{"day"}}, "status": {Path: []string{"status"}}},
+		Measures: map[string]analytics.RollupMeasure{},
+		Fresh:    func(context.Context, *keel.DB) (bool, error) { return !f.stale, nil }}
+	for _, c := range q.Resolved.Definition.Columns {
 		if m := c.Measure; m != nil {
 			switch {
 			case m.Agg == ir.AggCount && m.Field == "":
-				plan.Measures[c.ID] = analytics.RollupMeasure{Agg: analytics.ReSum, Column: "n"}
+				plan.Measures[c.ID] = analytics.RollupMeasure{Agg: analytics.ReSum, Value: "n"}
 			case m.Agg == ir.AggSum && m.Field == "total":
-				plan.Measures[c.ID] = analytics.RollupMeasure{Agg: analytics.ReSum, Column: "total_sum"}
+				plan.Measures[c.ID] = analytics.RollupMeasure{Agg: analytics.ReSum, Value: "total_sum"}
 			case m.Agg == ir.AggAvg && m.Field == "total":
-				plan.Measures[c.ID] = analytics.RollupMeasure{Agg: analytics.ReAvg, Column: "total_sum", Count: "n"}
+				plan.Measures[c.ID] = analytics.RollupMeasure{Agg: analytics.ReAvg, Value: "total_sum", Divisor: "n"}
 			}
 		}
 	}
@@ -82,7 +91,7 @@ func TestRollupAnswersWhatItCovers(t *testing.T) {
 		t.Fatal(err)
 	}
 	if routed.Rollup != "shipments_daily" || !strings.Contains(sql, `FROM "test_shipments_daily"`) ||
-		strings.Contains(sql, `"shipments"`) || strings.Join(routed.Tables, ",") != "test_shipments_daily" {
+		strings.Contains(sql, `"shipments"`) || strings.Join(routed.Tables, ",") != "shipments" {
 		t.Fatalf("not answered from the rollup (%q):\n%s", routed.Rollup, sql)
 	}
 	r := runner(t, analytics.RunnerOptions{Rollups: router})
@@ -94,6 +103,16 @@ func TestRollupAnswersWhatItCovers(t *testing.T) {
 		t.Fatalf("result rollup %q", res.Rollup())
 	}
 	want(t, rows(t, res), preview(t, w, report, nil, nil)...)
+	router.stale = true
+	res, err = r.Preview(w.ctx, analytics.Request{Definition: report})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Rollup() != "" {
+		t.Fatalf("a stale rollup answered: %q", res.Rollup())
+	}
+	want(t, rows(t, res), preview(t, w, report, nil, nil)...)
+	router.stale = false
 	byCustomer := def(t, `{"entity": "shipment", "columns": [
 		{"id": "customer", "dimension": {"field": "customer.name"}},
 		{"id": "revenue", "measure": {"field": "total", "agg": "sum"}}], "sort": [{"column": "customer"}]}`)

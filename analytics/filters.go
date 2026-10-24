@@ -11,11 +11,14 @@ import (
 )
 
 // subject is what a condition compares: an expression, its value type, and the field it reads
-// when it is a field (so values bind in the column's own type).
+// when it is a field (so values bind in the column's own type). grain is set for the bucket
+// column of a rollup, a timestamp, to the type of the field it buckets: values written for that
+// field are compared with it as the instants they denote.
 type subject struct {
 	e     keel.DynExpr
 	t     formula.Type
 	field *Field
+	grain formula.Type
 }
 
 // condScope says where a filter tree applies.
@@ -259,6 +262,13 @@ func (c *compiler) between(s subject, v any, at string) (keel.Pred, error) {
 // so Postgres infers the parameter from the column, and as a typed literal otherwise. Decimals
 // are always bound as exact text and cast.
 func (c *compiler) operand(s subject, v any, at string) (any, error) {
+	if s.grain != formula.Unknown {
+		x, err := Instant(v, s.grain, c.loc)
+		if err != nil {
+			return nil, &Error{Code: CodeParameter, Message: err.Error(), Pointer: at}
+		}
+		return lit(x, formula.Timestamp), nil
+	}
 	if s.field != nil && s.field.numericEnum() {
 		n, err := toInt(v)
 		if err != nil {
@@ -292,7 +302,13 @@ func (c *compiler) array(s subject, list []any, at string) (any, error) {
 	}
 	values := make([]any, len(list))
 	for i, x := range list {
-		v, err := convert(s.t, x, c.loc)
+		var v any
+		var err error
+		if s.grain != formula.Unknown {
+			v, err = Instant(x, s.grain, c.loc)
+		} else {
+			v, err = convert(s.t, x, c.loc)
+		}
 		if err != nil {
 			return nil, &Error{Code: CodeParameter, Message: err.Error(), Pointer: at}
 		}
@@ -342,16 +358,23 @@ func typedSlice(t formula.Type, values []any) any {
 	return out
 }
 
-// relative returns the half-open range of a relative date operator in the report's time zone:
-// days start at local midnight and weeks on Monday. last_n_days N is the N days before today and
-// today; next_n_days N is today and the N days after it.
+// relative returns the half-open range of a relative date operator in the report's time zone.
 func (c *compiler) relative(op ir.Op, v any) (time.Time, time.Time, error) {
-	now := c.now.In(c.loc)
-	day := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, c.loc)
+	return RelativeRange(op, v, c.now, c.loc)
+}
+
+// RelativeRange returns the half-open range [from, to) a relative date operator (today,
+// last_week, last_n_days, …) selects at now in loc, with v the day count of last_n_days and
+// next_n_days: days start at local midnight and weeks on Monday; last_n_days N is the N days
+// before today and today, next_n_days N today and the N days after it. The compiler compares
+// fields with these bounds; a rollup router checks them against its buckets.
+func RelativeRange(op ir.Op, v any, now time.Time, loc *time.Location) (time.Time, time.Time, error) {
+	now = now.In(loc)
+	day := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
 	week := day.AddDate(0, 0, -((int(day.Weekday()) + 6) % 7))
-	month := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, c.loc)
-	quarter := time.Date(now.Year(), now.Month()-(now.Month()-1)%3, 1, 0, 0, 0, 0, c.loc)
-	year := time.Date(now.Year(), 1, 1, 0, 0, 0, 0, c.loc)
+	month := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, loc)
+	quarter := time.Date(now.Year(), now.Month()-(now.Month()-1)%3, 1, 0, 0, 0, 0, loc)
+	year := time.Date(now.Year(), 1, 1, 0, 0, 0, 0, loc)
 	switch op {
 	case ir.OpLastNDays, ir.OpNextNDays:
 		n, err := toInt(v)

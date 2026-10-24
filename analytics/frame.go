@@ -228,8 +228,12 @@ func (f *frame) manyMeasure(agg ir.Agg, fp fieldPath, x keel.DynExpr, inner keel
 	}
 	sum := f.innerMeasure(fp, "sum\x00"+key, aggregate(ir.AggSum, x, inner, formula.Decimal))
 	n := f.innerMeasure(fp, "count\x00"+key, aggregate(ir.AggCount, x, inner, formula.Int))
-	total := aggregate(ir.AggSum, sum, outer, formula.Decimal)
-	count := aggregate(ir.AggSum, n, outer, formula.Decimal)
+	return mean(aggregate(ir.AggSum, sum, outer, formula.Decimal), aggregate(ir.AggSum, n, outer, formula.Decimal), t)
+}
+
+// mean divides a total by a count of type t's values, nothing over no values: floating point for
+// floats and an exact decimal otherwise.
+func mean(total, count keel.DynExpr, t formula.Type) keel.DynExpr {
 	if t == formula.Float {
 		return total.Cast(keel.TypeFloat64).Div(count.NullIf(0))
 	}

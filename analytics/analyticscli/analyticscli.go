@@ -8,8 +8,16 @@
 //	analytics rollups pending
 //
 // Command returns them as one keelcli.Command; Run runs the same commands without keelcli, for a
-// go:generate program, and Messages, WriteMessages, CheckMessages and Describe are the plain
-// functions behind i18n and describe.
+// go:generate program, and WriteMessages, CheckMessages and Describe are the plain functions
+// behind i18n and describe. The keel command itself runs ts, which needs no application tables;
+// an application registers the rest in its database binary:
+//
+//	keelcli.Main(keelcli.App{
+//	    Name: "fleet-db", Config: dbConfig, Migrations: migrations,
+//	    Commands: []keelcli.Command{analyticscli.Command(analyticscli.Config{
+//	        Tables: keeltables.All(), Rollups: []*rollup.Rollup{ShipmentsDaily},
+//	    })},
+//	})
 package analyticscli
 
 import (
@@ -29,13 +37,12 @@ import (
 
 // Config is what the analytics commands work on.
 type Config struct {
-	// Tables are the application's generated table schemas (fleetdb.ShipmentsSchema(), …); the
-	// reportable ones make the catalog that i18n and describe write.
+	// Tables are every generated table of the application, keeltables.All() from the package
+	// keel gen writes with -tables; the reportable ones make the catalog (analytics.Build) that
+	// i18n and describe write.
 	Tables []*schema.Table
 	// Rollups are the application's declared rollups.
 	Rollups []*rollup.Rollup
-	// Keys name the schema the way the catalog does; zero fields default to rollup.DefaultKeys.
-	Keys rollup.Keys
 	// Open opens a database for rollups refresh and rollups pending when they run through Run,
 	// which closes it when done. Under keelcli they use the App's database instead.
 	Open func(ctx context.Context) (*keel.DB, error)

@@ -76,7 +76,11 @@ func (f *frame) dimension(p *colPlan) (keel.DynExpr, error) {
 		if err != nil {
 			return keel.DynExpr{}, err
 		}
-		e = f.c.bucket(e, t, unit)
+		if f.c.grainField(d.Field) {
+			e = f.c.rollupBucket(e, t, unit)
+		} else {
+			e = f.c.bucket(e, t, unit)
+		}
 	case d.Band != nil:
 		e = band(e, d.Band, t)
 	default:
@@ -233,9 +237,6 @@ func (f *frame) pivotPred(cell string) (keel.Pred, error) {
 		return nil, err
 	}
 	s := subject{e: e, t: fp.field.Type, field: fp.field}
-	if f.c.rollup != nil {
-		s.field = nil
-	}
 	if cell != ir.PivotOther {
 		return f.c.compare(s, ir.OpEq, cell, "/pivot/values")
 	}
@@ -397,11 +398,10 @@ func (f *frame) whereEnv() condEnv {
 			if err != nil {
 				return subject{}, nil, err
 			}
-			s := subject{e: x, t: fp.field.Type, field: fp.field}
-			if f.c.rollup != nil {
-				s.field = nil
+			if f.c.grainField(path) {
+				return subject{e: x, t: formula.Timestamp, grain: fp.field.Type}, identity, nil
 			}
-			return s, identity, nil
+			return subject{e: x, t: fp.field.Type, field: fp.field}, identity, nil
 		},
 		column: func(id string) (keel.DynExpr, error) { return f.env("").column(id) },
 		formula: func(t *formula.Typed) (keel.DynExpr, error) {

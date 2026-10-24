@@ -17,9 +17,13 @@ import (
 
 // Options configures Build.
 type Options struct {
-	// Translate returns the text for a label key (an entity key "shipment", a field or edge key
-	// "shipment.proNumber", an enum value key "shipment.status.InTransit", a category key
-	// "category.Operations"), or fallback, the label keel gen derived. Nil uses the fallbacks.
+	// Translate returns the text for a translation key in the request's language, or fallback,
+	// the text keel derived. Keys are an entity's key ("shipment"), a field's or an edge's
+	// ("shipment.proNumber", "shipment.customer"), an enum value's ("shipment.status.InTransit"),
+	// each with "@description" for its doc comment and an entity's with "@plural"; a category's
+	// ("@category.Operations"); and the engine's own words ("@agg.sum", "@window.rank",
+	// "@pivot.other", "@pattern.measure"). Catalog.Messages lists every key with its fallback.
+	// Nil uses the fallbacks.
 	Translate func(ctx context.Context, key, fallback string) string
 }
 

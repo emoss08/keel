@@ -3,6 +3,7 @@ package analytics
 import (
 	"encoding/json"
 	"strconv"
+	"strings"
 
 	"github.com/emoss08/keel/analytics/format"
 	"github.com/emoss08/keel/analytics/ir"
@@ -145,13 +146,14 @@ func (c *compiler) cellLabel(p *colPlan, cell string) string {
 	if cell == "" {
 		return base
 	}
-	return base + " · " + c.pivotLabel(cell)
+	return strings.NewReplacer("{column}", base, "{value}", c.pivotLabel(cell)).
+		Replace(c.cat.Label(c.ctx, cellPatternKey, cellLabelPattern))
 }
 
 // pivotLabel returns the heading of a pivot value: its listed label, its enum label, or itself.
 func (c *compiler) pivotLabel(cell string) string {
 	if cell == ir.PivotOther {
-		return c.cat.Label(c.ctx, "pivot.other", "Other")
+		return c.cat.Label(c.ctx, pivotOtherKey, pivotOtherLabel)
 	}
 	for i, v := range c.pivot.values {
 		if v == cell && i < len(c.pivot.labels) {
@@ -178,12 +180,12 @@ func (c *compiler) columnLabel(p *colPlan) string {
 	case p.def.Measure != nil:
 		m := p.def.Measure
 		if m.Field == "" {
-			return c.cat.Label(c.ctx, "agg.count.rows", countLabel)
+			return c.cat.Label(c.ctx, countRowsKey, countLabel)
 		}
-		return c.cat.Label(c.ctx, "agg."+string(m.Agg), aggLabels[m.Agg]) + " of " + c.fieldLabel(m.Field)
+		return c.measureLabel(c.cat.Label(c.ctx, aggPrefix+string(m.Agg), aggLabels[m.Agg]), c.fieldLabel(m.Field))
 	case p.def.Window != nil:
-		return c.cat.Label(c.ctx, "window."+string(p.def.Window.Fn), windowLabels[p.def.Window.Fn]) +
-			" of " + c.columnLabel(c.byID[p.def.Window.Of])
+		fn := p.def.Window.Fn
+		return c.measureLabel(c.cat.Label(c.ctx, windowPrefix+string(fn), windowLabels[fn]), c.columnLabel(c.byID[p.def.Window.Of]))
 	}
 	return p.def.ID
 }
@@ -201,6 +203,13 @@ func (c *compiler) fieldLabel(path string) string {
 	}
 	e := via[len(via)-1]
 	return c.cat.Label(c.ctx, e.LabelKey, e.Label) + " " + l
+}
+
+// measureLabel fills the translated measure label pattern with an aggregation's or a window's
+// name and what it reads.
+func (c *compiler) measureLabel(agg, field string) string {
+	return strings.NewReplacer("{agg}", agg, "{field}", field).
+		Replace(c.cat.Label(c.ctx, measurePatternKey, measureLabelPattern))
 }
 
 // aggLabels are the derived names of the aggregations.

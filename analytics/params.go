@@ -239,6 +239,25 @@ func toTime(x any, loc *time.Location) (time.Time, error) {
 	return time.Unix(n, 0).UTC(), nil
 }
 
+// Instant reads a condition's value written for a field of type t as the instant it denotes in
+// loc, as the compiler binds it: epoch seconds (or anything an epoch field accepts) for an epoch
+// field, a calendar date's local midnight for a date field, and RFC 3339 text, a date (local
+// midnight) or epoch seconds for a timestamp field.
+func Instant(v any, t formula.Type, loc *time.Location) (time.Time, error) {
+	switch t {
+	case formula.Epoch:
+		n, err := toEpoch(v, loc)
+		return time.Unix(n, 0).UTC(), err
+	case formula.Date:
+		d, err := toDate(v, loc)
+		if err != nil {
+			return time.Time{}, err
+		}
+		return time.ParseInLocation(time.DateOnly, d, loc)
+	}
+	return toTime(v, loc)
+}
+
 // toEpoch reads an instant as epoch seconds.
 func toEpoch(x any, loc *time.Location) (int64, error) {
 	t, err := toTime(x, loc)

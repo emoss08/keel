@@ -182,11 +182,3 @@ func TestWriteMigrations(t *testing.T) {
 		t.Fatalf("wrote %s", more[0])
 	}
 }
-
-func TestCamel(t *testing.T) {
-	for in, want := range map[string]string{"ProNumber": "proNumber", "CustomerID": "customerId", "HTTPServer": "httpServer", "ID": "id", "BillToID": "billToId"} {
-		if got := rollup.Camel(in); got != want {
-			t.Errorf("Camel(%s) = %s, want %s", in, got, want)
-		}
-	}
-}
