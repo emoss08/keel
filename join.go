@@ -13,7 +13,8 @@ import (
 // conn, in that transaction: keel sends no BEGIN, COMMIT or Config.OnBegin statements (the owner
 // began the transaction and set its scope), Read and Write join it, Savepoint nests in it, and
 // replicas are not used. Scope checks, tenancy, interceptors, read filters, hooks and observers
-// apply as in a transaction keel began.
+// apply as in a transaction keel began. The transaction's scope is ctx's: keel work under another
+// scope returns ErrScopeMismatch, and a Detached Read or Write runs on keel's own pool instead.
 //
 // The owner calls done once the transaction ends: done(true) after COMMIT runs the Committed
 // hooks and AfterCommit callbacks and hands the tables the transaction changed to the data

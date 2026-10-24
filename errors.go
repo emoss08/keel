@@ -27,6 +27,10 @@ var (
 	ErrUnbounded = errors.New("keel: List needs a Limit; use Page, or All for a set known to be small")
 	// ErrReadOnly is returned by a write inside a read-only transaction.
 	ErrReadOnly = errors.New("keel: write inside a read-only transaction")
+	// ErrScopeMismatch is returned by a statement, Read, Write or Savepoint that would join the
+	// transaction on the context under another scope than the one the transaction began with. Run
+	// such work in its own transaction with Detached.
+	ErrScopeMismatch = errors.New("keel: the context's scope differs from its transaction's; use keel.Detached for a transaction of its own")
 
 	errRawArgs = errors.New("keel: Raw has fewer arguments than placeholders")
 )

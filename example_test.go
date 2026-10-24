@@ -1071,6 +1071,33 @@ func ExampleSavepoint() {
 	}
 }
 
+func ExampleDetached() {
+	ctx, db := requestContext(), appDB
+	s := fleetdb.Shipments
+
+	err := keel.Write(ctx, db, func(ctx context.Context) error {
+		pro, err := keel.WriteValue(ctx, db, func(ctx context.Context) (int64, error) {
+			return keel.QueryValue[int64](ctx, db,
+				"UPDATE pro_sequences SET next = next + 1 RETURNING next - 1")
+		}, keel.Detached(), keel.LockTimeout(time.Second))
+		if err != nil {
+			return err
+		}
+		open, err := keel.ReadValue(withSystem(ctx, "open shipments across tenants"), db,
+			func(ctx context.Context) (int64, error) {
+				return s.AllTenants().Where(s.Status.Ne(fleet.StatusDelivered)).Count(ctx, db)
+			}, keel.Detached())
+		if err != nil {
+			return err
+		}
+		fmt.Println("open shipments:", open)
+		return s.Create(ctx, db, &fleet.Shipment{ProNumber: fmt.Sprintf("PRO-%d", pro), Status: fleet.StatusNew})
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+}
+
 func ExampleLockKey() {
 	ctx, db := requestContext(), appDB
 

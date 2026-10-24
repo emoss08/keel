@@ -2397,7 +2397,13 @@ How transactions run:
   one goroutine at a time.
 - A `Read` or `Write` inside a `Write` joins it; a `Read` inside a `Read` joins it; a `Write` inside
   a `Read`, and any write inside a `Read`, returns `ErrReadOnly`. Options of a joined call are
-  ignored.
+  ignored. `keel.Detached()` starts a transaction of its own instead; see
+  [Detached transactions](#detached-transactions).
+- A transaction keeps the scope it began with: its `OnBegin` statements were made for it. A
+  statement, `Read`, `Write`, `Savepoint` or `LockKey` whose context carries another scope (a system
+  scope inside a tenant's transaction, another tenant) returns `ErrScopeMismatch` instead of joining
+  it. Two system scopes are the same scope whatever their reasons; a tenant is compared by its
+  values, so a context rebuilt with the same tenant joins.
 - `keel.InTx(ctx, db)` reports whether the context carries a transaction of `db`.
 
 ### Implicit transactions
@@ -2418,6 +2424,7 @@ statement and `COMMIT` in one round trip; with relation loads, `BEGIN` goes with
 | `keel.Serializable()` | `ISOLATION LEVEL SERIALIZABLE` |
 | `keel.RepeatableRead()` | `ISOLATION LEVEL REPEATABLE READ` |
 | `keel.Retry(n)` | reruns a top-level transaction up to `n` more times after a serialization failure or deadlock (`keel.IsRetryable`); `fn` must be safe to repeat |
+| `keel.Detached()` | begins a transaction of its own even inside another; see [Detached transactions](#detached-transactions) |
 
 ```go
 var open, late int64
@@ -2433,6 +2440,57 @@ err := keel.Read(ctx, db, func(ctx context.Context) error {
 
 `Retry` starts each attempt as a new transaction; `AfterCommit` functions of failed attempts are
 dropped. Nested calls never retry on their own.
+
+### Detached transactions
+
+`keel.Detached()` makes a `Read` or `Write` begin a new transaction on a pool connection of its own
+even when the context carries one. It commits or rolls back on its own: the outer transaction rolling
+back does not undo it, and it failing does not fail the outer one unless the caller returns its
+error. Use it for:
+
+- **Work under another scope.** The transaction begins with the context's scope, so `OnBegin` sets
+  up that scope (row-level security) rather than the outer transaction's. A system-scoped read
+  inside a tenant's transaction, or work for another tenant, needs it; joining returns
+  `ErrScopeMismatch`.
+- **Work that must commit whatever the caller does**: allocating a number from a sequence table, an
+  audit row for an attempt that may fail.
+
+```go
+err := keel.Write(ctx, db, func(ctx context.Context) error {
+    num, err := keel.WriteValue(ctx, db, func(ctx context.Context) (int64, error) {
+        return nextInvoiceNumber(ctx) // commits now; a rolled-back invoice leaves a gap
+    }, keel.Detached(), keel.Retry(3))
+    if err != nil {
+        return err
+    }
+    rates, err := keel.ReadValue(withSystem(ctx, "global rate table"), db,
+        func(ctx context.Context) ([]*Rate, error) {
+            return r.AllTenants().Where(r.Lane.Eq(lane)).All(ctx, db)
+        }, keel.Detached())
+    if err != nil {
+        return err
+    }
+    return createInvoice(ctx, num, rates)
+})
+```
+
+- For the callback's duration the detached transaction hides the outer one: terminals,
+  `Savepoint`, `LockKey` and `AfterCommit` inside it use the detached transaction. Its `AfterCommit`
+  callbacks and `Committed` hooks run when it commits, with the caller's context, which still
+  carries the outer transaction. Its options (`Serializable`, `LockTimeout`, `Retry`, `ReplicaTx`)
+  apply as to a top-level transaction.
+- It is a separate transaction: it sees what other transactions committed, not the outer
+  transaction's uncommitted writes, and the outer one sees its writes once it commits (under READ
+  COMMITTED).
+- It holds a second connection while the outer transaction holds its first. Size the pool for
+  the requests that do this at once (each needs two connections), or they can wait on each other
+  for connections forever.
+- It must not wait on a lock the outer transaction holds (a row the outer transaction updated, an
+  advisory lock it took): the outer transaction waits for the detached one to return, so neither
+  ends. Give it a `LockTimeout` where that can happen.
+- It composes with `keel.JoinTx`: inside a joined transaction a detached one runs on keel's own
+  pool, outside the other layer's transaction.
+- Outside a transaction `Detached` changes nothing.
 
 ### Savepoints
 
@@ -2769,6 +2827,7 @@ plan-mode switches are not reported.
 | `keel.ErrNoScope`, `ErrAllTenantsRequired`, `ErrSystemScopeRequired`, `ErrTenantMismatch` | scope violations; see [Scope errors](#scope-errors) |
 | `keel.ErrUnbounded` | `List` without `Limit` |
 | `keel.ErrReadOnly` | a write, a `Write` or a `Savepoint` inside a `Read` |
+| `keel.ErrScopeMismatch` | a statement, `Read`, `Write`, `Savepoint` or `LockKey` that would join the context's transaction under another scope than the one it began with; use `keel.Detached()` |
 | `migrate.ErrChanged` | `Up` and `Plan` when an applied migration's file changed |
 | `migrate.ErrOutOfOrder` | `Up` and `Plan` when a pending migration is older than the newest applied one |
 | `migrate.ErrBaselineGap` | `Up` and `Plan` when the database's history ends before a baseline |
@@ -3609,6 +3668,9 @@ done(err == nil)
   used.
 - Scope checks, tenancy, interceptors, read filters, hooks and observers apply as in a keel
   transaction. A failing `AfterWrite` hook returns its error; rolling back is the owner's call.
+- The joined transaction's scope is the scope of the context passed to `JoinTx`; keel work on
+  `kctx` under another scope returns `ErrScopeMismatch`. `keel.Detached()` runs work in a
+  transaction of keel's own instead, outside the owner's.
 - `done` tells keel how the transaction ended. `done(true)` after `COMMIT` runs the `Committed`
   hooks and `AfterCommit` callbacks and moves the data versions of the tables keel wrote;
   `done(false)` after `ROLLBACK` drops them. Only the first call counts, and keel refuses to run on

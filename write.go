@@ -318,7 +318,7 @@ func (db *DB) writeRunner(ctx context.Context, tx bool) (*runner, error) {
 		return nil, err
 	}
 	if r.tx == nil && tx {
-		r.tx = &txState{db: db, implicit: true, scopeCtx: ctx}
+		r.tx = &txState{db: db, implicit: true, scopeCtx: ctx, scope: r.sc}
 		r.own = true
 	}
 	return r, nil

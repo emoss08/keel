@@ -110,11 +110,14 @@ func (db *DB) explain(ctx context.Context, sql string, args []any, opts ExplainO
 // explainInSavepoint runs an analyzed EXPLAIN inside a savepoint of tx and rolls back to it, in
 // one round trip.
 func (db *DB) explainInSavepoint(ctx context.Context, tx *txState, s *stmt) error {
+	run, err := db.txRunner(ctx, tx)
+	if err != nil {
+		return err
+	}
 	tx.savepoints++
 	name := "keel_sp_" + strconv.Itoa(tx.savepoints)
-	run := &runner{db: db, sc: db.resolveScope(ctx), tx: tx}
 	rollback := &stmt{sql: "ROLLBACK TO SAVEPOINT " + name, op: "savepoint"}
-	err := run.batch(ctx, []*stmt{
+	err = run.batch(ctx, []*stmt{
 		{sql: "SAVEPOINT " + name, op: "savepoint"},
 		s,
 		rollback,

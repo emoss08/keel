@@ -32,9 +32,10 @@ type stmt struct {
 	customPlan bool
 }
 
-// runner executes the statements of one terminal call. It joins the transaction on the context,
-// opens an implicit one when Config.OnBegin is set, or runs on a single pooled connection: a
-// replica's for a read on a context marked with OnReplica, else the primary's.
+// runner executes the statements of one terminal call. It joins the transaction on the context
+// (ErrScopeMismatch under another scope than the transaction's), opens an implicit one when
+// Config.OnBegin is set, or runs on a single pooled connection: a replica's for a read on a
+// context marked with OnReplica, else the primary's.
 type runner struct {
 	db   *DB
 	sc   *scopeState
@@ -73,6 +74,9 @@ func (db *DB) runnerFor(ctx context.Context, mode runMode) (*runner, error) {
 		if write && tx.readOnly {
 			return nil, ErrReadOnly
 		}
+		if err := tx.checkScope(r.sc); err != nil {
+			return nil, err
+		}
 		r.tx = tx
 		return r, nil
 	}
@@ -87,7 +91,8 @@ func (db *DB) runnerFor(ctx context.Context, mode runMode) (*runner, error) {
 		}
 	}
 	if db.cfg.OnBegin != nil || rt != nil {
-		r.tx = &txState{db: db, readOnly: !write, implicit: true, scopeCtx: ctx, rep: r.rep, route: rt}
+		r.tx = &txState{db: db, readOnly: !write, implicit: true, scopeCtx: ctx, scope: r.sc, rep: r.rep,
+			route: rt}
 		r.own = true
 	}
 	return r, nil

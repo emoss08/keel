@@ -441,6 +441,16 @@ v, err := keel.ReadValue(ctx, db, func(ctx context.Context) (T, error) { ... })
 
 - The transaction lives on the context. Terminals find it there; nested `Read`/`Write` calls join
   it; a `Write` inside a `Read` returns `ErrReadOnly`.
+- A transaction keeps the scope it began with, since its `OnBegin` statements were made for that
+  scope. Joining it under another scope (a statement, `Read`, `Write`, `Savepoint` or `LockKey` whose
+  context carries a system scope inside a tenant's transaction, or another tenant) returns
+  `ErrScopeMismatch`. keel does not start a new transaction on its own there: that would quietly
+  split one unit of work into two commits and read past the outer transaction's writes. The caller
+  says so with `keel.Detached()`.
+- `keel.Detached()` begins a `Read` or `Write` on a pool connection of its own even inside another
+  transaction, with the context's scope (and its `OnBegin` statements). Its context hides the outer
+  transaction until it ends; it commits, runs its `AfterCommit` callbacks and records its data
+  versions on its own. It composes with `JoinTx` and `Savepoint` like a top-level transaction.
 - `BEGIN`, the transaction options and the statements from `Config.OnBegin` (for example a
   row-level security `set_config`) are sent with the first statement. A transaction that runs no
   statement costs nothing.

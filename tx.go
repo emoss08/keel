@@ -26,6 +26,7 @@ type txState struct {
 	committed bool
 	opts      txOptions
 	scopeCtx  context.Context
+	scope     *scopeState
 
 	savepoints int
 
@@ -42,6 +43,7 @@ type txOptions struct {
 	isolation   string
 	retries     int
 	replica     bool
+	detached    bool
 }
 
 // TxOption configures Read and Write.
@@ -60,15 +62,34 @@ func RepeatableRead() TxOption { return func(o *txOptions) { o.isolation = "REPE
 // deadlock. fn must be safe to repeat.
 func Retry(n int) TxOption { return func(o *txOptions) { o.retries = n } }
 
+// Detached runs Read or Write in a new transaction on a connection of its own even when the
+// context carries a transaction, which it then neither joins nor waits for: it commits or rolls
+// back on its own, and its work is not undone when the outer transaction rolls back. It begins
+// with the context's scope, so Config.OnBegin sees that scope, and for fn's duration it hides the
+// outer transaction: statements, Savepoint, LockKey and AfterCommit inside fn use the detached
+// transaction, and its AfterCommit callbacks run when it commits, with the caller's context. Use
+// it for work under another scope than the outer transaction's (a system-scoped read inside a
+// tenant's transaction) and for work that must commit whatever the caller does (allocating a
+// number from a sequence table).
+//
+// It sees what other transactions committed, not the outer transaction's uncommitted writes, and
+// holds a second pool connection while the outer one holds its first: size the pool for it, and do
+// not wait inside it on locks the outer transaction holds, which never come free. Outside a
+// transaction it is a plain Read or Write.
+func Detached() TxOption { return func(o *txOptions) { o.detached = true } }
+
 // Read runs fn in a read-only transaction, on the primary unless ReplicaTx is given. A Read or
-// Write already on the context is joined.
+// Write already on the context is joined, unless Detached is given; joining it under another scope
+// than the one it began with returns ErrScopeMismatch.
 func Read(ctx context.Context, db *DB, fn func(ctx context.Context) error, opts ...TxOption) error {
 	return db.runTx(ctx, true, fn, opts)
 }
 
 // Write runs fn in a read-write transaction on the primary. A Write already on the context is
-// joined; a Read is not, and returns ErrReadOnly. On a context marked with OnReplica, COMMIT reads
-// the commit position in its round trip, for the context's replica reads.
+// joined, unless Detached is given; a Read is not, and returns ErrReadOnly. Joining a transaction
+// under another scope than the one it began with returns ErrScopeMismatch. On a context marked
+// with OnReplica, COMMIT reads the commit position in its round trip, for the context's replica
+// reads.
 func Write(ctx context.Context, db *DB, fn func(ctx context.Context) error, opts ...TxOption) error {
 	return db.runTx(ctx, false, fn, opts)
 }
@@ -120,18 +141,47 @@ func txFrom(ctx context.Context, db *DB) *txState {
 	return tx
 }
 
+// checkScope returns ErrScopeMismatch when sc, the scope of a statement or call that would join
+// the transaction, differs from the scope the transaction began with. The transaction's
+// Config.OnBegin statements (a row-level security setting) were made for its own scope, so joining
+// it under another would run under settings made for a different tenant.
+func (tx *txState) checkScope(sc *scopeState) error {
+	if tx.scope == nil {
+		if tx.scopeCtx == nil {
+			return nil
+		}
+		tx.scope = tx.db.resolveScope(tx.scopeCtx)
+	}
+	if !tx.scope.same(sc) {
+		return ErrScopeMismatch
+	}
+	return nil
+}
+
+// txRunner returns a runner of the statements a call sends in tx, the transaction on ctx.
+func (db *DB) txRunner(ctx context.Context, tx *txState) (*runner, error) {
+	sc := db.resolveScope(ctx)
+	if err := tx.checkScope(sc); err != nil {
+		return nil, err
+	}
+	return &runner{db: db, sc: sc, tx: tx}, nil
+}
+
 func (db *DB) runTx(ctx context.Context, readOnly bool, fn func(context.Context) error,
 	opts []TxOption,
 ) error {
-	if cur := txFrom(ctx, db); cur != nil {
-		if !readOnly && cur.readOnly {
-			return ErrReadOnly
-		}
-		return fn(ctx)
-	}
 	var o txOptions
 	for _, opt := range opts {
 		opt(&o)
+	}
+	if cur := txFrom(ctx, db); cur != nil && !o.detached {
+		if !readOnly && cur.readOnly {
+			return ErrReadOnly
+		}
+		if err := cur.checkScope(db.resolveScope(ctx)); err != nil {
+			return err
+		}
+		return fn(ctx)
 	}
 	if o.replica && !readOnly {
 		return errf("ReplicaTx needs a Read")
@@ -322,7 +372,8 @@ func (tx *txState) runAfterCommit(ctx context.Context) {
 
 // Savepoint runs fn inside a savepoint of the transaction on ctx: an error from fn rolls back to
 // the savepoint, drops the Committed hooks and AfterCommit callbacks queued inside it, and is
-// returned, leaving the transaction usable. Outside a transaction it runs fn in a new Write.
+// returned, leaving the transaction usable. Outside a transaction it runs fn in a new Write. Under
+// another scope than the transaction's it returns ErrScopeMismatch.
 func Savepoint(ctx context.Context, db *DB, fn func(ctx context.Context) error) error {
 	tx := txFrom(ctx, db)
 	if tx == nil {
@@ -331,9 +382,12 @@ func Savepoint(ctx context.Context, db *DB, fn func(ctx context.Context) error) 
 	if tx.readOnly {
 		return ErrReadOnly
 	}
+	run, err := db.txRunner(ctx, tx)
+	if err != nil {
+		return err
+	}
 	tx.savepoints++
 	name := "keel_sp_" + strconv.Itoa(tx.savepoints)
-	run := &runner{db: db, sc: db.resolveScope(ctx), tx: tx}
 	if err := run.one(ctx, &stmt{sql: "SAVEPOINT " + name, op: "savepoint"}, false); err != nil {
 		return err
 	}
@@ -356,7 +410,10 @@ func LockKey(ctx context.Context, db *DB, key string) error {
 	if tx == nil {
 		return errf("LockKey needs a transaction on the context")
 	}
-	run := &runner{db: db, sc: db.resolveScope(ctx), tx: tx}
+	run, err := db.txRunner(ctx, tx)
+	if err != nil {
+		return err
+	}
 	return run.one(ctx, &stmt{sql: "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
 		args: []any{key}, op: "lock"}, false)
 }
@@ -367,7 +424,10 @@ func TryLockKey(ctx context.Context, db *DB, key string) (bool, error) {
 	if tx == nil {
 		return false, errf("TryLockKey needs a transaction on the context")
 	}
-	run := &runner{db: db, sc: db.resolveScope(ctx), tx: tx}
+	run, err := db.txRunner(ctx, tx)
+	if err != nil {
+		return false, err
+	}
 	var got bool
 	s := &stmt{sql: "SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0))", args: []any{key}, op: "lock"}
 	s.scan = func(rows pgx.Rows) error {
@@ -376,6 +436,6 @@ func TryLockKey(ctx context.Context, db *DB, key string) (bool, error) {
 		}
 		return nil
 	}
-	err := run.one(ctx, s, false)
+	err = run.one(ctx, s, false)
 	return got, err
 }
