@@ -651,6 +651,9 @@ func (e *emitter) valueStmt(im *imports, c *column, keel string) string {
 		return fmt.Sprintf("\t\tif r.%s == nil {\n\t\t\treturn nil\n\t\t}\n\t\treturn *r.%s\n", c.field, c.field)
 	case c.converts():
 		return fmt.Sprintf("\t\treturn %s(r.%s)\n", c.basic, c.field)
+	case c.kind == schema.KindOther && !c.scanner && isSlice(c.typ):
+		return fmt.Sprintf("\t\tif r.%s == nil {\n\t\t\treturn %s{}\n\t\t}\n\t\treturn r.%s\n", c.field,
+			c.typ.String(), c.field)
 	case c.kind == schema.KindStringArray:
 		v := "r." + c.field
 		if c.elem != nil {
@@ -665,6 +668,12 @@ func (e *emitter) valueStmt(im *imports, c *column, keel string) string {
 		return fmt.Sprintf("\t\tif r.%s == nil {\n\t\t\treturn []int64{}\n\t\t}\n\t\treturn %s\n", c.field, v)
 	}
 	return fmt.Sprintf("\t\treturn r.%s\n", c.field)
+}
+
+// isSlice reports whether t is a slice type.
+func isSlice(t types.Type) bool {
+	_, ok := t.Underlying().(*types.Slice)
+	return ok
 }
 
 // zeroCond is the condition under which a nullzero field holds its zero value.

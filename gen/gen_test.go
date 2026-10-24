@@ -276,6 +276,7 @@ type A struct {
 	P  *int   ~keel:"p"~
 	Z  int    ~keel:"z,nullzero"~
 	C  Count  ~keel:"c"~
+	Days []int32 ~keel:"days"~
 }
 `)
 	if err != nil {
@@ -290,7 +291,9 @@ type A struct {
 		"if r.Z == 0 {\n\t\t\treturn nil\n\t\t}\n\t\treturn int64(r.Z)\n",
 		"return int64(r.C)\n",
 		"const intIs64 = unsafe.Sizeof(int(0)) - 8",
-		"N  keel.Int64Col",
+		"N    keel.Int64Col",
+		"Days keel.AnyCol",
+		"if r.Days == nil {\n\t\t\treturn []int32{}\n\t\t}\n\t\treturn r.Days\n",
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("generated code lacks %q", want)

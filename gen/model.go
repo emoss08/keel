@@ -380,6 +380,11 @@ func readColumn(f *types.Var, ft schema.FieldTag) (*column, error) {
 			c.kind = schema.KindStringArray
 		case types.Int64:
 			c.kind = schema.KindInt64Array
+		case types.Int, types.Int32, types.Int16, types.Float64, types.Float32, types.Bool:
+			if c.elem != nil {
+				return nil, fmt.Errorf("unsupported slice type %s; use []%s", f.Type(), eb.Name())
+			}
+			c.kind = schema.KindOther
 		default:
 			return nil, fmt.Errorf("unsupported slice type %s", f.Type())
 		}

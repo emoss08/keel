@@ -560,6 +560,7 @@ array field is written as an empty array, unless the column is `nullzero`.
 | `time.Time` | `keel.TimeCol` (timestamp, timestamptz or date) |
 | `[]string` | `keel.StringArrayCol` |
 | `[]int64` | `keel.Int64ArrayCol` |
+| `[]int`, `[]int32`, `[]int16`, `[]float64`, `[]float32`, `[]bool` | `keel.AnyCol`; pgx encodes and scans the slice, and a nil slice is written as an empty array |
 | `string` with `tsvector` | `keel.TSVectorCol` |
 | any type with `jsonb` | `keel.JSONBCol` |
 | a named type over one of the above (`Status`, `ids.ID`) | a generated wrapper (`StatusCol`, `IdsIDCol`) whose methods take the named type |
