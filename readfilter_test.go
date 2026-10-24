@@ -82,3 +82,25 @@ func TestExecAllReachesThePrimary(t *testing.T) {
 	ok(t, err)
 	eq(t, n, int64(3))
 }
+
+func TestPreAggregationOfAllParents(t *testing.T) {
+	d := renderDB(t)
+	ctx := tenantCtx("org_1", "bu_1")
+	build := func(all bool) string {
+		q := keel.DynFrom(fleetdb.ShipmentsSchema())
+		p := q.Rel("Moves").PreAggregate(keel.PreAggCTE)
+		if all {
+			p.AllParents()
+		}
+		q.Select(q.Path("pro_number"), p.Measure(keel.DynCount()).As("moves")).Where(q.Path("status").Eq("New"))
+		sql, _, err := q.ToSQL(ctx, d)
+		ok(t, err)
+		return sql
+	}
+	if !strings.Contains(build(false), `) IN (SELECT`) {
+		t.Fatal("a filtered pre-aggregation is not restricted to the selected parents")
+	}
+	if strings.Contains(build(true), `) IN (SELECT`) {
+		t.Fatal("AllParents still restricts the parents")
+	}
+}
