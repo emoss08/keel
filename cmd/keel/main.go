@@ -28,7 +28,7 @@ import (
 )
 
 // genUsage is keel gen's arguments, for keel help gen.
-const genUsage = "[-out {dir}/{name}db] [-kinds keelkinds] [-tags a,b] [-check] packages..."
+const genUsage = "[-out {dir}/{name}db] [-kinds keelkinds] [-tags a,b] [-acronyms PRO,BOL] [-check] packages..."
 
 // main runs the command line until it ends or is interrupted; a second signal kills the process.
 func main() {
