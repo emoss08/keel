@@ -85,7 +85,18 @@ type join struct {
 	alias       string
 	parentAlias string
 	selected    bool
+	written     bool
 	on          []Pred
+}
+
+// joinWritten reports whether the join with alias a has been written into the FROM clause.
+func (sc *scope) joinWritten(a string) bool {
+	for _, j := range sc.joins {
+		if j.alias == a {
+			return j.written
+		}
+	}
+	return false
 }
 
 var renderPool = sync.Pool{New: func() any { return &render{buf: make([]byte, 0, 1024)} }}

@@ -110,7 +110,6 @@ type Query[T any] struct {
 type query struct {
 	ref        *Ref
 	where      []Pred
-	picks      []Col
 	exprs      []Expr
 	loads      []*loadSpec
 	order      []Order
@@ -124,9 +123,9 @@ type query struct {
 	distinctOn []Expr
 	timeout    time.Duration
 	customPlan bool
+	distinct   bool
 	ctes       []*CTETable
 	windows    []namedWindow
-	distinct   bool
 }
 
 type joinClause struct {
