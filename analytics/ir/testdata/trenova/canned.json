@@ -1,0 +1,7086 @@
+{
+  "accounting-open-drift-by-customer": {
+    "irVersion": 1,
+    "entity": "accounting_drift_finding",
+    "columns": [
+      {
+        "id": "party",
+        "ref": {
+          "field": "partyName"
+        },
+        "kind": "dimension",
+        "label": "Customer, Carrier or Driver"
+      },
+      {
+        "id": "kind",
+        "ref": {
+          "field": "kind"
+        },
+        "kind": "dimension",
+        "label": "Difference"
+      },
+      {
+        "id": "currency",
+        "ref": {
+          "field": "currencyCode"
+        },
+        "kind": "dimension",
+        "label": "Currency"
+      },
+      {
+        "id": "findings",
+        "ref": {
+          "field": "id"
+        },
+        "kind": "measure",
+        "agg": "count",
+        "label": "Findings",
+        "display": {
+          "style": "number",
+          "decimals": 0,
+          "grouping": true
+        }
+      },
+      {
+        "id": "difference",
+        "ref": {
+          "field": "differenceMinor"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Net Difference",
+        "transform": {
+          "op": "scale",
+          "factor": 0.01
+        },
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      }
+    ],
+    "filters": {
+      "op": "and",
+      "filters": [
+        {
+          "ref": {
+            "field": "status"
+          },
+          "operator": "eq",
+          "value": "Open"
+        },
+        {
+          "ref": {
+            "field": "kind"
+          },
+          "operator": "in",
+          "param": "driftKinds"
+        }
+      ]
+    },
+    "sort": [
+      {
+        "columnId": "findings",
+        "direction": "desc"
+      }
+    ],
+    "parameters": [
+      {
+        "name": "driftKinds",
+        "label": "Kinds of difference",
+        "type": "enum",
+        "required": true,
+        "default": [
+          "AmountMismatch",
+          "StatusMismatch",
+          "DeletedInProvider",
+          "VoidedInProvider",
+          "CustomerBalanceMismatch",
+          "TrialBalanceMismatch"
+        ],
+        "multi": true,
+        "allowedValues": [
+          "AmountMismatch",
+          "StatusMismatch",
+          "DeletedInProvider",
+          "VoidedInProvider",
+          "CustomerBalanceMismatch",
+          "TrialBalanceMismatch"
+        ]
+      }
+    ]
+  },
+  "accounting-sync-exceptions-by-week": {
+    "irVersion": 1,
+    "entity": "accounting_sync_record",
+    "columns": [
+      {
+        "id": "week",
+        "ref": {
+          "field": "queuedAt"
+        },
+        "kind": "dimension",
+        "bucket": "week",
+        "label": "Week Queued"
+      },
+      {
+        "id": "status",
+        "ref": {
+          "field": "status"
+        },
+        "kind": "dimension",
+        "label": "Status"
+      },
+      {
+        "id": "error_category",
+        "ref": {
+          "field": "errorCategory"
+        },
+        "kind": "dimension",
+        "label": "Error Category"
+      },
+      {
+        "id": "document_type",
+        "ref": {
+          "field": "objectType"
+        },
+        "kind": "dimension",
+        "label": "Document Type"
+      },
+      {
+        "id": "documents",
+        "ref": {
+          "field": "id"
+        },
+        "kind": "measure",
+        "agg": "count",
+        "label": "Documents",
+        "display": {
+          "style": "number",
+          "decimals": 0,
+          "grouping": true
+        }
+      }
+    ],
+    "filters": {
+      "op": "and",
+      "filters": [
+        {
+          "ref": {
+            "field": "status"
+          },
+          "operator": "in",
+          "param": "syncStatuses"
+        },
+        {
+          "ref": {
+            "field": "objectType"
+          },
+          "operator": "in",
+          "param": "syncDocumentTypes"
+        },
+        {
+          "ref": {
+            "field": "queuedAt"
+          },
+          "operator": "lastndays",
+          "param": "windowDays"
+        }
+      ]
+    },
+    "sort": [
+      {
+        "columnId": "week",
+        "direction": "desc"
+      },
+      {
+        "columnId": "documents",
+        "direction": "desc"
+      }
+    ],
+    "parameters": [
+      {
+        "name": "syncStatuses",
+        "label": "Statuses",
+        "type": "enum",
+        "required": true,
+        "default": [
+          "Blocked",
+          "DeadLettered",
+          "Skipped"
+        ],
+        "multi": true,
+        "allowedValues": [
+          "Blocked",
+          "DeadLettered",
+          "Skipped",
+          "Retrying"
+        ]
+      },
+      {
+        "name": "syncDocumentTypes",
+        "label": "Document types",
+        "type": "enum",
+        "required": true,
+        "default": [
+          "Customer",
+          "Invoice",
+          "CreditMemo",
+          "DebitMemo",
+          "CustomerPayment",
+          "CreditApplication",
+          "CarrierVendor",
+          "DriverVendor",
+          "CarrierBill",
+          "CarrierBillPayment",
+          "DriverBill",
+          "DriverBillPayment",
+          "JournalEntry",
+          "JournalSummary"
+        ],
+        "multi": true,
+        "allowedValues": [
+          "Customer",
+          "Invoice",
+          "CreditMemo",
+          "DebitMemo",
+          "CustomerPayment",
+          "CreditApplication",
+          "CarrierVendor",
+          "DriverVendor",
+          "CarrierBill",
+          "CarrierBillPayment",
+          "DriverBill",
+          "DriverBillPayment",
+          "JournalEntry",
+          "JournalSummary"
+        ]
+      },
+      {
+        "name": "windowDays",
+        "label": "Window (days)",
+        "type": "int",
+        "required": true,
+        "default": 90
+      }
+    ]
+  },
+  "ar-aging-by-customer": {
+    "irVersion": 1,
+    "entity": "invoice",
+    "columns": [
+      {
+        "id": "customer",
+        "ref": {
+          "path": [
+            "customer"
+          ],
+          "field": "name"
+        },
+        "kind": "dimension",
+        "label": "Customer"
+      },
+      {
+        "id": "customer_code",
+        "ref": {
+          "path": [
+            "customer"
+          ],
+          "field": "code"
+        },
+        "kind": "dimension",
+        "label": "Customer Code"
+      },
+      {
+        "id": "invoice_count",
+        "ref": {
+          "field": "id"
+        },
+        "kind": "measure",
+        "agg": "count",
+        "label": "Open Invoices",
+        "display": {
+          "style": "number",
+          "decimals": 0,
+          "grouping": true
+        }
+      },
+      {
+        "id": "total_amount",
+        "ref": {
+          "field": "totalAmount"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Total Invoiced",
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      },
+      {
+        "id": "applied_amount",
+        "ref": {
+          "field": "appliedAmount"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Total Applied",
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      },
+      {
+        "id": "oldest_invoice",
+        "ref": {
+          "field": "invoiceDate"
+        },
+        "kind": "measure",
+        "agg": "min",
+        "label": "Oldest Invoice",
+        "display": {
+          "style": "date",
+          "dateStyle": "dateTime"
+        }
+      },
+      {
+        "id": "earliest_due",
+        "ref": {
+          "field": "dueDate"
+        },
+        "kind": "measure",
+        "agg": "min",
+        "label": "Earliest Due Date",
+        "display": {
+          "style": "date",
+          "dateStyle": "dateTime"
+        }
+      },
+      {
+        "id": "open_balance",
+        "ref": {
+          "field": ""
+        },
+        "kind": "computed",
+        "label": "Open Balance",
+        "computed": {
+          "op": "subtract",
+          "leftId": "total_amount",
+          "rightId": "applied_amount"
+        },
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      },
+      {
+        "id": "collection_rate",
+        "ref": {
+          "field": ""
+        },
+        "kind": "computed",
+        "label": "Collection Rate",
+        "computed": {
+          "op": "divide",
+          "leftId": "applied_amount",
+          "rightId": "total_amount"
+        },
+        "transform": {
+          "op": "round",
+          "precision": 3
+        },
+        "display": {
+          "style": "percent",
+          "decimals": 1
+        }
+      }
+    ],
+    "filters": {
+      "op": "and",
+      "filters": [
+        {
+          "ref": {
+            "field": "status"
+          },
+          "operator": "eq",
+          "value": "Posted"
+        },
+        {
+          "ref": {
+            "field": "settlementStatus"
+          },
+          "operator": "in",
+          "param": "settlementStatuses"
+        }
+      ]
+    },
+    "sort": [
+      {
+        "columnId": "open_balance",
+        "direction": "desc"
+      }
+    ],
+    "parameters": [
+      {
+        "name": "settlementStatuses",
+        "label": "Settlement Statuses",
+        "type": "enum",
+        "required": true,
+        "default": [
+          "Unpaid",
+          "PartiallyPaid"
+        ],
+        "multi": true,
+        "allowedValues": [
+          "Unpaid",
+          "PartiallyPaid",
+          "Paid"
+        ]
+      }
+    ]
+  },
+  "ar-aging-by-document": {
+    "irVersion": 1,
+    "entity": "customer_ledger_entry",
+    "columns": [
+      {
+        "id": "customer",
+        "ref": {
+          "path": [
+            "customer"
+          ],
+          "field": "name"
+        },
+        "kind": "dimension",
+        "label": "Customer"
+      },
+      {
+        "id": "customer_code",
+        "ref": {
+          "path": [
+            "customer"
+          ],
+          "field": "code"
+        },
+        "kind": "dimension",
+        "label": "Customer Code"
+      },
+      {
+        "id": "source_object",
+        "ref": {
+          "field": "sourceObjectType"
+        },
+        "kind": "dimension",
+        "label": "Document Type"
+      },
+      {
+        "id": "document_number",
+        "ref": {
+          "field": "documentNumber"
+        },
+        "kind": "dimension",
+        "label": "Document Number"
+      },
+      {
+        "id": "transaction_date",
+        "ref": {
+          "field": "transactionDate"
+        },
+        "kind": "dimension",
+        "label": "Transaction Date",
+        "display": {
+          "style": "date",
+          "dateStyle": "date"
+        }
+      },
+      {
+        "id": "balance_movement",
+        "ref": {
+          "field": "amountMinor"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Amount",
+        "transform": {
+          "op": "scale",
+          "factor": 0.01
+        },
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      }
+    ],
+    "filters": {
+      "op": "and",
+      "filters": [
+        {
+          "ref": {
+            "field": "transactionDate"
+          },
+          "operator": "lastndays",
+          "param": "windowDays"
+        }
+      ]
+    },
+    "sort": [
+      {
+        "columnId": "balance_movement",
+        "direction": "desc"
+      }
+    ],
+    "parameters": [
+      {
+        "name": "windowDays",
+        "label": "Window (days)",
+        "type": "int",
+        "required": true,
+        "default": 180
+      }
+    ]
+  },
+  "credential-expiry-forecast": {
+    "irVersion": 1,
+    "entity": "worker_credential",
+    "columns": [
+      {
+        "id": "last_name",
+        "ref": {
+          "path": [
+            "worker"
+          ],
+          "field": "lastName"
+        },
+        "kind": "dimension",
+        "label": "Last Name"
+      },
+      {
+        "id": "first_name",
+        "ref": {
+          "path": [
+            "worker"
+          ],
+          "field": "firstName"
+        },
+        "kind": "dimension",
+        "label": "First Name"
+      },
+      {
+        "id": "fleet_code",
+        "ref": {
+          "path": [
+            "worker",
+            "fleetCode"
+          ],
+          "field": "code"
+        },
+        "kind": "dimension",
+        "label": "Fleet"
+      },
+      {
+        "id": "credential",
+        "ref": {
+          "path": [
+            "credentialType"
+          ],
+          "field": "name"
+        },
+        "kind": "dimension",
+        "label": "Credential"
+      },
+      {
+        "id": "credential_code",
+        "ref": {
+          "path": [
+            "credentialType"
+          ],
+          "field": "code"
+        },
+        "kind": "dimension",
+        "label": "Code"
+      },
+      {
+        "id": "required",
+        "ref": {
+          "path": [
+            "credentialType"
+          ],
+          "field": "isRequired"
+        },
+        "kind": "dimension",
+        "label": "Required",
+        "display": {
+          "style": "bool",
+          "boolStyle": "yesNo"
+        }
+      },
+      {
+        "id": "status",
+        "ref": {
+          "field": "status"
+        },
+        "kind": "dimension",
+        "label": "Status"
+      },
+      {
+        "id": "number",
+        "ref": {
+          "field": "number"
+        },
+        "kind": "dimension",
+        "label": "Number",
+        "display": {
+          "nullText": "—"
+        }
+      },
+      {
+        "id": "issuing_authority",
+        "ref": {
+          "field": "issuingAuthority"
+        },
+        "kind": "dimension",
+        "label": "Issuing Authority"
+      },
+      {
+        "id": "expires_at",
+        "ref": {
+          "field": "expiresAt"
+        },
+        "kind": "dimension",
+        "label": "Expires",
+        "display": {
+          "style": "date",
+          "dateStyle": "date"
+        }
+      },
+      {
+        "id": "verified_at",
+        "ref": {
+          "field": "verifiedAt"
+        },
+        "kind": "dimension",
+        "label": "Verified",
+        "display": {
+          "style": "date",
+          "dateStyle": "date"
+        }
+      }
+    ],
+    "filters": {
+      "op": "and",
+      "filters": [
+        {
+          "ref": {
+            "field": "status"
+          },
+          "operator": "eq",
+          "value": "Active"
+        },
+        {
+          "ref": {
+            "field": "expiresAt"
+          },
+          "operator": "nextndays",
+          "param": "horizonDays"
+        }
+      ]
+    },
+    "sort": [
+      {
+        "columnId": "expires_at",
+        "direction": "asc"
+      }
+    ],
+    "parameters": [
+      {
+        "name": "horizonDays",
+        "label": "Horizon (days)",
+        "type": "int",
+        "required": true,
+        "default": 60
+      }
+    ]
+  },
+  "customer-scorecard": {
+    "irVersion": 1,
+    "entity": "shipment",
+    "columns": [
+      {
+        "id": "customer",
+        "ref": {
+          "path": [
+            "customer"
+          ],
+          "field": "name"
+        },
+        "kind": "dimension",
+        "label": "Customer"
+      },
+      {
+        "id": "customer_code",
+        "ref": {
+          "path": [
+            "customer"
+          ],
+          "field": "code"
+        },
+        "kind": "dimension",
+        "label": "Customer Code"
+      },
+      {
+        "id": "shipment_count",
+        "ref": {
+          "field": "id"
+        },
+        "kind": "measure",
+        "agg": "count",
+        "label": "Shipments",
+        "display": {
+          "style": "number",
+          "decimals": 0,
+          "grouping": true
+        }
+      },
+      {
+        "id": "total_revenue",
+        "ref": {
+          "field": "totalChargeAmount"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Total Revenue",
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      },
+      {
+        "id": "avg_revenue",
+        "ref": {
+          "field": "totalChargeAmount"
+        },
+        "kind": "measure",
+        "agg": "avg",
+        "label": "Average Revenue per Shipment",
+        "transform": {
+          "op": "round",
+          "precision": 2
+        },
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      },
+      {
+        "id": "max_revenue",
+        "ref": {
+          "field": "totalChargeAmount"
+        },
+        "kind": "measure",
+        "agg": "max",
+        "label": "Largest Shipment",
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      },
+      {
+        "id": "total_weight",
+        "ref": {
+          "field": "weight"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Total Weight",
+        "display": {
+          "style": "number",
+          "decimals": 0,
+          "suffix": " lbs"
+        }
+      },
+      {
+        "id": "total_miles",
+        "ref": {
+          "path": [
+            "moves"
+          ],
+          "field": "distance"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Total Miles",
+        "transform": {
+          "op": "round",
+          "precision": 0
+        },
+        "display": {
+          "style": "number",
+          "decimals": 0,
+          "suffix": " mi"
+        }
+      },
+      {
+        "id": "first_shipment",
+        "ref": {
+          "field": "createdAt"
+        },
+        "kind": "measure",
+        "agg": "min",
+        "label": "First Shipment",
+        "display": {
+          "style": "date",
+          "dateStyle": "dateTime"
+        }
+      },
+      {
+        "id": "last_shipment",
+        "ref": {
+          "field": "createdAt"
+        },
+        "kind": "measure",
+        "agg": "max",
+        "label": "Last Shipment",
+        "display": {
+          "style": "date",
+          "dateStyle": "dateTime"
+        }
+      },
+      {
+        "id": "revenue_per_mile",
+        "ref": {
+          "field": ""
+        },
+        "kind": "computed",
+        "label": "Revenue per Mile",
+        "computed": {
+          "op": "divide",
+          "leftId": "total_revenue",
+          "rightId": "total_miles"
+        },
+        "transform": {
+          "op": "round",
+          "precision": 2
+        },
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      },
+      {
+        "id": "avg_weight",
+        "ref": {
+          "field": ""
+        },
+        "kind": "computed",
+        "label": "Average Weight per Shipment",
+        "computed": {
+          "op": "divide",
+          "leftId": "total_weight",
+          "rightId": "shipment_count"
+        },
+        "transform": {
+          "op": "round",
+          "precision": 0
+        },
+        "display": {
+          "style": "number",
+          "decimals": 0,
+          "suffix": " lbs"
+        }
+      }
+    ],
+    "filters": {
+      "op": "and",
+      "filters": [
+        {
+          "ref": {
+            "field": "createdAt"
+          },
+          "operator": "lastndays",
+          "param": "windowDays"
+        },
+        {
+          "ref": {
+            "field": "status"
+          },
+          "operator": "notin",
+          "value": [
+            "Canceled"
+          ]
+        }
+      ]
+    },
+    "sort": [
+      {
+        "columnId": "total_revenue",
+        "direction": "desc"
+      }
+    ],
+    "parameters": [
+      {
+        "name": "windowDays",
+        "label": "Window (days)",
+        "type": "int",
+        "required": true,
+        "default": 180
+      }
+    ]
+  },
+  "deadhead-analysis": {
+    "irVersion": 1,
+    "entity": "shipment_move",
+    "columns": [
+      {
+        "id": "fleet_code",
+        "ref": {
+          "path": [
+            "assignment",
+            "tractor",
+            "fleetCode"
+          ],
+          "field": "code"
+        },
+        "kind": "dimension",
+        "label": "Fleet"
+      },
+      {
+        "id": "unit",
+        "ref": {
+          "path": [
+            "assignment",
+            "tractor"
+          ],
+          "field": "code"
+        },
+        "kind": "dimension",
+        "label": "Tractor Unit"
+      },
+      {
+        "id": "move_count",
+        "ref": {
+          "field": "id"
+        },
+        "kind": "measure",
+        "agg": "count",
+        "label": "Moves",
+        "display": {
+          "style": "number",
+          "decimals": 0,
+          "grouping": true
+        }
+      },
+      {
+        "id": "total_miles",
+        "ref": {
+          "field": "distance"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Total Miles",
+        "transform": {
+          "op": "round",
+          "precision": 0
+        },
+        "display": {
+          "style": "number",
+          "decimals": 0,
+          "suffix": " mi"
+        }
+      },
+      {
+        "id": "split_miles",
+        "ref": {
+          "field": "distance"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Miles",
+        "transform": {
+          "op": "round",
+          "precision": 0
+        },
+        "display": {
+          "style": "number",
+          "decimals": 0,
+          "suffix": " mi"
+        }
+      },
+      {
+        "id": "avg_miles",
+        "ref": {
+          "field": "distance"
+        },
+        "kind": "measure",
+        "agg": "avg",
+        "label": "Average Miles per Move",
+        "transform": {
+          "op": "round",
+          "precision": 1
+        },
+        "display": {
+          "style": "number",
+          "decimals": 1,
+          "suffix": " mi"
+        }
+      }
+    ],
+    "filters": {
+      "op": "and",
+      "filters": [
+        {
+          "ref": {
+            "field": "createdAt"
+          },
+          "operator": "lastndays",
+          "param": "windowDays"
+        },
+        {
+          "ref": {
+            "field": "status"
+          },
+          "operator": "notin",
+          "value": [
+            "Canceled"
+          ]
+        }
+      ]
+    },
+    "sort": [
+      {
+        "columnId": "total_miles",
+        "direction": "desc"
+      }
+    ],
+    "pivot": {
+      "ref": {
+        "field": "loaded"
+      },
+      "values": [
+        "true",
+        "false"
+      ],
+      "labels": [
+        "Loaded",
+        "Empty"
+      ],
+      "measureIds": [
+        "split_miles"
+      ],
+      "includeOther": false
+    },
+    "parameters": [
+      {
+        "name": "windowDays",
+        "label": "Window (days)",
+        "type": "int",
+        "required": true,
+        "default": 30
+      }
+    ]
+  },
+  "dqf-credential-detail": {
+    "irVersion": 1,
+    "entity": "worker_credential",
+    "columns": [
+      {
+        "id": "last_name",
+        "ref": {
+          "path": [
+            "worker"
+          ],
+          "field": "lastName"
+        },
+        "kind": "dimension",
+        "label": "Last Name"
+      },
+      {
+        "id": "first_name",
+        "ref": {
+          "path": [
+            "worker"
+          ],
+          "field": "firstName"
+        },
+        "kind": "dimension",
+        "label": "First Name"
+      },
+      {
+        "id": "fleet_code",
+        "ref": {
+          "path": [
+            "worker",
+            "fleetCode"
+          ],
+          "field": "code"
+        },
+        "kind": "dimension",
+        "label": "Fleet"
+      },
+      {
+        "id": "credential",
+        "ref": {
+          "path": [
+            "credentialType"
+          ],
+          "field": "name"
+        },
+        "kind": "dimension",
+        "label": "Credential"
+      },
+      {
+        "id": "category",
+        "ref": {
+          "path": [
+            "credentialType"
+          ],
+          "field": "category"
+        },
+        "kind": "dimension",
+        "label": "Category"
+      },
+      {
+        "id": "required",
+        "ref": {
+          "path": [
+            "credentialType"
+          ],
+          "field": "isRequired"
+        },
+        "kind": "dimension",
+        "label": "Required",
+        "display": {
+          "style": "bool",
+          "boolStyle": "yesNo"
+        }
+      },
+      {
+        "id": "status",
+        "ref": {
+          "field": "status"
+        },
+        "kind": "dimension",
+        "label": "Status"
+      },
+      {
+        "id": "number",
+        "ref": {
+          "field": "number"
+        },
+        "kind": "dimension",
+        "label": "Number",
+        "display": {
+          "nullText": "—"
+        }
+      },
+      {
+        "id": "issued_at",
+        "ref": {
+          "field": "issuedAt"
+        },
+        "kind": "dimension",
+        "label": "Issued",
+        "display": {
+          "style": "date",
+          "dateStyle": "date"
+        }
+      },
+      {
+        "id": "expires_at",
+        "ref": {
+          "field": "expiresAt"
+        },
+        "kind": "dimension",
+        "label": "Expires",
+        "display": {
+          "style": "date",
+          "dateStyle": "date"
+        }
+      },
+      {
+        "id": "verified_at",
+        "ref": {
+          "field": "verifiedAt"
+        },
+        "kind": "dimension",
+        "label": "Verified",
+        "display": {
+          "style": "date",
+          "dateStyle": "date"
+        }
+      }
+    ],
+    "filters": {
+      "op": "and",
+      "filters": [
+        {
+          "ref": {
+            "field": "status"
+          },
+          "operator": "in",
+          "param": "statuses"
+        }
+      ]
+    },
+    "sort": [
+      {
+        "columnId": "last_name",
+        "direction": "asc"
+      },
+      {
+        "columnId": "credential",
+        "direction": "asc"
+      }
+    ],
+    "parameters": [
+      {
+        "name": "statuses",
+        "label": "Statuses",
+        "type": "enum",
+        "required": true,
+        "default": [
+          "Active"
+        ],
+        "multi": true,
+        "allowedValues": [
+          "Active",
+          "Inactive"
+        ]
+      }
+    ]
+  },
+  "driver-activity": {
+    "irVersion": 1,
+    "entity": "shipment_move",
+    "columns": [
+      {
+        "id": "first_name",
+        "ref": {
+          "path": [
+            "assignment",
+            "primaryWorker"
+          ],
+          "field": "firstName"
+        },
+        "kind": "dimension",
+        "label": "First Name"
+      },
+      {
+        "id": "last_name",
+        "ref": {
+          "path": [
+            "assignment",
+            "primaryWorker"
+          ],
+          "field": "lastName"
+        },
+        "kind": "dimension",
+        "label": "Last Name"
+      },
+      {
+        "id": "driver_type",
+        "ref": {
+          "path": [
+            "assignment",
+            "primaryWorker"
+          ],
+          "field": "driverType"
+        },
+        "kind": "dimension",
+        "label": "Driver Type"
+      },
+      {
+        "id": "fleet_code",
+        "ref": {
+          "path": [
+            "assignment",
+            "primaryWorker",
+            "fleetCode"
+          ],
+          "field": "code"
+        },
+        "kind": "dimension",
+        "label": "Fleet"
+      },
+      {
+        "id": "move_count",
+        "ref": {
+          "field": "id"
+        },
+        "kind": "measure",
+        "agg": "count",
+        "label": "Moves",
+        "display": {
+          "style": "number",
+          "decimals": 0,
+          "grouping": true
+        }
+      },
+      {
+        "id": "total_miles",
+        "ref": {
+          "field": "distance"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Total Miles",
+        "transform": {
+          "op": "round",
+          "precision": 0
+        },
+        "display": {
+          "style": "number",
+          "decimals": 0,
+          "suffix": " mi"
+        }
+      },
+      {
+        "id": "split_miles",
+        "ref": {
+          "field": "distance"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Miles",
+        "transform": {
+          "op": "round",
+          "precision": 0
+        },
+        "display": {
+          "style": "number",
+          "decimals": 0,
+          "suffix": " mi"
+        }
+      },
+      {
+        "id": "avg_miles",
+        "ref": {
+          "field": "distance"
+        },
+        "kind": "measure",
+        "agg": "avg",
+        "label": "Average Miles per Move",
+        "transform": {
+          "op": "round",
+          "precision": 1
+        },
+        "display": {
+          "style": "number",
+          "decimals": 1,
+          "suffix": " mi"
+        }
+      },
+      {
+        "id": "last_move",
+        "ref": {
+          "field": "createdAt"
+        },
+        "kind": "measure",
+        "agg": "max",
+        "label": "Last Move",
+        "display": {
+          "style": "date",
+          "dateStyle": "dateTime"
+        }
+      }
+    ],
+    "filters": {
+      "op": "and",
+      "filters": [
+        {
+          "ref": {
+            "field": "createdAt"
+          },
+          "operator": "lastndays",
+          "param": "windowDays"
+        },
+        {
+          "ref": {
+            "field": "status"
+          },
+          "operator": "notin",
+          "value": [
+            "Canceled"
+          ]
+        }
+      ]
+    },
+    "sort": [
+      {
+        "columnId": "total_miles",
+        "direction": "desc"
+      }
+    ],
+    "pivot": {
+      "ref": {
+        "field": "loaded"
+      },
+      "values": [
+        "true",
+        "false"
+      ],
+      "labels": [
+        "Loaded",
+        "Empty"
+      ],
+      "measureIds": [
+        "split_miles"
+      ],
+      "includeOther": false
+    },
+    "parameters": [
+      {
+        "name": "windowDays",
+        "label": "Window (days)",
+        "type": "int",
+        "required": true,
+        "default": 30
+      }
+    ]
+  },
+  "driver-qualification-status": {
+    "irVersion": 1,
+    "entity": "worker",
+    "columns": [
+      {
+        "id": "first_name",
+        "ref": {
+          "field": "firstName"
+        },
+        "kind": "dimension",
+        "label": "First Name"
+      },
+      {
+        "id": "last_name",
+        "ref": {
+          "field": "lastName"
+        },
+        "kind": "dimension",
+        "label": "Last Name"
+      },
+      {
+        "id": "driver_type",
+        "ref": {
+          "field": "driverType"
+        },
+        "kind": "dimension",
+        "label": "Driver Type"
+      },
+      {
+        "id": "fleet_code",
+        "ref": {
+          "path": [
+            "fleetCode"
+          ],
+          "field": "code"
+        },
+        "kind": "dimension",
+        "label": "Fleet"
+      },
+      {
+        "id": "compliance_status",
+        "ref": {
+          "path": [
+            "profile"
+          ],
+          "field": "complianceStatus"
+        },
+        "kind": "dimension",
+        "label": "Compliance Status"
+      },
+      {
+        "id": "qualified",
+        "ref": {
+          "path": [
+            "profile"
+          ],
+          "field": "isQualified"
+        },
+        "kind": "dimension",
+        "label": "Qualified",
+        "display": {
+          "style": "bool",
+          "boolStyle": "yesNo"
+        }
+      },
+      {
+        "id": "disqualification_reason",
+        "ref": {
+          "path": [
+            "profile"
+          ],
+          "field": "disqualificationReason"
+        },
+        "kind": "dimension",
+        "label": "Disqualification Reason",
+        "display": {
+          "nullText": "—"
+        }
+      },
+      {
+        "id": "cdl_class",
+        "ref": {
+          "path": [
+            "profile"
+          ],
+          "field": "cdlClass"
+        },
+        "kind": "dimension",
+        "label": "CDL Class"
+      },
+      {
+        "id": "endorsements",
+        "ref": {
+          "path": [
+            "profile"
+          ],
+          "field": "endorsement"
+        },
+        "kind": "dimension",
+        "label": "Endorsements"
+      },
+      {
+        "id": "cdl_restrictions",
+        "ref": {
+          "path": [
+            "profile"
+          ],
+          "field": "cdlRestrictions"
+        },
+        "kind": "dimension",
+        "label": "CDL Restrictions"
+      },
+      {
+        "id": "license_expiry",
+        "ref": {
+          "path": [
+            "profile"
+          ],
+          "field": "licenseExpiry"
+        },
+        "kind": "dimension",
+        "label": "License Expiry",
+        "display": {
+          "style": "date",
+          "dateStyle": "date"
+        }
+      },
+      {
+        "id": "medical_card_expiry",
+        "ref": {
+          "path": [
+            "profile"
+          ],
+          "field": "medicalCardExpiry"
+        },
+        "kind": "dimension",
+        "label": "Medical Card Expiry",
+        "display": {
+          "style": "date",
+          "dateStyle": "date"
+        }
+      },
+      {
+        "id": "mvr_due",
+        "ref": {
+          "path": [
+            "profile"
+          ],
+          "field": "mvrDueDate"
+        },
+        "kind": "dimension",
+        "label": "MVR Due",
+        "display": {
+          "style": "date",
+          "dateStyle": "date"
+        }
+      },
+      {
+        "id": "physical_due",
+        "ref": {
+          "path": [
+            "profile"
+          ],
+          "field": "physicalDueDate"
+        },
+        "kind": "dimension",
+        "label": "Physical Due",
+        "display": {
+          "style": "date",
+          "dateStyle": "date"
+        }
+      },
+      {
+        "id": "last_compliance_check",
+        "ref": {
+          "path": [
+            "profile"
+          ],
+          "field": "lastComplianceCheck"
+        },
+        "kind": "dimension",
+        "label": "Last Compliance Check",
+        "display": {
+          "style": "date",
+          "dateStyle": "date"
+        }
+      },
+      {
+        "id": "hire_date",
+        "ref": {
+          "path": [
+            "profile"
+          ],
+          "field": "hireDate"
+        },
+        "kind": "dimension",
+        "label": "Hire Date",
+        "display": {
+          "style": "date",
+          "dateStyle": "date"
+        }
+      }
+    ],
+    "filters": {
+      "op": "and",
+      "filters": [
+        {
+          "ref": {
+            "field": "status"
+          },
+          "operator": "eq",
+          "value": "Active"
+        },
+        {
+          "ref": {
+            "path": [
+              "profile"
+            ],
+            "field": "complianceStatus"
+          },
+          "operator": "in",
+          "param": "complianceStatuses"
+        }
+      ]
+    },
+    "sort": [
+      {
+        "columnId": "last_name",
+        "direction": "asc"
+      }
+    ],
+    "parameters": [
+      {
+        "name": "complianceStatuses",
+        "label": "Compliance Statuses",
+        "type": "enum",
+        "required": true,
+        "default": [
+          "NonCompliant",
+          "Pending"
+        ],
+        "multi": true,
+        "allowedValues": [
+          "Compliant",
+          "NonCompliant",
+          "Pending"
+        ]
+      }
+    ]
+  },
+  "driver-roster": {
+    "irVersion": 1,
+    "entity": "worker",
+    "columns": [
+      {
+        "id": "first_name",
+        "ref": {
+          "field": "firstName"
+        },
+        "kind": "dimension",
+        "label": "First Name"
+      },
+      {
+        "id": "last_name",
+        "ref": {
+          "field": "lastName"
+        },
+        "kind": "dimension",
+        "label": "Last Name"
+      },
+      {
+        "id": "status",
+        "ref": {
+          "field": "status"
+        },
+        "kind": "dimension",
+        "label": "Status"
+      },
+      {
+        "id": "worker_type",
+        "ref": {
+          "field": "type"
+        },
+        "kind": "dimension",
+        "label": "Worker Type"
+      },
+      {
+        "id": "driver_type",
+        "ref": {
+          "field": "driverType"
+        },
+        "kind": "dimension",
+        "label": "Driver Type"
+      },
+      {
+        "id": "fleet_code",
+        "ref": {
+          "path": [
+            "fleetCode"
+          ],
+          "field": "code"
+        },
+        "kind": "dimension",
+        "label": "Fleet"
+      },
+      {
+        "id": "cdl_class",
+        "ref": {
+          "path": [
+            "profile"
+          ],
+          "field": "cdlClass"
+        },
+        "kind": "dimension",
+        "label": "CDL Class"
+      },
+      {
+        "id": "endorsements",
+        "ref": {
+          "path": [
+            "profile"
+          ],
+          "field": "endorsement"
+        },
+        "kind": "dimension",
+        "label": "Endorsements"
+      },
+      {
+        "id": "hire_date",
+        "ref": {
+          "path": [
+            "profile"
+          ],
+          "field": "hireDate"
+        },
+        "kind": "dimension",
+        "label": "Hire Date",
+        "display": {
+          "style": "date",
+          "dateStyle": "date"
+        }
+      },
+      {
+        "id": "qualified",
+        "ref": {
+          "path": [
+            "profile"
+          ],
+          "field": "isQualified"
+        },
+        "kind": "dimension",
+        "label": "Qualified",
+        "display": {
+          "style": "bool",
+          "boolStyle": "yesNo"
+        }
+      },
+      {
+        "id": "can_be_assigned",
+        "ref": {
+          "field": "canBeAssigned"
+        },
+        "kind": "dimension",
+        "label": "Assignable",
+        "display": {
+          "style": "bool",
+          "boolStyle": "yesNo"
+        }
+      },
+      {
+        "id": "available_for_dispatch",
+        "ref": {
+          "field": "availableForDispatch"
+        },
+        "kind": "dimension",
+        "label": "Available for Dispatch",
+        "display": {
+          "style": "bool",
+          "boolStyle": "yesNo"
+        }
+      },
+      {
+        "id": "assignment_blocked",
+        "ref": {
+          "field": "assignmentBlocked"
+        },
+        "kind": "dimension",
+        "label": "Assignment Blocked Reason",
+        "display": {
+          "nullText": "—"
+        }
+      }
+    ],
+    "filters": {
+      "op": "and",
+      "filters": [
+        {
+          "ref": {
+            "field": "status"
+          },
+          "operator": "in",
+          "param": "statuses"
+        }
+      ]
+    },
+    "sort": [
+      {
+        "columnId": "last_name",
+        "direction": "asc"
+      }
+    ],
+    "parameters": [
+      {
+        "name": "statuses",
+        "label": "Statuses",
+        "type": "enum",
+        "required": true,
+        "default": [
+          "Active"
+        ],
+        "multi": true,
+        "allowedValues": [
+          "Active",
+          "Inactive"
+        ]
+      }
+    ]
+  },
+  "equipment-utilization": {
+    "irVersion": 1,
+    "entity": "assignment",
+    "columns": [
+      {
+        "id": "unit",
+        "ref": {
+          "path": [
+            "tractor"
+          ],
+          "field": "code"
+        },
+        "kind": "dimension",
+        "label": "Tractor Unit"
+      },
+      {
+        "id": "fleet_code",
+        "ref": {
+          "path": [
+            "tractor",
+            "fleetCode"
+          ],
+          "field": "code"
+        },
+        "kind": "dimension",
+        "label": "Fleet"
+      },
+      {
+        "id": "equipment_type",
+        "ref": {
+          "path": [
+            "tractor",
+            "equipmentType"
+          ],
+          "field": "code"
+        },
+        "kind": "dimension",
+        "label": "Equipment Type"
+      },
+      {
+        "id": "assignment_count",
+        "ref": {
+          "field": "id"
+        },
+        "kind": "measure",
+        "agg": "count",
+        "label": "Assignments",
+        "display": {
+          "style": "number",
+          "decimals": 0,
+          "grouping": true
+        }
+      },
+      {
+        "id": "driver_count",
+        "ref": {
+          "field": "primaryWorkerId"
+        },
+        "kind": "measure",
+        "agg": "count_distinct",
+        "label": "Drivers Used",
+        "display": {
+          "style": "number",
+          "decimals": 0,
+          "grouping": true
+        }
+      },
+      {
+        "id": "trailer_count",
+        "ref": {
+          "field": "trailerId"
+        },
+        "kind": "measure",
+        "agg": "count_distinct",
+        "label": "Trailers Pulled",
+        "display": {
+          "style": "number",
+          "decimals": 0,
+          "grouping": true
+        }
+      },
+      {
+        "id": "first_assignment",
+        "ref": {
+          "field": "createdAt"
+        },
+        "kind": "measure",
+        "agg": "min",
+        "label": "First Assignment",
+        "display": {
+          "style": "date",
+          "dateStyle": "dateTime"
+        }
+      },
+      {
+        "id": "last_assignment",
+        "ref": {
+          "field": "createdAt"
+        },
+        "kind": "measure",
+        "agg": "max",
+        "label": "Last Assignment",
+        "display": {
+          "style": "date",
+          "dateStyle": "dateTime"
+        }
+      }
+    ],
+    "filters": {
+      "op": "and",
+      "filters": [
+        {
+          "ref": {
+            "field": "createdAt"
+          },
+          "operator": "lastndays",
+          "param": "windowDays"
+        },
+        {
+          "ref": {
+            "field": "status"
+          },
+          "operator": "notin",
+          "value": [
+            "Canceled"
+          ]
+        }
+      ]
+    },
+    "sort": [
+      {
+        "columnId": "assignment_count",
+        "direction": "desc"
+      }
+    ],
+    "parameters": [
+      {
+        "name": "windowDays",
+        "label": "Window (days)",
+        "type": "int",
+        "required": true,
+        "default": 30
+      }
+    ]
+  },
+  "expiring-tractor-registrations": {
+    "irVersion": 1,
+    "entity": "tractor",
+    "columns": [
+      {
+        "id": "unit",
+        "ref": {
+          "field": "code"
+        },
+        "kind": "dimension",
+        "label": "Unit Number"
+      },
+      {
+        "id": "status",
+        "ref": {
+          "field": "status"
+        },
+        "kind": "dimension",
+        "label": "Status"
+      },
+      {
+        "id": "year",
+        "ref": {
+          "field": "year"
+        },
+        "kind": "dimension",
+        "label": "Year"
+      },
+      {
+        "id": "make",
+        "ref": {
+          "field": "make"
+        },
+        "kind": "dimension",
+        "label": "Make"
+      },
+      {
+        "id": "model",
+        "ref": {
+          "field": "model"
+        },
+        "kind": "dimension",
+        "label": "Model"
+      },
+      {
+        "id": "license_plate",
+        "ref": {
+          "field": "licensePlateNumber"
+        },
+        "kind": "dimension",
+        "label": "License Plate",
+        "display": {
+          "nullText": "—"
+        }
+      },
+      {
+        "id": "registration_number",
+        "ref": {
+          "field": "registrationNumber"
+        },
+        "kind": "dimension",
+        "label": "Registration Number",
+        "display": {
+          "nullText": "—"
+        }
+      },
+      {
+        "id": "registration_expiry",
+        "ref": {
+          "field": "registrationExpiry"
+        },
+        "kind": "dimension",
+        "label": "Registration Expiry",
+        "display": {
+          "style": "date",
+          "dateStyle": "date"
+        }
+      },
+      {
+        "id": "fleet_code",
+        "ref": {
+          "path": [
+            "fleetCode"
+          ],
+          "field": "code"
+        },
+        "kind": "dimension",
+        "label": "Fleet"
+      },
+      {
+        "id": "primary_driver_first",
+        "ref": {
+          "path": [
+            "primaryWorker"
+          ],
+          "field": "firstName"
+        },
+        "kind": "dimension",
+        "label": "Primary Driver First Name"
+      },
+      {
+        "id": "primary_driver_last",
+        "ref": {
+          "path": [
+            "primaryWorker"
+          ],
+          "field": "lastName"
+        },
+        "kind": "dimension",
+        "label": "Primary Driver Last Name"
+      }
+    ],
+    "filters": {
+      "op": "and",
+      "filters": [
+        {
+          "ref": {
+            "field": "registrationExpiry"
+          },
+          "operator": "nextndays",
+          "param": "horizonDays"
+        }
+      ]
+    },
+    "sort": [
+      {
+        "columnId": "registration_expiry",
+        "direction": "asc"
+      }
+    ],
+    "parameters": [
+      {
+        "name": "horizonDays",
+        "label": "Horizon (days)",
+        "type": "int",
+        "required": true,
+        "default": 60
+      }
+    ]
+  },
+  "expiring-trailer-registrations": {
+    "irVersion": 1,
+    "entity": "trailer",
+    "columns": [
+      {
+        "id": "unit",
+        "ref": {
+          "field": "code"
+        },
+        "kind": "dimension",
+        "label": "Unit Number"
+      },
+      {
+        "id": "status",
+        "ref": {
+          "field": "status"
+        },
+        "kind": "dimension",
+        "label": "Status"
+      },
+      {
+        "id": "year",
+        "ref": {
+          "field": "year"
+        },
+        "kind": "dimension",
+        "label": "Year"
+      },
+      {
+        "id": "make",
+        "ref": {
+          "field": "make"
+        },
+        "kind": "dimension",
+        "label": "Make"
+      },
+      {
+        "id": "model",
+        "ref": {
+          "field": "model"
+        },
+        "kind": "dimension",
+        "label": "Model"
+      },
+      {
+        "id": "license_plate",
+        "ref": {
+          "field": "licensePlateNumber"
+        },
+        "kind": "dimension",
+        "label": "License Plate",
+        "display": {
+          "nullText": "—"
+        }
+      },
+      {
+        "id": "registration_expiry",
+        "ref": {
+          "field": "registrationExpiry"
+        },
+        "kind": "dimension",
+        "label": "Registration Expiry",
+        "display": {
+          "style": "date",
+          "dateStyle": "date"
+        }
+      },
+      {
+        "id": "last_inspection",
+        "ref": {
+          "field": "lastInspectionDate"
+        },
+        "kind": "dimension",
+        "label": "Last Inspection",
+        "display": {
+          "style": "date",
+          "dateStyle": "date"
+        }
+      },
+      {
+        "id": "equipment_type",
+        "ref": {
+          "path": [
+            "equipmentType"
+          ],
+          "field": "code"
+        },
+        "kind": "dimension",
+        "label": "Equipment Type"
+      },
+      {
+        "id": "fleet_code",
+        "ref": {
+          "path": [
+            "fleetCode"
+          ],
+          "field": "code"
+        },
+        "kind": "dimension",
+        "label": "Fleet"
+      }
+    ],
+    "filters": {
+      "op": "and",
+      "filters": [
+        {
+          "ref": {
+            "field": "registrationExpiry"
+          },
+          "operator": "nextndays",
+          "param": "horizonDays"
+        }
+      ]
+    },
+    "sort": [
+      {
+        "columnId": "registration_expiry",
+        "direction": "asc"
+      }
+    ],
+    "parameters": [
+      {
+        "name": "horizonDays",
+        "label": "Horizon (days)",
+        "type": "int",
+        "required": true,
+        "default": 60
+      }
+    ]
+  },
+  "expiring-worker-credentials": {
+    "irVersion": 1,
+    "entity": "worker",
+    "columns": [
+      {
+        "id": "first_name",
+        "ref": {
+          "field": "firstName"
+        },
+        "kind": "dimension",
+        "label": "First Name"
+      },
+      {
+        "id": "last_name",
+        "ref": {
+          "field": "lastName"
+        },
+        "kind": "dimension",
+        "label": "Last Name"
+      },
+      {
+        "id": "status",
+        "ref": {
+          "field": "status"
+        },
+        "kind": "dimension",
+        "label": "Status"
+      },
+      {
+        "id": "driver_type",
+        "ref": {
+          "field": "driverType"
+        },
+        "kind": "dimension",
+        "label": "Driver Type"
+      },
+      {
+        "id": "fleet_code",
+        "ref": {
+          "path": [
+            "fleetCode"
+          ],
+          "field": "code"
+        },
+        "kind": "dimension",
+        "label": "Fleet"
+      },
+      {
+        "id": "cdl_class",
+        "ref": {
+          "path": [
+            "profile"
+          ],
+          "field": "cdlClass"
+        },
+        "kind": "dimension",
+        "label": "CDL Class"
+      },
+      {
+        "id": "compliance_status",
+        "ref": {
+          "path": [
+            "profile"
+          ],
+          "field": "complianceStatus"
+        },
+        "kind": "dimension",
+        "label": "Compliance Status"
+      },
+      {
+        "id": "license_expiry",
+        "ref": {
+          "path": [
+            "profile"
+          ],
+          "field": "licenseExpiry"
+        },
+        "kind": "dimension",
+        "label": "License Expiry",
+        "display": {
+          "style": "date",
+          "dateStyle": "date"
+        }
+      },
+      {
+        "id": "medical_card_expiry",
+        "ref": {
+          "path": [
+            "profile"
+          ],
+          "field": "medicalCardExpiry"
+        },
+        "kind": "dimension",
+        "label": "Medical Card Expiry",
+        "display": {
+          "style": "date",
+          "dateStyle": "date"
+        }
+      },
+      {
+        "id": "hazmat_expiry",
+        "ref": {
+          "path": [
+            "profile"
+          ],
+          "field": "hazmatExpiry"
+        },
+        "kind": "dimension",
+        "label": "Hazmat Expiry",
+        "display": {
+          "style": "date",
+          "dateStyle": "date"
+        }
+      },
+      {
+        "id": "twic_expiry",
+        "ref": {
+          "path": [
+            "profile"
+          ],
+          "field": "twicExpiry"
+        },
+        "kind": "dimension",
+        "label": "TWIC Expiry",
+        "display": {
+          "style": "date",
+          "dateStyle": "date"
+        }
+      },
+      {
+        "id": "mvr_due",
+        "ref": {
+          "path": [
+            "profile"
+          ],
+          "field": "mvrDueDate"
+        },
+        "kind": "dimension",
+        "label": "MVR Due",
+        "display": {
+          "style": "date",
+          "dateStyle": "date"
+        }
+      }
+    ],
+    "filters": {
+      "op": "and",
+      "filters": [
+        {
+          "ref": {
+            "field": "status"
+          },
+          "operator": "eq",
+          "value": "Active"
+        }
+      ],
+      "groups": [
+        {
+          "op": "or",
+          "filters": [
+            {
+              "ref": {
+                "path": [
+                  "profile"
+                ],
+                "field": "licenseExpiry"
+              },
+              "operator": "nextndays",
+              "param": "horizonDays"
+            },
+            {
+              "ref": {
+                "path": [
+                  "profile"
+                ],
+                "field": "medicalCardExpiry"
+              },
+              "operator": "nextndays",
+              "param": "horizonDays"
+            },
+            {
+              "ref": {
+                "path": [
+                  "profile"
+                ],
+                "field": "hazmatExpiry"
+              },
+              "operator": "nextndays",
+              "param": "horizonDays"
+            },
+            {
+              "ref": {
+                "path": [
+                  "profile"
+                ],
+                "field": "twicExpiry"
+              },
+              "operator": "nextndays",
+              "param": "horizonDays"
+            }
+          ]
+        }
+      ]
+    },
+    "sort": [
+      {
+        "columnId": "license_expiry",
+        "direction": "asc"
+      }
+    ],
+    "parameters": [
+      {
+        "name": "horizonDays",
+        "label": "Horizon (days)",
+        "type": "int",
+        "required": true,
+        "default": 30
+      }
+    ]
+  },
+  "facility-activity": {
+    "irVersion": 1,
+    "entity": "stop",
+    "columns": [
+      {
+        "id": "facility",
+        "ref": {
+          "path": [
+            "location"
+          ],
+          "field": "name"
+        },
+        "kind": "dimension",
+        "label": "Facility"
+      },
+      {
+        "id": "city",
+        "ref": {
+          "path": [
+            "location"
+          ],
+          "field": "city"
+        },
+        "kind": "dimension",
+        "label": "City"
+      },
+      {
+        "id": "facility_type",
+        "ref": {
+          "path": [
+            "location",
+            "locationCategory"
+          ],
+          "field": "facilityType"
+        },
+        "kind": "dimension",
+        "label": "Facility Type"
+      },
+      {
+        "id": "stop_type",
+        "ref": {
+          "field": "type"
+        },
+        "kind": "dimension",
+        "label": "Stop Type"
+      },
+      {
+        "id": "stop_count",
+        "ref": {
+          "field": "id"
+        },
+        "kind": "measure",
+        "agg": "count",
+        "label": "Stops",
+        "display": {
+          "style": "number",
+          "decimals": 0,
+          "grouping": true
+        }
+      },
+      {
+        "id": "total_pieces",
+        "ref": {
+          "field": "pieces"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Total Pieces",
+        "display": {
+          "style": "number",
+          "decimals": 0,
+          "grouping": true
+        }
+      },
+      {
+        "id": "total_weight",
+        "ref": {
+          "field": "weight"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Total Weight",
+        "display": {
+          "style": "number",
+          "decimals": 0,
+          "suffix": " lbs"
+        }
+      },
+      {
+        "id": "avg_arrival",
+        "ref": {
+          "field": "actualArrival"
+        },
+        "kind": "measure",
+        "agg": "avg",
+        "label": "Average Arrival",
+        "display": {
+          "style": "date",
+          "dateStyle": "dateTime"
+        }
+      },
+      {
+        "id": "avg_departure",
+        "ref": {
+          "field": "actualDeparture"
+        },
+        "kind": "measure",
+        "agg": "avg",
+        "label": "Average Departure",
+        "display": {
+          "style": "date",
+          "dateStyle": "dateTime"
+        }
+      },
+      {
+        "id": "avg_dwell",
+        "ref": {
+          "field": ""
+        },
+        "kind": "computed",
+        "label": "Average Dwell",
+        "computed": {
+          "op": "subtract",
+          "leftId": "avg_departure",
+          "rightId": "avg_arrival"
+        },
+        "display": {
+          "style": "duration",
+          "durationUnit": "seconds",
+          "durationStyle": "compact"
+        }
+      }
+    ],
+    "filters": {
+      "op": "and",
+      "filters": [
+        {
+          "ref": {
+            "field": "actualArrival"
+          },
+          "operator": "lastndays",
+          "param": "windowDays"
+        },
+        {
+          "ref": {
+            "field": "actualDeparture"
+          },
+          "operator": "isnotnull"
+        },
+        {
+          "ref": {
+            "field": "type"
+          },
+          "operator": "in",
+          "param": "stopTypes"
+        }
+      ]
+    },
+    "sort": [
+      {
+        "columnId": "stop_count",
+        "direction": "desc"
+      }
+    ],
+    "parameters": [
+      {
+        "name": "windowDays",
+        "label": "Window (days)",
+        "type": "int",
+        "required": true,
+        "default": 30
+      },
+      {
+        "name": "stopTypes",
+        "label": "Stop Types",
+        "type": "enum",
+        "required": true,
+        "default": [
+          "Pickup",
+          "Delivery"
+        ],
+        "multi": true,
+        "allowedValues": [
+          "Pickup",
+          "Delivery",
+          "SplitPickup",
+          "SplitDelivery"
+        ]
+      }
+    ]
+  },
+  "factoring-days-to-fund": {
+    "irVersion": 1,
+    "entity": "factoring_submission",
+    "columns": [
+      {
+        "id": "factor",
+        "ref": {
+          "path": [
+            "factoringCompany"
+          ],
+          "field": "name"
+        },
+        "kind": "dimension",
+        "label": "Factor"
+      },
+      {
+        "id": "schedules",
+        "ref": {
+          "field": "id"
+        },
+        "kind": "measure",
+        "agg": "count",
+        "label": "Schedules Funded",
+        "display": {
+          "style": "number",
+          "decimals": 0,
+          "grouping": true
+        }
+      },
+      {
+        "id": "face",
+        "ref": {
+          "field": "faceMinor"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Face Amount",
+        "transform": {
+          "op": "scale",
+          "factor": 0.01
+        },
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      },
+      {
+        "id": "average_sent",
+        "ref": {
+          "field": "sentAt"
+        },
+        "kind": "measure",
+        "agg": "avg",
+        "label": "Average Sent",
+        "display": {
+          "style": "date",
+          "dateStyle": "dateTime"
+        }
+      },
+      {
+        "id": "average_funded",
+        "ref": {
+          "field": "fundedAt"
+        },
+        "kind": "measure",
+        "agg": "avg",
+        "label": "Average Funded",
+        "display": {
+          "style": "date",
+          "dateStyle": "dateTime"
+        }
+      },
+      {
+        "id": "time_to_fund",
+        "ref": {
+          "field": ""
+        },
+        "kind": "computed",
+        "label": "Average Time to Fund",
+        "computed": {
+          "op": "subtract",
+          "leftId": "average_funded",
+          "rightId": "average_sent"
+        },
+        "display": {
+          "style": "duration",
+          "durationUnit": "seconds",
+          "durationStyle": "compact"
+        }
+      }
+    ],
+    "filters": {
+      "op": "and",
+      "filters": [
+        {
+          "ref": {
+            "field": "fundedAt"
+          },
+          "operator": "isnotnull"
+        },
+        {
+          "ref": {
+            "field": "sentAt"
+          },
+          "operator": "isnotnull"
+        },
+        {
+          "ref": {
+            "field": "fundedAt"
+          },
+          "operator": "lastndays",
+          "param": "windowDays"
+        }
+      ]
+    },
+    "sort": [
+      {
+        "columnId": "time_to_fund",
+        "direction": "desc"
+      }
+    ],
+    "parameters": [
+      {
+        "name": "windowDays",
+        "label": "Window (days)",
+        "type": "int",
+        "required": true,
+        "default": 180
+      }
+    ]
+  },
+  "factoring-fees-by-customer": {
+    "irVersion": 1,
+    "entity": "factoring_reserve_entry",
+    "columns": [
+      {
+        "id": "customer",
+        "ref": {
+          "path": [
+            "customer"
+          ],
+          "field": "name"
+        },
+        "kind": "dimension",
+        "label": "Customer"
+      },
+      {
+        "id": "factor",
+        "ref": {
+          "path": [
+            "factoringCompany"
+          ],
+          "field": "name"
+        },
+        "kind": "dimension",
+        "label": "Factor"
+      },
+      {
+        "id": "invoices",
+        "ref": {
+          "field": "invoiceId"
+        },
+        "kind": "measure",
+        "agg": "count_distinct",
+        "label": "Invoices",
+        "display": {
+          "style": "number",
+          "decimals": 0,
+          "grouping": true
+        }
+      },
+      {
+        "id": "fees",
+        "ref": {
+          "field": "feeMinor"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Fees",
+        "transform": {
+          "op": "scale",
+          "factor": 0.01
+        },
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      },
+      {
+        "id": "net_cash",
+        "ref": {
+          "field": "cashMinor"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Net Cash From Factor",
+        "transform": {
+          "op": "scale",
+          "factor": 0.01
+        },
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      }
+    ],
+    "filters": {
+      "op": "and",
+      "filters": [
+        {
+          "ref": {
+            "field": "accountingDate"
+          },
+          "operator": "lastndays",
+          "param": "windowDays"
+        }
+      ]
+    },
+    "sort": [
+      {
+        "columnId": "fees",
+        "direction": "desc"
+      }
+    ],
+    "parameters": [
+      {
+        "name": "windowDays",
+        "label": "Window (days)",
+        "type": "int",
+        "required": true,
+        "default": 90
+      }
+    ]
+  },
+  "factoring-schedules": {
+    "irVersion": 1,
+    "entity": "factoring_submission",
+    "columns": [
+      {
+        "id": "schedule_number",
+        "ref": {
+          "field": "number"
+        },
+        "kind": "dimension",
+        "label": "Schedule"
+      },
+      {
+        "id": "factor",
+        "ref": {
+          "path": [
+            "factoringCompany"
+          ],
+          "field": "name"
+        },
+        "kind": "dimension",
+        "label": "Factor"
+      },
+      {
+        "id": "submitted_on",
+        "ref": {
+          "field": "createdAt"
+        },
+        "kind": "dimension",
+        "label": "Submitted",
+        "display": {
+          "style": "date",
+          "dateStyle": "date"
+        }
+      },
+      {
+        "id": "status",
+        "ref": {
+          "field": "status"
+        },
+        "kind": "dimension",
+        "label": "Status"
+      },
+      {
+        "id": "sent_to",
+        "ref": {
+          "field": "transportTarget"
+        },
+        "kind": "dimension",
+        "label": "Sent To"
+      },
+      {
+        "id": "face",
+        "ref": {
+          "field": "faceMinor"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Face Amount",
+        "transform": {
+          "op": "scale",
+          "factor": 0.01
+        },
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      },
+      {
+        "id": "expected_advance",
+        "ref": {
+          "field": "expectedAdvanceMinor"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Expected Advance",
+        "transform": {
+          "op": "scale",
+          "factor": 0.01
+        },
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      },
+      {
+        "id": "expected_fee",
+        "ref": {
+          "field": "expectedFeeMinor"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Expected Fee",
+        "transform": {
+          "op": "scale",
+          "factor": 0.01
+        },
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      },
+      {
+        "id": "expected_reserve",
+        "ref": {
+          "field": "expectedReserveMinor"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Expected Reserve",
+        "transform": {
+          "op": "scale",
+          "factor": 0.01
+        },
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      }
+    ],
+    "sort": [
+      {
+        "columnId": "submitted_on",
+        "direction": "desc"
+      }
+    ]
+  },
+  "fleet-roster": {
+    "irVersion": 1,
+    "entity": "tractor",
+    "columns": [
+      {
+        "id": "unit",
+        "ref": {
+          "field": "code"
+        },
+        "kind": "dimension",
+        "label": "Unit Number"
+      },
+      {
+        "id": "status",
+        "ref": {
+          "field": "status"
+        },
+        "kind": "dimension",
+        "label": "Status"
+      },
+      {
+        "id": "year",
+        "ref": {
+          "field": "year"
+        },
+        "kind": "dimension",
+        "label": "Year"
+      },
+      {
+        "id": "make",
+        "ref": {
+          "field": "make"
+        },
+        "kind": "dimension",
+        "label": "Make"
+      },
+      {
+        "id": "model",
+        "ref": {
+          "field": "model"
+        },
+        "kind": "dimension",
+        "label": "Model"
+      },
+      {
+        "id": "vin",
+        "ref": {
+          "field": "vin"
+        },
+        "kind": "dimension",
+        "label": "VIN",
+        "display": {
+          "nullText": "—"
+        }
+      },
+      {
+        "id": "license_plate",
+        "ref": {
+          "field": "licensePlateNumber"
+        },
+        "kind": "dimension",
+        "label": "License Plate",
+        "display": {
+          "nullText": "—"
+        }
+      },
+      {
+        "id": "registration_number",
+        "ref": {
+          "field": "registrationNumber"
+        },
+        "kind": "dimension",
+        "label": "Registration Number",
+        "display": {
+          "nullText": "—"
+        }
+      },
+      {
+        "id": "registration_expiry",
+        "ref": {
+          "field": "registrationExpiry"
+        },
+        "kind": "dimension",
+        "label": "Registration Expiry",
+        "display": {
+          "style": "date",
+          "dateStyle": "date"
+        }
+      },
+      {
+        "id": "equipment_type",
+        "ref": {
+          "path": [
+            "equipmentType"
+          ],
+          "field": "code"
+        },
+        "kind": "dimension",
+        "label": "Equipment Type"
+      },
+      {
+        "id": "manufacturer",
+        "ref": {
+          "path": [
+            "equipmentManufacturer"
+          ],
+          "field": "name"
+        },
+        "kind": "dimension",
+        "label": "Manufacturer"
+      },
+      {
+        "id": "fleet_code",
+        "ref": {
+          "path": [
+            "fleetCode"
+          ],
+          "field": "code"
+        },
+        "kind": "dimension",
+        "label": "Fleet"
+      },
+      {
+        "id": "primary_driver_first",
+        "ref": {
+          "path": [
+            "primaryWorker"
+          ],
+          "field": "firstName"
+        },
+        "kind": "dimension",
+        "label": "Primary Driver First Name"
+      },
+      {
+        "id": "primary_driver_last",
+        "ref": {
+          "path": [
+            "primaryWorker"
+          ],
+          "field": "lastName"
+        },
+        "kind": "dimension",
+        "label": "Primary Driver Last Name"
+      },
+      {
+        "id": "secondary_driver_last",
+        "ref": {
+          "path": [
+            "secondaryWorker"
+          ],
+          "field": "lastName"
+        },
+        "kind": "dimension",
+        "label": "Co-Driver Last Name"
+      }
+    ],
+    "filters": {
+      "op": "and",
+      "filters": [
+        {
+          "ref": {
+            "field": "status"
+          },
+          "operator": "in",
+          "param": "statuses"
+        }
+      ]
+    },
+    "sort": [
+      {
+        "columnId": "unit",
+        "direction": "asc"
+      }
+    ],
+    "parameters": [
+      {
+        "name": "statuses",
+        "label": "Statuses",
+        "type": "enum",
+        "required": true,
+        "default": [
+          "Available",
+          "OutOfService",
+          "AtMaintenance"
+        ],
+        "multi": true,
+        "allowedValues": [
+          "Available",
+          "OutOfService",
+          "AtMaintenance",
+          "Sold"
+        ]
+      }
+    ]
+  },
+  "hazmat-shipment-log": {
+    "irVersion": 1,
+    "entity": "shipment_commodity",
+    "columns": [
+      {
+        "id": "pro_number",
+        "ref": {
+          "path": [
+            "shipment"
+          ],
+          "field": "proNumber"
+        },
+        "kind": "dimension",
+        "label": "PRO Number"
+      },
+      {
+        "id": "bol",
+        "ref": {
+          "path": [
+            "shipment"
+          ],
+          "field": "bol"
+        },
+        "kind": "dimension",
+        "label": "BOL"
+      },
+      {
+        "id": "customer",
+        "ref": {
+          "path": [
+            "shipment",
+            "customer"
+          ],
+          "field": "name"
+        },
+        "kind": "dimension",
+        "label": "Customer"
+      },
+      {
+        "id": "shipment_status",
+        "ref": {
+          "path": [
+            "shipment"
+          ],
+          "field": "status"
+        },
+        "kind": "dimension",
+        "label": "Shipment Status"
+      },
+      {
+        "id": "ship_date",
+        "ref": {
+          "path": [
+            "shipment"
+          ],
+          "field": "actualShipDate"
+        },
+        "kind": "dimension",
+        "label": "Ship Date",
+        "display": {
+          "style": "date",
+          "dateStyle": "date"
+        }
+      },
+      {
+        "id": "commodity",
+        "ref": {
+          "path": [
+            "commodity"
+          ],
+          "field": "name"
+        },
+        "kind": "dimension",
+        "label": "Commodity"
+      },
+      {
+        "id": "freight_class",
+        "ref": {
+          "path": [
+            "commodity"
+          ],
+          "field": "freightClass"
+        },
+        "kind": "dimension",
+        "label": "Freight Class"
+      },
+      {
+        "id": "hazmat_class",
+        "ref": {
+          "path": [
+            "commodity",
+            "hazardousMaterial"
+          ],
+          "field": "class"
+        },
+        "kind": "dimension",
+        "label": "Hazard Class"
+      },
+      {
+        "id": "un_number",
+        "ref": {
+          "path": [
+            "commodity",
+            "hazardousMaterial"
+          ],
+          "field": "unNumber"
+        },
+        "kind": "dimension",
+        "label": "UN Number"
+      },
+      {
+        "id": "packing_group",
+        "ref": {
+          "path": [
+            "commodity",
+            "hazardousMaterial"
+          ],
+          "field": "packingGroup"
+        },
+        "kind": "dimension",
+        "label": "Packing Group"
+      },
+      {
+        "id": "shipping_name",
+        "ref": {
+          "path": [
+            "commodity",
+            "hazardousMaterial"
+          ],
+          "field": "properShippingName"
+        },
+        "kind": "dimension",
+        "label": "Proper Shipping Name"
+      },
+      {
+        "id": "placard_required",
+        "ref": {
+          "path": [
+            "commodity",
+            "hazardousMaterial"
+          ],
+          "field": "placardRequired"
+        },
+        "kind": "dimension",
+        "label": "Placard Required",
+        "display": {
+          "style": "bool",
+          "boolStyle": "yesNo"
+        }
+      },
+      {
+        "id": "weight",
+        "ref": {
+          "field": "weight"
+        },
+        "kind": "dimension",
+        "label": "Weight"
+      },
+      {
+        "id": "pieces",
+        "ref": {
+          "field": "pieces"
+        },
+        "kind": "dimension",
+        "label": "Pieces"
+      }
+    ],
+    "filters": {
+      "op": "and",
+      "filters": [
+        {
+          "ref": {
+            "path": [
+              "shipment"
+            ],
+            "field": "createdAt"
+          },
+          "operator": "lastndays",
+          "param": "windowDays"
+        },
+        {
+          "ref": {
+            "path": [
+              "commodity"
+            ],
+            "field": "hazardousMaterialId"
+          },
+          "operator": "isnotnull"
+        }
+      ]
+    },
+    "sort": [
+      {
+        "columnId": "ship_date",
+        "direction": "desc"
+      }
+    ],
+    "parameters": [
+      {
+        "name": "windowDays",
+        "label": "Window (days)",
+        "type": "int",
+        "required": true,
+        "default": 90
+      }
+    ]
+  },
+  "headcount-snapshot": {
+    "irVersion": 1,
+    "entity": "worker",
+    "columns": [
+      {
+        "id": "fleet_code",
+        "ref": {
+          "path": [
+            "fleetCode"
+          ],
+          "field": "code"
+        },
+        "kind": "dimension",
+        "label": "Fleet"
+      },
+      {
+        "id": "department",
+        "ref": {
+          "path": [
+            "position"
+          ],
+          "field": "department"
+        },
+        "kind": "dimension",
+        "label": "Department"
+      },
+      {
+        "id": "position",
+        "ref": {
+          "path": [
+            "position"
+          ],
+          "field": "title"
+        },
+        "kind": "dimension",
+        "label": "Position"
+      },
+      {
+        "id": "driving",
+        "ref": {
+          "path": [
+            "position"
+          ],
+          "field": "isDrivingPosition"
+        },
+        "kind": "dimension",
+        "label": "Driving Position",
+        "display": {
+          "style": "bool",
+          "boolStyle": "yesNo"
+        }
+      },
+      {
+        "id": "exempt",
+        "ref": {
+          "path": [
+            "position"
+          ],
+          "field": "flsaExempt"
+        },
+        "kind": "dimension",
+        "label": "Exempt from Overtime",
+        "display": {
+          "style": "bool",
+          "boolStyle": "yesNo"
+        }
+      },
+      {
+        "id": "worker_count",
+        "ref": {
+          "field": "id"
+        },
+        "kind": "measure",
+        "agg": "count",
+        "label": "Workers",
+        "display": {
+          "style": "number",
+          "decimals": 0,
+          "grouping": true
+        }
+      },
+      {
+        "id": "earliest_hire",
+        "ref": {
+          "path": [
+            "profile"
+          ],
+          "field": "hireDate"
+        },
+        "kind": "measure",
+        "agg": "min",
+        "label": "Earliest Hire",
+        "display": {
+          "style": "date",
+          "dateStyle": "date"
+        }
+      }
+    ],
+    "filters": {
+      "op": "and",
+      "filters": [
+        {
+          "ref": {
+            "field": "status"
+          },
+          "operator": "in",
+          "param": "statuses"
+        }
+      ]
+    },
+    "sort": [
+      {
+        "columnId": "worker_count",
+        "direction": "desc"
+      }
+    ],
+    "parameters": [
+      {
+        "name": "statuses",
+        "label": "Statuses",
+        "type": "enum",
+        "required": true,
+        "default": [
+          "Active"
+        ],
+        "multi": true,
+        "allowedValues": [
+          "Active",
+          "Inactive"
+        ]
+      }
+    ]
+  },
+  "invoice-revenue-trend": {
+    "irVersion": 1,
+    "entity": "invoice",
+    "columns": [
+      {
+        "id": "month",
+        "ref": {
+          "field": "invoiceDate"
+        },
+        "kind": "dimension",
+        "bucket": "month",
+        "label": "Month"
+      },
+      {
+        "id": "invoice_count",
+        "ref": {
+          "field": "id"
+        },
+        "kind": "measure",
+        "agg": "count",
+        "label": "Invoices",
+        "display": {
+          "style": "number",
+          "decimals": 0,
+          "grouping": true
+        }
+      },
+      {
+        "id": "invoiced_total",
+        "ref": {
+          "field": "totalAmount"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Invoiced",
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      },
+      {
+        "id": "collected_total",
+        "ref": {
+          "field": "appliedAmount"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Collected",
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      },
+      {
+        "id": "other_total",
+        "ref": {
+          "field": "otherAmount"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Other Charges",
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      },
+      {
+        "id": "avg_invoice",
+        "ref": {
+          "field": "totalAmount"
+        },
+        "kind": "measure",
+        "agg": "avg",
+        "label": "Average Invoice",
+        "transform": {
+          "op": "round",
+          "precision": 2
+        },
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      },
+      {
+        "id": "outstanding",
+        "ref": {
+          "field": ""
+        },
+        "kind": "computed",
+        "label": "Outstanding",
+        "computed": {
+          "op": "subtract",
+          "leftId": "invoiced_total",
+          "rightId": "collected_total"
+        },
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      },
+      {
+        "id": "collection_rate",
+        "ref": {
+          "field": ""
+        },
+        "kind": "computed",
+        "label": "Collection Rate",
+        "computed": {
+          "op": "divide",
+          "leftId": "collected_total",
+          "rightId": "invoiced_total"
+        },
+        "transform": {
+          "op": "round",
+          "precision": 3
+        },
+        "display": {
+          "style": "percent",
+          "decimals": 1
+        }
+      }
+    ],
+    "filters": {
+      "op": "and",
+      "filters": [
+        {
+          "ref": {
+            "field": "status"
+          },
+          "operator": "eq",
+          "value": "Posted"
+        },
+        {
+          "ref": {
+            "field": "invoiceDate"
+          },
+          "operator": "thisyear"
+        }
+      ]
+    },
+    "sort": [
+      {
+        "columnId": "month",
+        "direction": "asc"
+      }
+    ]
+  },
+  "invoices-ready-to-factor": {
+    "irVersion": 1,
+    "entity": "factoring_invoice_state",
+    "columns": [
+      {
+        "id": "invoice_number",
+        "ref": {
+          "path": [
+            "invoice"
+          ],
+          "field": "number"
+        },
+        "kind": "dimension",
+        "label": "Invoice Number"
+      },
+      {
+        "id": "customer",
+        "ref": {
+          "path": [
+            "customer"
+          ],
+          "field": "name"
+        },
+        "kind": "dimension",
+        "label": "Customer"
+      },
+      {
+        "id": "factor",
+        "ref": {
+          "path": [
+            "factoringCompany"
+          ],
+          "field": "name"
+        },
+        "kind": "dimension",
+        "label": "Factor"
+      },
+      {
+        "id": "invoice_date",
+        "ref": {
+          "path": [
+            "invoice"
+          ],
+          "field": "invoiceDate"
+        },
+        "kind": "dimension",
+        "label": "Invoice Date",
+        "display": {
+          "style": "date",
+          "dateStyle": "date"
+        }
+      },
+      {
+        "id": "due_date",
+        "ref": {
+          "path": [
+            "invoice"
+          ],
+          "field": "dueDate"
+        },
+        "kind": "dimension",
+        "label": "Due Date",
+        "display": {
+          "style": "date",
+          "dateStyle": "date"
+        }
+      },
+      {
+        "id": "ready_since",
+        "ref": {
+          "field": "readySince"
+        },
+        "kind": "dimension",
+        "label": "Ready Since",
+        "display": {
+          "style": "date",
+          "dateStyle": "date"
+        }
+      },
+      {
+        "id": "open_balance",
+        "ref": {
+          "field": "openBalanceMinor"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Open Balance",
+        "transform": {
+          "op": "scale",
+          "factor": 0.01
+        },
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      }
+    ],
+    "filters": {
+      "op": "and",
+      "filters": [
+        {
+          "ref": {
+            "field": "verdict"
+          },
+          "operator": "eq",
+          "value": "Ready"
+        }
+      ]
+    },
+    "sort": [
+      {
+        "columnId": "ready_since",
+        "direction": "asc"
+      }
+    ]
+  },
+  "lane-performance": {
+    "irVersion": 1,
+    "entity": "shipment",
+    "columns": [
+      {
+        "id": "origin_city",
+        "ref": {
+          "path": [
+            "originStop",
+            "location"
+          ],
+          "field": "city"
+        },
+        "kind": "dimension",
+        "label": "Origin"
+      },
+      {
+        "id": "dest_city",
+        "ref": {
+          "path": [
+            "destinationStop",
+            "location"
+          ],
+          "field": "city"
+        },
+        "kind": "dimension",
+        "label": "Destination"
+      },
+      {
+        "id": "shipment_count",
+        "ref": {
+          "field": "id"
+        },
+        "kind": "measure",
+        "agg": "count",
+        "label": "Shipments",
+        "display": {
+          "style": "number",
+          "decimals": 0,
+          "grouping": true
+        }
+      },
+      {
+        "id": "total_revenue",
+        "ref": {
+          "field": "totalChargeAmount"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Total Revenue",
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      },
+      {
+        "id": "avg_revenue",
+        "ref": {
+          "field": "totalChargeAmount"
+        },
+        "kind": "measure",
+        "agg": "avg",
+        "label": "Average Revenue per Shipment",
+        "transform": {
+          "op": "round",
+          "precision": 2
+        },
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      },
+      {
+        "id": "total_miles",
+        "ref": {
+          "path": [
+            "moves"
+          ],
+          "field": "distance"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Total Miles",
+        "transform": {
+          "op": "round",
+          "precision": 0
+        },
+        "display": {
+          "style": "number",
+          "decimals": 0,
+          "suffix": " mi"
+        }
+      }
+    ],
+    "filters": {
+      "op": "and",
+      "filters": [
+        {
+          "ref": {
+            "field": "createdAt"
+          },
+          "operator": "lastndays",
+          "param": "windowDays"
+        }
+      ]
+    },
+    "sort": [
+      {
+        "columnId": "total_revenue",
+        "direction": "desc"
+      }
+    ],
+    "parameters": [
+      {
+        "name": "windowDays",
+        "label": "Window (days)",
+        "type": "int",
+        "required": true,
+        "default": 90
+      }
+    ],
+    "totals": true
+  },
+  "open-invoice-aging": {
+    "irVersion": 1,
+    "entity": "invoice",
+    "columns": [
+      {
+        "id": "invoice_number",
+        "ref": {
+          "field": "number"
+        },
+        "kind": "dimension",
+        "label": "Invoice Number"
+      },
+      {
+        "id": "customer",
+        "ref": {
+          "path": [
+            "customer"
+          ],
+          "field": "name"
+        },
+        "kind": "dimension",
+        "label": "Customer"
+      },
+      {
+        "id": "bill_type",
+        "ref": {
+          "field": "billType"
+        },
+        "kind": "dimension",
+        "label": "Bill Type"
+      },
+      {
+        "id": "settlement_status",
+        "ref": {
+          "field": "settlementStatus"
+        },
+        "kind": "dimension",
+        "label": "Settlement Status"
+      },
+      {
+        "id": "invoice_date",
+        "ref": {
+          "field": "invoiceDate"
+        },
+        "kind": "dimension",
+        "label": "Invoice Date",
+        "display": {
+          "style": "date",
+          "dateStyle": "date"
+        }
+      },
+      {
+        "id": "due_date",
+        "ref": {
+          "field": "dueDate"
+        },
+        "kind": "dimension",
+        "label": "Due Date",
+        "display": {
+          "style": "date",
+          "dateStyle": "date"
+        }
+      },
+      {
+        "id": "total_amount",
+        "ref": {
+          "field": "totalAmount"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Invoice Total",
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      },
+      {
+        "id": "applied_amount",
+        "ref": {
+          "field": "appliedAmount"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Amount Applied",
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      },
+      {
+        "id": "open_balance",
+        "ref": {
+          "field": ""
+        },
+        "kind": "computed",
+        "label": "Open Balance",
+        "computed": {
+          "op": "subtract",
+          "leftId": "total_amount",
+          "rightId": "applied_amount"
+        },
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      }
+    ],
+    "filters": {
+      "op": "and",
+      "filters": [
+        {
+          "ref": {
+            "field": "status"
+          },
+          "operator": "eq",
+          "value": "Posted"
+        },
+        {
+          "ref": {
+            "field": "settlementStatus"
+          },
+          "operator": "in",
+          "param": "settlementStatuses"
+        }
+      ]
+    },
+    "sort": [
+      {
+        "columnId": "due_date",
+        "direction": "asc"
+      }
+    ],
+    "parameters": [
+      {
+        "name": "settlementStatuses",
+        "label": "Settlement Statuses",
+        "type": "enum",
+        "required": true,
+        "default": [
+          "Unpaid",
+          "PartiallyPaid"
+        ],
+        "multi": true,
+        "allowedValues": [
+          "Unpaid",
+          "PartiallyPaid",
+          "Paid"
+        ]
+      }
+    ]
+  },
+  "order-revenue-summary": {
+    "irVersion": 1,
+    "entity": "order",
+    "columns": [
+      {
+        "id": "customer",
+        "ref": {
+          "path": [
+            "customer"
+          ],
+          "field": "name"
+        },
+        "kind": "dimension",
+        "label": "Customer"
+      },
+      {
+        "id": "customer_code",
+        "ref": {
+          "path": [
+            "customer"
+          ],
+          "field": "code"
+        },
+        "kind": "dimension",
+        "label": "Customer Code"
+      },
+      {
+        "id": "order_count",
+        "ref": {
+          "field": "id"
+        },
+        "kind": "measure",
+        "agg": "count",
+        "label": "Orders",
+        "display": {
+          "style": "number",
+          "decimals": 0,
+          "grouping": true
+        }
+      },
+      {
+        "id": "quoted_total",
+        "ref": {
+          "field": "quotedAmount"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Quoted",
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      },
+      {
+        "id": "order_total",
+        "ref": {
+          "field": "totalAmount"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Order Total",
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      },
+      {
+        "id": "shipment_charges",
+        "ref": {
+          "path": [
+            "shipments"
+          ],
+          "field": "totalChargeAmount"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Shipment Charges",
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      },
+      {
+        "id": "shipment_count",
+        "ref": {
+          "path": [
+            "shipments"
+          ],
+          "field": "id"
+        },
+        "kind": "measure",
+        "agg": "count",
+        "label": "Shipments",
+        "display": {
+          "style": "number",
+          "decimals": 0,
+          "grouping": true
+        }
+      },
+      {
+        "id": "avg_order",
+        "ref": {
+          "field": "totalAmount"
+        },
+        "kind": "measure",
+        "agg": "avg",
+        "label": "Average Order Value",
+        "transform": {
+          "op": "round",
+          "precision": 2
+        },
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      },
+      {
+        "id": "quote_variance",
+        "ref": {
+          "field": ""
+        },
+        "kind": "computed",
+        "label": "Quote Variance",
+        "computed": {
+          "op": "subtract",
+          "leftId": "order_total",
+          "rightId": "quoted_total"
+        },
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      },
+      {
+        "id": "billing_variance",
+        "ref": {
+          "field": ""
+        },
+        "kind": "computed",
+        "label": "Order vs Shipment Charges",
+        "computed": {
+          "op": "subtract",
+          "leftId": "order_total",
+          "rightId": "shipment_charges"
+        },
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      }
+    ],
+    "filters": {
+      "op": "and",
+      "filters": [
+        {
+          "ref": {
+            "field": "createdAt"
+          },
+          "operator": "lastndays",
+          "param": "windowDays"
+        }
+      ]
+    },
+    "sort": [
+      {
+        "columnId": "order_total",
+        "direction": "desc"
+      }
+    ],
+    "parameters": [
+      {
+        "name": "windowDays",
+        "label": "Window (days)",
+        "type": "int",
+        "required": true,
+        "default": 90
+      }
+    ]
+  },
+  "pto-liability": {
+    "irVersion": 1,
+    "entity": "worker_pto_balance",
+    "columns": [
+      {
+        "id": "pto_type",
+        "ref": {
+          "field": "ptoType"
+        },
+        "kind": "dimension",
+        "label": "Time Off Type"
+      },
+      {
+        "id": "fleet_code",
+        "ref": {
+          "path": [
+            "worker",
+            "fleetCode"
+          ],
+          "field": "code"
+        },
+        "kind": "dimension",
+        "label": "Fleet"
+      },
+      {
+        "id": "worker_count",
+        "ref": {
+          "field": "workerId"
+        },
+        "kind": "measure",
+        "agg": "count_distinct",
+        "label": "Workers",
+        "display": {
+          "style": "number",
+          "decimals": 0,
+          "grouping": true
+        }
+      },
+      {
+        "id": "balance_days",
+        "ref": {
+          "field": "balanceDays"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Accrued Balance",
+        "display": {
+          "style": "number",
+          "decimals": 2,
+          "grouping": true,
+          "suffix": " d"
+        }
+      },
+      {
+        "id": "accrued_ytd",
+        "ref": {
+          "field": "accruedYtdDays"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Accrued This Year",
+        "display": {
+          "style": "number",
+          "decimals": 2,
+          "grouping": true,
+          "suffix": " d"
+        }
+      },
+      {
+        "id": "used_ytd",
+        "ref": {
+          "field": "usedYtdDays"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Used This Year",
+        "display": {
+          "style": "number",
+          "decimals": 2,
+          "grouping": true,
+          "suffix": " d"
+        }
+      },
+      {
+        "id": "carried",
+        "ref": {
+          "field": "carriedDays"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Carried In",
+        "display": {
+          "style": "number",
+          "decimals": 2,
+          "grouping": true,
+          "suffix": " d"
+        }
+      },
+      {
+        "id": "avg_balance",
+        "ref": {
+          "field": ""
+        },
+        "kind": "computed",
+        "label": "Average Balance per Worker",
+        "computed": {
+          "op": "divide",
+          "leftId": "balance_days",
+          "rightId": "worker_count"
+        },
+        "transform": {
+          "op": "round",
+          "precision": 2
+        },
+        "display": {
+          "style": "number",
+          "decimals": 2,
+          "grouping": true,
+          "suffix": " d"
+        }
+      }
+    ],
+    "sort": [
+      {
+        "columnId": "balance_days",
+        "direction": "desc"
+      }
+    ]
+  },
+  "revenue-by-customer": {
+    "irVersion": 1,
+    "entity": "shipment",
+    "columns": [
+      {
+        "id": "customer",
+        "ref": {
+          "path": [
+            "customer"
+          ],
+          "field": "name"
+        },
+        "kind": "dimension",
+        "label": "Customer"
+      },
+      {
+        "id": "customer_code",
+        "ref": {
+          "path": [
+            "customer"
+          ],
+          "field": "code"
+        },
+        "kind": "dimension",
+        "label": "Customer Code"
+      },
+      {
+        "id": "shipment_count",
+        "ref": {
+          "field": "id"
+        },
+        "kind": "measure",
+        "agg": "count",
+        "label": "Shipments",
+        "display": {
+          "style": "number",
+          "decimals": 0,
+          "grouping": true
+        }
+      },
+      {
+        "id": "total_revenue",
+        "ref": {
+          "field": "totalChargeAmount"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Total Revenue",
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      },
+      {
+        "id": "freight_revenue",
+        "ref": {
+          "field": "freightChargeAmount"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Freight Revenue",
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      },
+      {
+        "id": "accessorial_revenue",
+        "ref": {
+          "field": "otherChargeAmount"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Accessorial Revenue",
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      },
+      {
+        "id": "avg_revenue",
+        "ref": {
+          "field": "totalChargeAmount"
+        },
+        "kind": "measure",
+        "agg": "avg",
+        "label": "Average Revenue per Shipment",
+        "transform": {
+          "op": "round",
+          "precision": 2
+        },
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      },
+      {
+        "id": "total_weight",
+        "ref": {
+          "field": "weight"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Total Weight",
+        "display": {
+          "style": "number",
+          "decimals": 0,
+          "suffix": " lbs"
+        }
+      },
+      {
+        "id": "total_pieces",
+        "ref": {
+          "field": "pieces"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Total Pieces",
+        "display": {
+          "style": "number",
+          "decimals": 0,
+          "grouping": true
+        }
+      },
+      {
+        "id": "total_miles",
+        "ref": {
+          "path": [
+            "moves"
+          ],
+          "field": "distance"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Total Miles",
+        "transform": {
+          "op": "round",
+          "precision": 0
+        },
+        "display": {
+          "style": "number",
+          "decimals": 0,
+          "suffix": " mi"
+        }
+      },
+      {
+        "id": "revenue_per_mile",
+        "ref": {
+          "field": ""
+        },
+        "kind": "computed",
+        "label": "Revenue per Mile",
+        "computed": {
+          "op": "divide",
+          "leftId": "total_revenue",
+          "rightId": "total_miles"
+        },
+        "transform": {
+          "op": "round",
+          "precision": 2
+        },
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      },
+      {
+        "id": "accessorial_share",
+        "ref": {
+          "field": ""
+        },
+        "kind": "computed",
+        "label": "Accessorial Share",
+        "computed": {
+          "op": "divide",
+          "leftId": "accessorial_revenue",
+          "rightId": "total_revenue"
+        },
+        "transform": {
+          "op": "round",
+          "precision": 3
+        },
+        "display": {
+          "style": "percent",
+          "decimals": 1
+        }
+      }
+    ],
+    "filters": {
+      "op": "and",
+      "filters": [
+        {
+          "ref": {
+            "field": "createdAt"
+          },
+          "operator": "lastndays",
+          "param": "windowDays"
+        },
+        {
+          "ref": {
+            "field": "status"
+          },
+          "operator": "notin",
+          "value": [
+            "Canceled"
+          ]
+        }
+      ]
+    },
+    "sort": [
+      {
+        "columnId": "total_revenue",
+        "direction": "desc"
+      }
+    ],
+    "parameters": [
+      {
+        "name": "windowDays",
+        "label": "Window (days)",
+        "type": "int",
+        "required": true,
+        "default": 30
+      }
+    ]
+  },
+  "revenue-by-gl-account": {
+    "irVersion": 1,
+    "entity": "journal_entry_line",
+    "columns": [
+      {
+        "id": "account_code",
+        "ref": {
+          "path": [
+            "glAccount"
+          ],
+          "field": "accountCode"
+        },
+        "kind": "dimension",
+        "label": "Account Code"
+      },
+      {
+        "id": "account_name",
+        "ref": {
+          "path": [
+            "glAccount"
+          ],
+          "field": "name"
+        },
+        "kind": "dimension",
+        "label": "Account Name"
+      },
+      {
+        "id": "account_category",
+        "ref": {
+          "path": [
+            "glAccount",
+            "accountType"
+          ],
+          "field": "category"
+        },
+        "kind": "dimension",
+        "label": "Category"
+      },
+      {
+        "id": "customer",
+        "ref": {
+          "path": [
+            "customer"
+          ],
+          "field": "name"
+        },
+        "kind": "dimension",
+        "label": "Customer"
+      },
+      {
+        "id": "debit_total",
+        "ref": {
+          "field": "debitAmount"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Debits",
+        "transform": {
+          "op": "scale",
+          "factor": 0.01
+        },
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      },
+      {
+        "id": "credit_total",
+        "ref": {
+          "field": "creditAmount"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Credits",
+        "transform": {
+          "op": "scale",
+          "factor": 0.01
+        },
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      },
+      {
+        "id": "net_total",
+        "ref": {
+          "field": "netAmount"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Net",
+        "transform": {
+          "op": "scale",
+          "factor": 0.01
+        },
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      }
+    ],
+    "filters": {
+      "op": "and",
+      "filters": [
+        {
+          "ref": {
+            "path": [
+              "journalEntry"
+            ],
+            "field": "isPosted"
+          },
+          "operator": "eq",
+          "value": true
+        },
+        {
+          "ref": {
+            "path": [
+              "journalEntry"
+            ],
+            "field": "accountingDate"
+          },
+          "operator": "lastndays",
+          "param": "windowDays"
+        }
+      ]
+    },
+    "sort": [
+      {
+        "columnId": "net_total",
+        "direction": "desc"
+      }
+    ],
+    "parameters": [
+      {
+        "name": "windowDays",
+        "label": "Window (days)",
+        "type": "int",
+        "required": true,
+        "default": 90
+      }
+    ]
+  },
+  "revenue-by-service-type": {
+    "irVersion": 1,
+    "entity": "shipment",
+    "columns": [
+      {
+        "id": "service_type",
+        "ref": {
+          "path": [
+            "serviceType"
+          ],
+          "field": "code"
+        },
+        "kind": "dimension",
+        "label": "Service Type"
+      },
+      {
+        "id": "shipment_type",
+        "ref": {
+          "path": [
+            "shipmentType"
+          ],
+          "field": "code"
+        },
+        "kind": "dimension",
+        "label": "Shipment Type"
+      },
+      {
+        "id": "shipment_count",
+        "ref": {
+          "field": "id"
+        },
+        "kind": "measure",
+        "agg": "count",
+        "label": "Shipments",
+        "display": {
+          "style": "number",
+          "decimals": 0,
+          "grouping": true
+        }
+      },
+      {
+        "id": "total_revenue",
+        "ref": {
+          "field": "totalChargeAmount"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Total Revenue",
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      },
+      {
+        "id": "freight_revenue",
+        "ref": {
+          "field": "freightChargeAmount"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Freight Revenue",
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      },
+      {
+        "id": "accessorial_revenue",
+        "ref": {
+          "field": "otherChargeAmount"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Accessorial Revenue",
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      },
+      {
+        "id": "avg_revenue",
+        "ref": {
+          "field": "totalChargeAmount"
+        },
+        "kind": "measure",
+        "agg": "avg",
+        "label": "Average Revenue per Shipment",
+        "transform": {
+          "op": "round",
+          "precision": 2
+        },
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      },
+      {
+        "id": "total_weight",
+        "ref": {
+          "field": "weight"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Total Weight",
+        "display": {
+          "style": "number",
+          "decimals": 0,
+          "suffix": " lbs"
+        }
+      },
+      {
+        "id": "total_miles",
+        "ref": {
+          "path": [
+            "moves"
+          ],
+          "field": "distance"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Total Miles",
+        "transform": {
+          "op": "round",
+          "precision": 0
+        },
+        "display": {
+          "style": "number",
+          "decimals": 0,
+          "suffix": " mi"
+        }
+      },
+      {
+        "id": "revenue_per_mile",
+        "ref": {
+          "field": ""
+        },
+        "kind": "computed",
+        "label": "Revenue per Mile",
+        "computed": {
+          "op": "divide",
+          "leftId": "total_revenue",
+          "rightId": "total_miles"
+        },
+        "transform": {
+          "op": "round",
+          "precision": 2
+        },
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      },
+      {
+        "id": "accessorial_share",
+        "ref": {
+          "field": ""
+        },
+        "kind": "computed",
+        "label": "Accessorial Share",
+        "computed": {
+          "op": "divide",
+          "leftId": "accessorial_revenue",
+          "rightId": "total_revenue"
+        },
+        "transform": {
+          "op": "round",
+          "precision": 3
+        },
+        "display": {
+          "style": "percent",
+          "decimals": 1
+        }
+      }
+    ],
+    "filters": {
+      "op": "and",
+      "filters": [
+        {
+          "ref": {
+            "field": "createdAt"
+          },
+          "operator": "lastndays",
+          "param": "windowDays"
+        },
+        {
+          "ref": {
+            "field": "status"
+          },
+          "operator": "notin",
+          "value": [
+            "Canceled"
+          ]
+        }
+      ]
+    },
+    "sort": [
+      {
+        "columnId": "total_revenue",
+        "direction": "desc"
+      }
+    ],
+    "parameters": [
+      {
+        "name": "windowDays",
+        "label": "Window (days)",
+        "type": "int",
+        "required": true,
+        "default": 90
+      }
+    ]
+  },
+  "revenue-per-mile": {
+    "irVersion": 1,
+    "entity": "shipment",
+    "columns": [
+      {
+        "id": "customer",
+        "ref": {
+          "path": [
+            "customer"
+          ],
+          "field": "name"
+        },
+        "kind": "dimension",
+        "label": "Customer"
+      },
+      {
+        "id": "service_type",
+        "ref": {
+          "path": [
+            "serviceType"
+          ],
+          "field": "code"
+        },
+        "kind": "dimension",
+        "label": "Service Type"
+      },
+      {
+        "id": "shipment_count",
+        "ref": {
+          "field": "id"
+        },
+        "kind": "measure",
+        "agg": "count",
+        "label": "Shipments",
+        "display": {
+          "style": "number",
+          "decimals": 0,
+          "grouping": true
+        }
+      },
+      {
+        "id": "total_revenue",
+        "ref": {
+          "field": "totalChargeAmount"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Total Revenue",
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      },
+      {
+        "id": "freight_revenue",
+        "ref": {
+          "field": "freightChargeAmount"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Freight Revenue",
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      },
+      {
+        "id": "total_miles",
+        "ref": {
+          "path": [
+            "moves"
+          ],
+          "field": "distance"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Total Miles",
+        "transform": {
+          "op": "round",
+          "precision": 0
+        },
+        "display": {
+          "style": "number",
+          "decimals": 0,
+          "suffix": " mi"
+        }
+      },
+      {
+        "id": "avg_move_miles",
+        "ref": {
+          "path": [
+            "moves"
+          ],
+          "field": "distance"
+        },
+        "kind": "measure",
+        "agg": "avg",
+        "label": "Average Miles per Move",
+        "transform": {
+          "op": "round",
+          "precision": 1
+        },
+        "display": {
+          "style": "number",
+          "decimals": 1,
+          "suffix": " mi"
+        }
+      },
+      {
+        "id": "revenue_per_mile",
+        "ref": {
+          "field": ""
+        },
+        "kind": "computed",
+        "label": "Revenue per Mile",
+        "computed": {
+          "op": "divide",
+          "leftId": "total_revenue",
+          "rightId": "total_miles"
+        },
+        "transform": {
+          "op": "round",
+          "precision": 2
+        },
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      },
+      {
+        "id": "miles_per_shipment",
+        "ref": {
+          "field": ""
+        },
+        "kind": "computed",
+        "label": "Average Length of Haul",
+        "computed": {
+          "op": "divide",
+          "leftId": "total_miles",
+          "rightId": "shipment_count"
+        },
+        "transform": {
+          "op": "round",
+          "precision": 1
+        },
+        "display": {
+          "style": "number",
+          "decimals": 1,
+          "suffix": " mi"
+        }
+      }
+    ],
+    "filters": {
+      "op": "and",
+      "filters": [
+        {
+          "ref": {
+            "field": "createdAt"
+          },
+          "operator": "lastndays",
+          "param": "windowDays"
+        },
+        {
+          "ref": {
+            "field": "status"
+          },
+          "operator": "notin",
+          "value": [
+            "Canceled"
+          ]
+        }
+      ]
+    },
+    "sort": [
+      {
+        "columnId": "revenue_per_mile",
+        "direction": "desc"
+      }
+    ],
+    "parameters": [
+      {
+        "name": "windowDays",
+        "label": "Window (days)",
+        "type": "int",
+        "required": true,
+        "default": 90
+      }
+    ]
+  },
+  "revenue-volume-trend": {
+    "irVersion": 1,
+    "entity": "shipment",
+    "columns": [
+      {
+        "id": "month",
+        "ref": {
+          "field": "createdAt"
+        },
+        "kind": "dimension",
+        "bucket": "month",
+        "label": "Month"
+      },
+      {
+        "id": "shipment_count",
+        "ref": {
+          "field": "id"
+        },
+        "kind": "measure",
+        "agg": "count",
+        "label": "Shipments",
+        "display": {
+          "style": "number",
+          "decimals": 0,
+          "grouping": true
+        }
+      },
+      {
+        "id": "total_revenue",
+        "ref": {
+          "field": "totalChargeAmount"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Total Revenue",
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      },
+      {
+        "id": "freight_revenue",
+        "ref": {
+          "field": "freightChargeAmount"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Freight Revenue",
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      },
+      {
+        "id": "accessorial_revenue",
+        "ref": {
+          "field": "otherChargeAmount"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Accessorial Revenue",
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      },
+      {
+        "id": "avg_revenue",
+        "ref": {
+          "field": "totalChargeAmount"
+        },
+        "kind": "measure",
+        "agg": "avg",
+        "label": "Average Revenue per Shipment",
+        "transform": {
+          "op": "round",
+          "precision": 2
+        },
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      },
+      {
+        "id": "total_weight",
+        "ref": {
+          "field": "weight"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Total Weight",
+        "display": {
+          "style": "number",
+          "decimals": 0,
+          "suffix": " lbs"
+        }
+      },
+      {
+        "id": "total_pieces",
+        "ref": {
+          "field": "pieces"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Total Pieces",
+        "display": {
+          "style": "number",
+          "decimals": 0,
+          "grouping": true
+        }
+      },
+      {
+        "id": "total_miles",
+        "ref": {
+          "path": [
+            "moves"
+          ],
+          "field": "distance"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Total Miles",
+        "transform": {
+          "op": "round",
+          "precision": 0
+        },
+        "display": {
+          "style": "number",
+          "decimals": 0,
+          "suffix": " mi"
+        }
+      },
+      {
+        "id": "revenue_per_mile",
+        "ref": {
+          "field": ""
+        },
+        "kind": "computed",
+        "label": "Revenue per Mile",
+        "computed": {
+          "op": "divide",
+          "leftId": "total_revenue",
+          "rightId": "total_miles"
+        },
+        "transform": {
+          "op": "round",
+          "precision": 2
+        },
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      },
+      {
+        "id": "avg_weight",
+        "ref": {
+          "field": ""
+        },
+        "kind": "computed",
+        "label": "Average Weight per Shipment",
+        "computed": {
+          "op": "divide",
+          "leftId": "total_weight",
+          "rightId": "shipment_count"
+        },
+        "transform": {
+          "op": "round",
+          "precision": 0
+        },
+        "display": {
+          "style": "number",
+          "decimals": 0,
+          "suffix": " lbs"
+        }
+      }
+    ],
+    "filters": {
+      "op": "and",
+      "filters": [
+        {
+          "ref": {
+            "field": "createdAt"
+          },
+          "operator": "lastndays",
+          "param": "windowDays"
+        },
+        {
+          "ref": {
+            "field": "status"
+          },
+          "operator": "notin",
+          "value": [
+            "Canceled"
+          ]
+        }
+      ]
+    },
+    "sort": [
+      {
+        "columnId": "month",
+        "direction": "asc"
+      }
+    ],
+    "parameters": [
+      {
+        "name": "windowDays",
+        "label": "Window (days)",
+        "type": "int",
+        "required": true,
+        "default": 365
+      }
+    ]
+  },
+  "settlement-register": {
+    "irVersion": 1,
+    "entity": "driver_settlement",
+    "columns": [
+      {
+        "id": "driver_first_name",
+        "ref": {
+          "path": [
+            "worker"
+          ],
+          "field": "firstName"
+        },
+        "kind": "dimension",
+        "label": "First Name"
+      },
+      {
+        "id": "driver_last_name",
+        "ref": {
+          "path": [
+            "worker"
+          ],
+          "field": "lastName"
+        },
+        "kind": "dimension",
+        "label": "Last Name"
+      },
+      {
+        "id": "settlement_number",
+        "ref": {
+          "field": "settlementNumber"
+        },
+        "kind": "dimension",
+        "label": "Settlement"
+      },
+      {
+        "id": "classification",
+        "ref": {
+          "field": "classification"
+        },
+        "kind": "dimension",
+        "label": "Classification"
+      },
+      {
+        "id": "status",
+        "ref": {
+          "field": "status"
+        },
+        "kind": "dimension",
+        "label": "Status"
+      },
+      {
+        "id": "pay_date",
+        "ref": {
+          "field": "payDate"
+        },
+        "kind": "dimension",
+        "label": "Pay Date",
+        "display": {
+          "style": "date",
+          "dateStyle": "date"
+        }
+      },
+      {
+        "id": "gross_earnings",
+        "ref": {
+          "field": "grossEarningsMinor"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Gross Earnings",
+        "transform": {
+          "op": "scale",
+          "factor": 0.01
+        },
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      },
+      {
+        "id": "reimbursements",
+        "ref": {
+          "field": "reimbursementsMinor"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Reimbursements",
+        "transform": {
+          "op": "scale",
+          "factor": 0.01
+        },
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      },
+      {
+        "id": "deductions",
+        "ref": {
+          "field": "deductionsMinor"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Deductions",
+        "transform": {
+          "op": "scale",
+          "factor": 0.01
+        },
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      },
+      {
+        "id": "net_pay",
+        "ref": {
+          "field": "netPayMinor"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Net Pay",
+        "transform": {
+          "op": "scale",
+          "factor": 0.01
+        },
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      },
+      {
+        "id": "total_miles",
+        "ref": {
+          "field": "totalMiles"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Total Miles",
+        "display": {
+          "style": "number",
+          "decimals": 0,
+          "grouping": true
+        }
+      },
+      {
+        "id": "settlement_count",
+        "ref": {
+          "field": "id"
+        },
+        "kind": "measure",
+        "agg": "count",
+        "label": "Settlements",
+        "display": {
+          "style": "number",
+          "decimals": 0,
+          "grouping": true
+        }
+      }
+    ],
+    "filters": {
+      "op": "and",
+      "filters": [
+        {
+          "ref": {
+            "field": "payDate"
+          },
+          "operator": "lastndays",
+          "param": "windowDays"
+        }
+      ]
+    },
+    "sort": [
+      {
+        "columnId": "net_pay",
+        "direction": "desc"
+      }
+    ],
+    "parameters": [
+      {
+        "name": "windowDays",
+        "label": "Window (days)",
+        "type": "int",
+        "required": true,
+        "default": 90
+      }
+    ]
+  },
+  "shipment-volume-by-status": {
+    "irVersion": 1,
+    "entity": "shipment",
+    "columns": [
+      {
+        "id": "status",
+        "ref": {
+          "field": "status"
+        },
+        "kind": "dimension",
+        "label": "Status"
+      },
+      {
+        "id": "service_type",
+        "ref": {
+          "path": [
+            "serviceType"
+          ],
+          "field": "code"
+        },
+        "kind": "dimension",
+        "label": "Service Type"
+      },
+      {
+        "id": "shipment_count",
+        "ref": {
+          "field": "id"
+        },
+        "kind": "measure",
+        "agg": "count",
+        "label": "Shipments",
+        "display": {
+          "style": "number",
+          "decimals": 0,
+          "grouping": true
+        }
+      },
+      {
+        "id": "total_revenue",
+        "ref": {
+          "field": "totalChargeAmount"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Total Revenue",
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      },
+      {
+        "id": "avg_revenue",
+        "ref": {
+          "field": "totalChargeAmount"
+        },
+        "kind": "measure",
+        "agg": "avg",
+        "label": "Average Revenue per Shipment",
+        "transform": {
+          "op": "round",
+          "precision": 2
+        },
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      },
+      {
+        "id": "total_weight",
+        "ref": {
+          "field": "weight"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Total Weight",
+        "display": {
+          "style": "number",
+          "decimals": 0,
+          "suffix": " lbs"
+        }
+      },
+      {
+        "id": "total_pieces",
+        "ref": {
+          "field": "pieces"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Total Pieces",
+        "display": {
+          "style": "number",
+          "decimals": 0,
+          "grouping": true
+        }
+      },
+      {
+        "id": "total_miles",
+        "ref": {
+          "path": [
+            "moves"
+          ],
+          "field": "distance"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Total Miles",
+        "transform": {
+          "op": "round",
+          "precision": 0
+        },
+        "display": {
+          "style": "number",
+          "decimals": 0,
+          "suffix": " mi"
+        }
+      },
+      {
+        "id": "oldest_shipment",
+        "ref": {
+          "field": "createdAt"
+        },
+        "kind": "measure",
+        "agg": "min",
+        "label": "Oldest Shipment",
+        "display": {
+          "style": "date",
+          "dateStyle": "dateTime"
+        }
+      },
+      {
+        "id": "newest_shipment",
+        "ref": {
+          "field": "createdAt"
+        },
+        "kind": "measure",
+        "agg": "max",
+        "label": "Newest Shipment",
+        "display": {
+          "style": "date",
+          "dateStyle": "dateTime"
+        }
+      }
+    ],
+    "filters": {
+      "op": "and",
+      "filters": [
+        {
+          "ref": {
+            "field": "createdAt"
+          },
+          "operator": "lastndays",
+          "param": "windowDays"
+        }
+      ]
+    },
+    "sort": [
+      {
+        "columnId": "shipment_count",
+        "direction": "desc"
+      }
+    ],
+    "parameters": [
+      {
+        "name": "windowDays",
+        "label": "Window (days)",
+        "type": "int",
+        "required": true,
+        "default": 30
+      }
+    ]
+  },
+  "stop-dwell-and-detention": {
+    "irVersion": 1,
+    "entity": "stop",
+    "columns": [
+      {
+        "id": "facility",
+        "ref": {
+          "path": [
+            "location"
+          ],
+          "field": "name"
+        },
+        "kind": "dimension",
+        "label": "Facility"
+      },
+      {
+        "id": "city",
+        "ref": {
+          "path": [
+            "location"
+          ],
+          "field": "city"
+        },
+        "kind": "dimension",
+        "label": "City"
+      },
+      {
+        "id": "stop_type",
+        "ref": {
+          "field": "type"
+        },
+        "kind": "dimension",
+        "label": "Stop Type"
+      },
+      {
+        "id": "stop_count",
+        "ref": {
+          "field": "id"
+        },
+        "kind": "measure",
+        "agg": "count",
+        "label": "Stops",
+        "display": {
+          "style": "number",
+          "decimals": 0,
+          "grouping": true
+        }
+      },
+      {
+        "id": "avg_scheduled_end",
+        "ref": {
+          "field": "scheduledWindowEnd"
+        },
+        "kind": "measure",
+        "agg": "avg",
+        "label": "Average Window Close",
+        "display": {
+          "style": "date",
+          "dateStyle": "dateTime"
+        }
+      },
+      {
+        "id": "avg_arrival",
+        "ref": {
+          "field": "actualArrival"
+        },
+        "kind": "measure",
+        "agg": "avg",
+        "label": "Average Arrival",
+        "display": {
+          "style": "date",
+          "dateStyle": "dateTime"
+        }
+      },
+      {
+        "id": "avg_departure",
+        "ref": {
+          "field": "actualDeparture"
+        },
+        "kind": "measure",
+        "agg": "avg",
+        "label": "Average Departure",
+        "display": {
+          "style": "date",
+          "dateStyle": "dateTime"
+        }
+      },
+      {
+        "id": "avg_dwell",
+        "ref": {
+          "field": ""
+        },
+        "kind": "computed",
+        "label": "Average Dwell",
+        "computed": {
+          "op": "subtract",
+          "leftId": "avg_departure",
+          "rightId": "avg_arrival"
+        },
+        "display": {
+          "style": "duration",
+          "durationUnit": "seconds",
+          "durationStyle": "compact"
+        }
+      },
+      {
+        "id": "avg_window_variance",
+        "ref": {
+          "field": ""
+        },
+        "kind": "computed",
+        "label": "Average Arrival vs Window Close",
+        "computed": {
+          "op": "subtract",
+          "leftId": "avg_arrival",
+          "rightId": "avg_scheduled_end"
+        },
+        "display": {
+          "style": "duration",
+          "durationUnit": "seconds",
+          "durationStyle": "compact"
+        }
+      }
+    ],
+    "filters": {
+      "op": "and",
+      "filters": [
+        {
+          "ref": {
+            "field": "actualArrival"
+          },
+          "operator": "lastndays",
+          "param": "windowDays"
+        },
+        {
+          "ref": {
+            "field": "actualDeparture"
+          },
+          "operator": "isnotnull"
+        },
+        {
+          "ref": {
+            "field": "scheduledWindowEnd"
+          },
+          "operator": "isnotnull"
+        }
+      ]
+    },
+    "sort": [
+      {
+        "columnId": "avg_dwell",
+        "direction": "desc"
+      }
+    ],
+    "parameters": [
+      {
+        "name": "windowDays",
+        "label": "Window (days)",
+        "type": "int",
+        "required": true,
+        "default": 30
+      }
+    ]
+  },
+  "tractor-utilization": {
+    "irVersion": 1,
+    "entity": "shipment_move",
+    "columns": [
+      {
+        "id": "unit",
+        "ref": {
+          "path": [
+            "assignment",
+            "tractor"
+          ],
+          "field": "code"
+        },
+        "kind": "dimension",
+        "label": "Tractor Unit"
+      },
+      {
+        "id": "fleet_code",
+        "ref": {
+          "path": [
+            "assignment",
+            "tractor",
+            "fleetCode"
+          ],
+          "field": "code"
+        },
+        "kind": "dimension",
+        "label": "Fleet"
+      },
+      {
+        "id": "equipment_type",
+        "ref": {
+          "path": [
+            "assignment",
+            "tractor",
+            "equipmentType"
+          ],
+          "field": "code"
+        },
+        "kind": "dimension",
+        "label": "Equipment Type"
+      },
+      {
+        "id": "move_count",
+        "ref": {
+          "field": "id"
+        },
+        "kind": "measure",
+        "agg": "count",
+        "label": "Moves",
+        "display": {
+          "style": "number",
+          "decimals": 0,
+          "grouping": true
+        }
+      },
+      {
+        "id": "total_miles",
+        "ref": {
+          "field": "distance"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Total Miles",
+        "transform": {
+          "op": "round",
+          "precision": 0
+        },
+        "display": {
+          "style": "number",
+          "decimals": 0,
+          "suffix": " mi"
+        }
+      },
+      {
+        "id": "split_miles",
+        "ref": {
+          "field": "distance"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Miles",
+        "transform": {
+          "op": "round",
+          "precision": 0
+        },
+        "display": {
+          "style": "number",
+          "decimals": 0,
+          "suffix": " mi"
+        }
+      },
+      {
+        "id": "avg_miles",
+        "ref": {
+          "field": "distance"
+        },
+        "kind": "measure",
+        "agg": "avg",
+        "label": "Average Miles per Move",
+        "transform": {
+          "op": "round",
+          "precision": 1
+        },
+        "display": {
+          "style": "number",
+          "decimals": 1,
+          "suffix": " mi"
+        }
+      },
+      {
+        "id": "driver_count",
+        "ref": {
+          "path": [
+            "assignment"
+          ],
+          "field": "primaryWorkerId"
+        },
+        "kind": "measure",
+        "agg": "count_distinct",
+        "label": "Drivers Used",
+        "display": {
+          "style": "number",
+          "decimals": 0,
+          "grouping": true
+        }
+      },
+      {
+        "id": "last_move",
+        "ref": {
+          "field": "createdAt"
+        },
+        "kind": "measure",
+        "agg": "max",
+        "label": "Last Move",
+        "display": {
+          "style": "date",
+          "dateStyle": "dateTime"
+        }
+      }
+    ],
+    "filters": {
+      "op": "and",
+      "filters": [
+        {
+          "ref": {
+            "field": "createdAt"
+          },
+          "operator": "lastndays",
+          "param": "windowDays"
+        },
+        {
+          "ref": {
+            "field": "status"
+          },
+          "operator": "notin",
+          "value": [
+            "Canceled"
+          ]
+        }
+      ]
+    },
+    "sort": [
+      {
+        "columnId": "total_miles",
+        "direction": "desc"
+      }
+    ],
+    "pivot": {
+      "ref": {
+        "field": "loaded"
+      },
+      "values": [
+        "true",
+        "false"
+      ],
+      "labels": [
+        "Loaded",
+        "Empty"
+      ],
+      "measureIds": [
+        "split_miles"
+      ],
+      "includeOther": false
+    },
+    "parameters": [
+      {
+        "name": "windowDays",
+        "label": "Window (days)",
+        "type": "int",
+        "required": true,
+        "default": 30
+      }
+    ]
+  },
+  "trailer-roster": {
+    "irVersion": 1,
+    "entity": "trailer",
+    "columns": [
+      {
+        "id": "unit",
+        "ref": {
+          "field": "code"
+        },
+        "kind": "dimension",
+        "label": "Unit Number"
+      },
+      {
+        "id": "status",
+        "ref": {
+          "field": "status"
+        },
+        "kind": "dimension",
+        "label": "Status"
+      },
+      {
+        "id": "year",
+        "ref": {
+          "field": "year"
+        },
+        "kind": "dimension",
+        "label": "Year"
+      },
+      {
+        "id": "make",
+        "ref": {
+          "field": "make"
+        },
+        "kind": "dimension",
+        "label": "Make"
+      },
+      {
+        "id": "model",
+        "ref": {
+          "field": "model"
+        },
+        "kind": "dimension",
+        "label": "Model"
+      },
+      {
+        "id": "vin",
+        "ref": {
+          "field": "vin"
+        },
+        "kind": "dimension",
+        "label": "VIN",
+        "display": {
+          "nullText": "—"
+        }
+      },
+      {
+        "id": "license_plate",
+        "ref": {
+          "field": "licensePlateNumber"
+        },
+        "kind": "dimension",
+        "label": "License Plate",
+        "display": {
+          "nullText": "—"
+        }
+      },
+      {
+        "id": "equipment_type",
+        "ref": {
+          "path": [
+            "equipmentType"
+          ],
+          "field": "code"
+        },
+        "kind": "dimension",
+        "label": "Equipment Type"
+      },
+      {
+        "id": "manufacturer",
+        "ref": {
+          "path": [
+            "equipmentManufacturer"
+          ],
+          "field": "name"
+        },
+        "kind": "dimension",
+        "label": "Manufacturer"
+      },
+      {
+        "id": "fleet_code",
+        "ref": {
+          "path": [
+            "fleetCode"
+          ],
+          "field": "code"
+        },
+        "kind": "dimension",
+        "label": "Fleet"
+      },
+      {
+        "id": "max_load_weight",
+        "ref": {
+          "field": "maxLoadWeight"
+        },
+        "kind": "dimension",
+        "label": "Max Load Weight"
+      },
+      {
+        "id": "last_inspection",
+        "ref": {
+          "field": "lastInspectionDate"
+        },
+        "kind": "dimension",
+        "label": "Last Inspection",
+        "display": {
+          "style": "date",
+          "dateStyle": "date"
+        }
+      },
+      {
+        "id": "registration_expiry",
+        "ref": {
+          "field": "registrationExpiry"
+        },
+        "kind": "dimension",
+        "label": "Registration Expiry",
+        "display": {
+          "style": "date",
+          "dateStyle": "date"
+        }
+      }
+    ],
+    "filters": {
+      "op": "and",
+      "filters": [
+        {
+          "ref": {
+            "field": "status"
+          },
+          "operator": "in",
+          "param": "statuses"
+        }
+      ]
+    },
+    "sort": [
+      {
+        "columnId": "unit",
+        "direction": "asc"
+      }
+    ],
+    "parameters": [
+      {
+        "name": "statuses",
+        "label": "Statuses",
+        "type": "enum",
+        "required": true,
+        "default": [
+          "Available",
+          "OutOfService",
+          "AtMaintenance"
+        ],
+        "multi": true,
+        "allowedValues": [
+          "Available",
+          "OutOfService",
+          "AtMaintenance",
+          "Sold"
+        ]
+      }
+    ]
+  },
+  "trailer-utilization": {
+    "irVersion": 1,
+    "entity": "shipment_move",
+    "columns": [
+      {
+        "id": "unit",
+        "ref": {
+          "path": [
+            "assignment",
+            "trailer"
+          ],
+          "field": "code"
+        },
+        "kind": "dimension",
+        "label": "Trailer Unit"
+      },
+      {
+        "id": "fleet_code",
+        "ref": {
+          "path": [
+            "assignment",
+            "trailer",
+            "fleetCode"
+          ],
+          "field": "code"
+        },
+        "kind": "dimension",
+        "label": "Fleet"
+      },
+      {
+        "id": "equipment_type",
+        "ref": {
+          "path": [
+            "assignment",
+            "trailer",
+            "equipmentType"
+          ],
+          "field": "code"
+        },
+        "kind": "dimension",
+        "label": "Equipment Type"
+      },
+      {
+        "id": "move_count",
+        "ref": {
+          "field": "id"
+        },
+        "kind": "measure",
+        "agg": "count",
+        "label": "Moves",
+        "display": {
+          "style": "number",
+          "decimals": 0,
+          "grouping": true
+        }
+      },
+      {
+        "id": "total_miles",
+        "ref": {
+          "field": "distance"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Total Miles",
+        "transform": {
+          "op": "round",
+          "precision": 0
+        },
+        "display": {
+          "style": "number",
+          "decimals": 0,
+          "suffix": " mi"
+        }
+      },
+      {
+        "id": "avg_miles",
+        "ref": {
+          "field": "distance"
+        },
+        "kind": "measure",
+        "agg": "avg",
+        "label": "Average Miles per Move",
+        "transform": {
+          "op": "round",
+          "precision": 1
+        },
+        "display": {
+          "style": "number",
+          "decimals": 1,
+          "suffix": " mi"
+        }
+      },
+      {
+        "id": "first_move",
+        "ref": {
+          "field": "createdAt"
+        },
+        "kind": "measure",
+        "agg": "min",
+        "label": "First Move",
+        "display": {
+          "style": "date",
+          "dateStyle": "dateTime"
+        }
+      },
+      {
+        "id": "last_move",
+        "ref": {
+          "field": "createdAt"
+        },
+        "kind": "measure",
+        "agg": "max",
+        "label": "Last Move",
+        "display": {
+          "style": "date",
+          "dateStyle": "dateTime"
+        }
+      }
+    ],
+    "filters": {
+      "op": "and",
+      "filters": [
+        {
+          "ref": {
+            "field": "createdAt"
+          },
+          "operator": "lastndays",
+          "param": "windowDays"
+        },
+        {
+          "ref": {
+            "field": "status"
+          },
+          "operator": "notin",
+          "value": [
+            "Canceled"
+          ]
+        }
+      ]
+    },
+    "sort": [
+      {
+        "columnId": "total_miles",
+        "direction": "desc"
+      }
+    ],
+    "parameters": [
+      {
+        "name": "windowDays",
+        "label": "Window (days)",
+        "type": "int",
+        "required": true,
+        "default": 30
+      }
+    ]
+  },
+  "trial-balance": {
+    "irVersion": 1,
+    "entity": "gl_account_balance",
+    "columns": [
+      {
+        "id": "account_code",
+        "ref": {
+          "path": [
+            "glAccount"
+          ],
+          "field": "accountCode"
+        },
+        "kind": "dimension",
+        "label": "Account Code"
+      },
+      {
+        "id": "account_name",
+        "ref": {
+          "path": [
+            "glAccount"
+          ],
+          "field": "name"
+        },
+        "kind": "dimension",
+        "label": "Account Name"
+      },
+      {
+        "id": "account_category",
+        "ref": {
+          "path": [
+            "glAccount",
+            "accountType"
+          ],
+          "field": "category"
+        },
+        "kind": "dimension",
+        "label": "Category"
+      },
+      {
+        "id": "period",
+        "ref": {
+          "path": [
+            "fiscalPeriod"
+          ],
+          "field": "name"
+        },
+        "kind": "dimension",
+        "label": "Period"
+      },
+      {
+        "id": "period_debit",
+        "ref": {
+          "field": "periodDebitMinor"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Debits",
+        "transform": {
+          "op": "scale",
+          "factor": 0.01
+        },
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      },
+      {
+        "id": "period_credit",
+        "ref": {
+          "field": "periodCreditMinor"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Credits",
+        "transform": {
+          "op": "scale",
+          "factor": 0.01
+        },
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      },
+      {
+        "id": "net_change",
+        "ref": {
+          "field": "netChangeMinor"
+        },
+        "kind": "measure",
+        "agg": "sum",
+        "label": "Net Change",
+        "transform": {
+          "op": "scale",
+          "factor": 0.01
+        },
+        "display": {
+          "style": "currency",
+          "decimals": 2,
+          "negative": "parentheses"
+        }
+      }
+    ],
+    "filters": {
+      "op": "and",
+      "filters": [
+        {
+          "ref": {
+            "path": [
+              "fiscalYear"
+            ],
+            "field": "isCurrent"
+          },
+          "operator": "eq",
+          "value": true
+        }
+      ]
+    },
+    "sort": [
+      {
+        "columnId": "account_code",
+        "direction": "asc"
+      }
+    ]
+  },
+  "unbilled-delivered-shipments": {
+    "irVersion": 1,
+    "entity": "shipment",
+    "columns": [
+      {
+        "id": "pro_number",
+        "ref": {
+          "field": "proNumber"
+        },
+        "kind": "dimension",
+        "label": "PRO Number"
+      },
+      {
+        "id": "bol",
+        "ref": {
+          "field": "bol"
+        },
+        "kind": "dimension",
+        "label": "BOL"
+      },
+      {
+        "id": "customer",
+        "ref": {
+          "path": [
+            "customer"
+          ],
+          "field": "name"
+        },
+        "kind": "dimension",
+        "label": "Customer"
+      },
+      {
+        "id": "customer_code",
+        "ref": {
+          "path": [
+            "customer"
+          ],
+          "field": "code"
+        },
+        "kind": "dimension",
+        "label": "Customer Code"
+      },
+      {
+        "id": "status",
+        "ref": {
+          "field": "status"
+        },
+        "kind": "dimension",
+        "label": "Status"
+      },
+      {
+        "id": "transfer_status",
+        "ref": {
+          "field": "billingTransferStatus"
+        },
+        "kind": "dimension",
+        "label": "Billing Transfer"
+      },
+      {
+        "id": "service_type",
+        "ref": {
+          "path": [
+            "serviceType"
+          ],
+          "field": "code"
+        },
+        "kind": "dimension",
+        "label": "Service Type"
+      },
+      {
+        "id": "ship_date",
+        "ref": {
+          "field": "actualShipDate"
+        },
+        "kind": "dimension",
+        "label": "Ship Date",
+        "display": {
+          "style": "date",
+          "dateStyle": "date"
+        }
+      },
+      {
+        "id": "delivered_at",
+        "ref": {
+          "field": "actualDeliveryDate"
+        },
+        "kind": "dimension",
+        "label": "Delivery Date",
+        "display": {
+          "style": "date",
+          "dateStyle": "date"
+        }
+      },
+      {
+        "id": "ready_to_bill_at",
+        "ref": {
+          "field": "markedReadyToBillAt"
+        },
+        "kind": "dimension",
+        "label": "Ready to Bill",
+        "display": {
+          "style": "date",
+          "dateStyle": "date"
+        }
+      },
+      {
+        "id": "total_charge",
+        "ref": {
+          "field": "totalChargeAmount"
+        },
+        "kind": "dimension",
+        "label": "Total Charge"
+      },
+      {
+        "id": "freight_charge",
+        "ref": {
+          "field": "freightChargeAmount"
+        },
+        "kind": "dimension",
+        "label": "Freight Charge"
+      },
+      {
+        "id": "accessorial_charge",
+        "ref": {
+          "field": "otherChargeAmount"
+        },
+        "kind": "dimension",
+        "label": "Accessorial Charges"
+      },
+      {
+        "id": "weight",
+        "ref": {
+          "field": "weight"
+        },
+        "kind": "dimension",
+        "label": "Weight"
+      },
+      {
+        "id": "pieces",
+        "ref": {
+          "field": "pieces"
+        },
+        "kind": "dimension",
+        "label": "Pieces"
+      }
+    ],
+    "filters": {
+      "op": "and",
+      "filters": [
+        {
+          "ref": {
+            "field": "actualDeliveryDate"
+          },
+          "operator": "lastndays",
+          "param": "windowDays"
+        },
+        {
+          "ref": {
+            "field": "billedAt"
+          },
+          "operator": "isnull"
+        },
+        {
+          "ref": {
+            "field": "status"
+          },
+          "operator": "in",
+          "param": "statuses"
+        }
+      ]
+    },
+    "sort": [
+      {
+        "columnId": "delivered_at",
+        "direction": "asc"
+      }
+    ],
+    "parameters": [
+      {
+        "name": "windowDays",
+        "label": "Window (days)",
+        "type": "int",
+        "required": true,
+        "default": 90
+      },
+      {
+        "name": "statuses",
+        "label": "Statuses",
+        "type": "enum",
+        "required": true,
+        "default": [
+          "Completed",
+          "ReadyToInvoice"
+        ],
+        "multi": true,
+        "allowedValues": [
+          "Completed",
+          "ReadyToInvoice",
+          "PartiallyCompleted",
+          "Invoiced"
+        ]
+      }
+    ]
+  },
+  "workforce-tenure": {
+    "irVersion": 1,
+    "entity": "worker",
+    "columns": [
+      {
+        "id": "first_name",
+        "ref": {
+          "field": "firstName"
+        },
+        "kind": "dimension",
+        "label": "First Name"
+      },
+      {
+        "id": "last_name",
+        "ref": {
+          "field": "lastName"
+        },
+        "kind": "dimension",
+        "label": "Last Name"
+      },
+      {
+        "id": "status",
+        "ref": {
+          "field": "status"
+        },
+        "kind": "dimension",
+        "label": "Status"
+      },
+      {
+        "id": "worker_type",
+        "ref": {
+          "field": "type"
+        },
+        "kind": "dimension",
+        "label": "Worker Type"
+      },
+      {
+        "id": "driver_type",
+        "ref": {
+          "field": "driverType"
+        },
+        "kind": "dimension",
+        "label": "Driver Type"
+      },
+      {
+        "id": "fleet_code",
+        "ref": {
+          "path": [
+            "fleetCode"
+          ],
+          "field": "code"
+        },
+        "kind": "dimension",
+        "label": "Fleet"
+      },
+      {
+        "id": "position",
+        "ref": {
+          "path": [
+            "position"
+          ],
+          "field": "title"
+        },
+        "kind": "dimension",
+        "label": "Position"
+      },
+      {
+        "id": "department",
+        "ref": {
+          "path": [
+            "position"
+          ],
+          "field": "department"
+        },
+        "kind": "dimension",
+        "label": "Department"
+      },
+      {
+        "id": "hire_date",
+        "ref": {
+          "path": [
+            "profile"
+          ],
+          "field": "hireDate"
+        },
+        "kind": "dimension",
+        "label": "Hire Date",
+        "display": {
+          "style": "date",
+          "dateStyle": "date"
+        }
+      },
+      {
+        "id": "termination_date",
+        "ref": {
+          "path": [
+            "profile"
+          ],
+          "field": "terminationDate"
+        },
+        "kind": "dimension",
+        "label": "Termination Date",
+        "display": {
+          "style": "date",
+          "dateStyle": "date"
+        }
+      }
+    ],
+    "filters": {
+      "op": "and",
+      "filters": [
+        {
+          "ref": {
+            "field": "status"
+          },
+          "operator": "in",
+          "param": "statuses"
+        }
+      ]
+    },
+    "sort": [
+      {
+        "columnId": "hire_date",
+        "direction": "asc"
+      }
+    ],
+    "parameters": [
+      {
+        "name": "statuses",
+        "label": "Statuses",
+        "type": "enum",
+        "required": true,
+        "default": [
+          "Active"
+        ],
+        "multi": true,
+        "allowedValues": [
+          "Active",
+          "Inactive"
+        ]
+      }
+    ]
+  },
+  "workforce-turnover": {
+    "irVersion": 1,
+    "entity": "worker_employment_event",
+    "columns": [
+      {
+        "id": "month",
+        "ref": {
+          "field": "effectiveAt"
+        },
+        "kind": "dimension",
+        "bucket": "month",
+        "label": "Month"
+      },
+      {
+        "id": "event_kind",
+        "ref": {
+          "field": "kind"
+        },
+        "kind": "dimension",
+        "label": "Event"
+      },
+      {
+        "id": "event_count",
+        "ref": {
+          "field": "id"
+        },
+        "kind": "measure",
+        "agg": "count",
+        "label": "Events",
+        "display": {
+          "style": "number",
+          "decimals": 0,
+          "grouping": true
+        }
+      },
+      {
+        "id": "worker_count",
+        "ref": {
+          "field": "workerId"
+        },
+        "kind": "measure",
+        "agg": "count_distinct",
+        "label": "Workers",
+        "display": {
+          "style": "number",
+          "decimals": 0,
+          "grouping": true
+        }
+      }
+    ],
+    "filters": {
+      "op": "and",
+      "filters": [
+        {
+          "ref": {
+            "field": "effectiveAt"
+          },
+          "operator": "lastndays",
+          "param": "windowDays"
+        },
+        {
+          "ref": {
+            "field": "kind"
+          },
+          "operator": "in",
+          "value": [
+            "Hired",
+            "Rehired",
+            "Terminated"
+          ]
+        }
+      ]
+    },
+    "sort": [
+      {
+        "columnId": "month",
+        "direction": "desc"
+      },
+      {
+        "columnId": "event_kind",
+        "direction": "asc"
+      }
+    ],
+    "parameters": [
+      {
+        "name": "windowDays",
+        "label": "Window (days)",
+        "type": "int",
+        "required": true,
+        "default": 365
+      }
+    ]
+  }
+}
