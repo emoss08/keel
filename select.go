@@ -64,7 +64,7 @@ func (n *lnode) child(ref *Ref) *lnode {
 	}
 	rel := ref.relation()
 	c := &lnode{ref: ref, table: ref.Table, parent: n, rel: ref.rel}
-	c.joined = !rel.Kind.ToMany()
+	c.joined = !rel.Kind.ToMany() && rel.Kind != schema.Pick
 	n.children = append(n.children, c)
 	return c
 }
@@ -93,7 +93,23 @@ func (n *lnode) statementNodes() []*lnode {
 	return out
 }
 
-// manyChildren returns the to-many nodes loaded after n's statement.
+// joinPicks joins the pick relations of n's statement into it, so they need no statement of
+// their own.
+func (n *lnode) joinPicks() {
+	nodes := []*lnode{n}
+	for i := 0; i < len(nodes); i++ {
+		for _, c := range nodes[i].children {
+			if nodes[i].table.Relations[c.rel].Kind == schema.Pick {
+				c.joined = true
+			}
+			if c.joined {
+				nodes = append(nodes, c)
+			}
+		}
+	}
+}
+
+// manyChildren returns the nodes loaded after n's statement: to-many relations and picks.
 func (n *lnode) manyChildren() []*lnode {
 	var out []*lnode
 	for _, sn := range n.statementNodes() {
@@ -131,11 +147,8 @@ func (n *lnode) selectedColumns(extra []int32) []int32 {
 		}
 	}
 	for _, c := range n.children {
-		rel := &n.table.Relations[c.rel]
-		if rel.Kind == schema.BelongsTo || rel.Kind.ToMany() || rel.Kind == schema.HasOne {
-			for _, lc := range rel.Local {
-				need(lc)
-			}
+		for _, lc := range n.table.Relations[c.rel].Local {
+			need(lc)
 		}
 	}
 	for _, c := range extra {
@@ -144,6 +157,9 @@ func (n *lnode) selectedColumns(extra []int32) []int32 {
 	return cols
 }
 
+// selectOpts shapes a SELECT beyond its query: extra filters, columns and joins, keyset pages,
+// counts, and a FROM item that replaces the table (prefiltered when it applies the tenant and
+// interceptor predicates itself).
 type selectOpts struct {
 	extraWhere func(r *render, alias string)
 	extraCols  []int32
@@ -155,6 +171,9 @@ type selectOpts struct {
 	exact      bool
 	keyColumn  func(r *render)
 	extraJoin  func(r *render, alias string)
+
+	from        func(r *render, alias string)
+	prefiltered bool
 }
 
 // renderSelect writes the SELECT for statement node sn and returns its decoding plan.
@@ -166,6 +185,9 @@ func (q *query) renderSelect(r *render, sn *lnode, o selectOpts) *selectPlan {
 	sc, alias := r.push(sn.ref, joinLeft, q.allTenants)
 	defer r.pop()
 
+	if sn.parent == nil && !o.countOnly && q.single(o) {
+		sn.joinPicks()
+	}
 	nodes := sn.statementNodes()
 	plan := &selectPlan{nodes: nodes, parents: make([]int, len(nodes)), keep: make([]bool, len(nodes))}
 	for i, n := range nodes {
@@ -195,7 +217,10 @@ func (q *query) renderSelect(r *render, sn *lnode, o selectOpts) *selectPlan {
 	}
 
 	where := r.section(func() {
-		wrote := r.tenantPred(sn.table, alias, q.allTenants)
+		wrote := false
+		if !o.prefiltered {
+			wrote = r.tenantPred(sn.table, alias, q.allTenants)
+		}
 		if o.extraWhere != nil {
 			if wrote {
 				r.s(" AND ")
@@ -203,7 +228,9 @@ func (q *query) renderSelect(r *render, sn *lnode, o selectOpts) *selectPlan {
 			o.extraWhere(r, alias)
 			wrote = true
 		}
-		wrote = r.preds(r.intercepted(sn.table, OpRead, true), wrote)
+		if !o.prefiltered {
+			wrote = r.preds(r.intercepted(sn.table, OpRead, true), wrote)
+		}
 		var ps []Pred
 		if sn.spec != nil {
 			ps = sn.spec.where
@@ -308,9 +335,13 @@ func (q *query) renderSelect(r *render, sn *lnode, o selectOpts) *selectPlan {
 	}
 
 	from := r.section(func() {
-		r.s(sn.table.Quoted)
-		r.b(' ')
-		r.s(alias)
+		if o.from != nil {
+			o.from(r, alias)
+		} else {
+			r.s(sn.table.Quoted)
+			r.b(' ')
+			r.s(alias)
+		}
 		if o.extraJoin != nil {
 			o.extraJoin(r, alias)
 		}
@@ -404,6 +435,18 @@ func (q *query) renderSelect(r *render, sn *lnode, o selectOpts) *selectPlan {
 	return plan
 }
 
+// single reports whether the statement reads at most two rows in no particular order, so a pick
+// joined into it runs its lateral subquery at most twice.
+func (q *query) single(o selectOpts) bool {
+	limit := o.limit
+	if limit == 0 {
+		limit = q.limit
+	}
+	return limit > 0 && limit <= 2 && len(q.order) == 0
+}
+
+// presenceOf returns the result position of a node's column, which is NULL when the node's row is
+// absent.
 func presenceOf(cols []lcol, node int, col int32) int {
 	for i, c := range cols {
 		if c.node == node && c.col == col {
@@ -413,8 +456,13 @@ func presenceOf(cols []lcol, node int, col int32) int {
 	return -1
 }
 
+// writeJoin writes the LEFT JOIN of a to-one relation path, or the lateral pick of a pick path.
 func (r *render) writeJoin(sc *scope, j *join) {
 	rel := j.ref.relation()
+	if rel.Kind == schema.Pick {
+		r.writePickJoin(sc, j)
+		return
+	}
 	r.s(" LEFT JOIN ")
 	r.s(j.ref.Table.Quoted)
 	r.b(' ')
@@ -444,6 +492,9 @@ func (q *query) writeSubquery(r *render, existsOnly bool) {
 	sn := newRoot(q)
 	o := selectOpts{selectOne: existsOnly, exact: true}
 	switch {
+	case rel != nil && rel.Kind == schema.Pick:
+		o.from = pickFromSubquery(parentTable, rel, parentAlias, q.allTenants)
+		o.prefiltered = true
 	case rel != nil && rel.Kind == schema.ManyToMany:
 		jalias := r.newAlias(rel.JoinAlias)
 		target := rel.Target

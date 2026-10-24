@@ -1,0 +1,231 @@
+package keel
+
+import (
+	"github.com/emoss08/keel/schema"
+)
+
+// pickHop is one relation a pick subquery walks: the table it starts from, the relation, and the
+// aliases of the table it reaches and, for many-to-many, of the join table.
+type pickHop struct {
+	from      *schema.Table
+	rel       *schema.Relation
+	alias     string
+	joinAlias string
+}
+
+// writePick writes the subquery that picks rel's row for one parent: the tables of the path joined
+// hop by hop, each scoped to the tenant and filtered by interceptors, ordered by the relation's
+// keys and limited to one row. parentAlias is the parent's alias when the parent is a table of the
+// statement, so its tenant columns can be compared under a system scope; key writes the parent's
+// key the first hop starts from.
+func (r *render) writePick(parent *schema.Table, rel *schema.Relation, allTenants bool, parentAlias string,
+	key func(r *render),
+) {
+	hops := r.pickHops(parent, rel)
+	sc := &scope{parent: r.sc, joinMode: joinLeft, allTenants: allTenants}
+	for _, h := range hops {
+		sc.refs = append(sc.refs, scoped{ref: &Ref{Table: h.rel.Target}, alias: h.alias})
+	}
+	r.sc = sc
+	where := r.section(func() {
+		r.pickStart(hops[0], parentAlias, key)
+		r.tenantPred(hops[0].rel.Target, hops[0].alias, allTenants)
+		for _, h := range hops {
+			r.preds(r.intercepted(h.rel.Target, OpRead, true), true)
+		}
+	})
+	order := r.section(func() { r.pickOrder(hops, rel) })
+	from := r.section(func() {
+		r.pickFrom(hops, allTenants)
+		for _, j := range sc.joins {
+			r.writeJoin(sc, j)
+		}
+	})
+	r.pop()
+	last := hops[len(hops)-1]
+	r.s("SELECT ")
+	r.s(last.alias)
+	r.s(".* FROM ")
+	r.buf = append(r.buf, from...)
+	r.s(" WHERE ")
+	r.buf = append(r.buf, where...)
+	r.s(" ORDER BY ")
+	r.buf = append(r.buf, order...)
+	r.s(" LIMIT 1")
+	r.release(where, order, from)
+}
+
+// pickHops resolves the relations of rel's path and gives each table it reaches an alias.
+func (r *render) pickHops(parent *schema.Table, rel *schema.Relation) []pickHop {
+	hops := make([]pickHop, len(rel.Path))
+	t := parent
+	for i, ri := range rel.Path {
+		hr := &t.Relations[ri]
+		h := pickHop{from: t, rel: hr}
+		if hr.Kind == schema.ManyToMany {
+			h.joinAlias = r.newAlias(hr.JoinAlias)
+		}
+		h.alias = r.newAlias(hr.Alias)
+		hops[i] = h
+		t = hr.Target
+	}
+	return hops
+}
+
+// pickStart writes the condition that ties the first hop to the parent's key, with the tenant
+// columns the parent shares under a system scope.
+func (r *render) pickStart(h pickHop, parentAlias string, key func(r *render)) {
+	switch {
+	case h.rel.Kind == schema.ManyToMany:
+		r.s(h.joinAlias)
+		r.b('.')
+		r.s(h.rel.JoinLocalQ[0])
+		r.s(" = ")
+		key(r)
+	case parentAlias != "":
+		r.relCondNoTenant(h.from, h.rel, parentAlias, h.alias)
+	default:
+		r.s(h.alias)
+		r.b('.')
+		r.s(h.rel.Target.Columns[h.rel.Remote[0]].Quoted)
+		r.s(" = ")
+		key(r)
+	}
+	if h.rel.Target.HasTenant() && !r.scope.system {
+		r.s(" AND ")
+	}
+}
+
+// pickFrom writes the tables of the path: the first hop's table (behind its join table for
+// many-to-many) and a JOIN for every further hop, each joined on its relation's keys and tenant.
+func (r *render) pickFrom(hops []pickHop, allTenants bool) {
+	for i, h := range hops {
+		if i > 0 {
+			r.s(" JOIN ")
+		}
+		if h.rel.Kind == schema.ManyToMany {
+			r.pickJoinTable(hops, i)
+		}
+		r.s(h.rel.Target.Quoted)
+		r.b(' ')
+		r.s(h.alias)
+		switch {
+		case h.rel.Kind == schema.ManyToMany:
+			r.s(" ON ")
+			r.s(h.alias)
+			r.b('.')
+			r.s(h.rel.Target.Columns[h.rel.Remote[0]].Quoted)
+			r.s(" = ")
+			r.s(h.joinAlias)
+			r.b('.')
+			r.s(h.rel.JoinRemoteQ[0])
+			if i > 0 {
+				r.relTenant(h.from, h.rel.Target, hops[i-1].alias, h.alias, allTenants)
+			}
+		case i > 0:
+			r.s(" ON ")
+			r.relCond(h.from, h.rel, hops[i-1].alias, h.alias, allTenants)
+		}
+	}
+}
+
+// pickJoinTable writes the join table of many-to-many hop i and the JOIN keyword of its target;
+// after the first hop the join table is joined to the previous table's key.
+func (r *render) pickJoinTable(hops []pickHop, i int) {
+	h := hops[i]
+	r.s(h.rel.JoinQuoted)
+	r.b(' ')
+	r.s(h.joinAlias)
+	if i > 0 {
+		r.s(" ON ")
+		r.s(h.joinAlias)
+		r.b('.')
+		r.s(h.rel.JoinLocalQ[0])
+		r.s(" = ")
+		r.s(hops[i-1].alias)
+		r.b('.')
+		r.s(h.from.Columns[h.rel.Local[0]].Quoted)
+	}
+	r.s(" JOIN ")
+}
+
+// pickOrder writes the relation's order keys, descending for a Last pick.
+func (r *render) pickOrder(hops []pickHop, rel *schema.Relation) {
+	for i, k := range rel.Order {
+		if i > 0 {
+			r.s(", ")
+		}
+		h := hops[k.Hop]
+		r.s(h.alias)
+		r.b('.')
+		r.s(h.rel.Target.Columns[k.Column].Quoted)
+		if rel.Last {
+			r.s(" DESC")
+		}
+	}
+}
+
+// writePickJoin joins a pick relation into a statement: LEFT JOIN LATERAL (…) alias ON TRUE, with
+// a load's predicates as the join condition.
+func (r *render) writePickJoin(sc *scope, j *join) {
+	rel := j.ref.relation()
+	parent := j.ref.parent.Table
+	r.s(" LEFT JOIN LATERAL (")
+	r.writePick(parent, rel, sc.allTenants, j.parentAlias, func(r *render) {
+		r.s(j.parentAlias)
+		r.b('.')
+		r.s(parent.Columns[rel.Local[0]].Quoted)
+	})
+	r.s(") ")
+	r.s(j.alias)
+	r.s(" ON ")
+	if !r.preds(j.on, false) {
+		r.s("TRUE")
+	}
+}
+
+// pickSelect loads a pick relation for every parent key in one statement:
+// SELECT k.k, … FROM unnest($1) k CROSS JOIN LATERAL (…pick…) alias.
+func pickSelect(r *render, q *query, n *lnode, ix *parentIndex) *selectPlan {
+	parent := n.parent.table
+	rel := &parent.Relations[n.rel]
+	keyAlias := r.newAlias("k")
+	return q.renderSelect(r, n, selectOpts{
+		prefiltered: true,
+		keyColumn: func(r *render) {
+			r.s(keyAlias)
+			r.s(".k")
+		},
+		from: func(r *render, alias string) {
+			r.s("unnest(")
+			r.arg(ix.arg())
+			r.s("::")
+			r.s(ix.arrayType())
+			r.s(") AS ")
+			r.s(keyAlias)
+			r.s("(k) CROSS JOIN LATERAL (")
+			r.writePick(parent, rel, q.allTenants, "", func(r *render) {
+				r.s(keyAlias)
+				r.s(".k")
+			})
+			r.s(") ")
+			r.s(alias)
+		},
+	})
+}
+
+// pickFromSubquery is the FROM item of a subquery on a pick path (Any, None, Exists, InQuery): the
+// pick for the outer row, under the subquery's alias.
+func pickFromSubquery(parent *schema.Table, rel *schema.Relation, parentAlias string, allTenants bool,
+) func(r *render, alias string) {
+	return func(r *render, alias string) {
+		r.b('(')
+		r.writePick(parent, rel, allTenants, parentAlias, func(r *render) {
+			r.s(parentAlias)
+			r.b('.')
+			r.s(parent.Columns[rel.Local[0]].Quoted)
+		})
+		r.s(") ")
+		r.s(alias)
+	}
+}
