@@ -1916,6 +1916,23 @@ func ExampleHandle_SaveExcept() {
 	}
 }
 
+func ExampleUnnest() {
+	ctx, db := requestContext(), appDB
+	c := fleetdb.Contacts
+	ids := []ids.ID{"con_01", "con_02"}
+	phones := []string{"555-0101", "555-0102"}
+	scores := []int64{10, 20}
+	out := keel.Unnest("outcome", []string{"id", "phone", "score"}, ids, phones, scores)
+	n, err := c.With(out).
+		Join(out, out.Col("id").EqCol(c.ID)).
+		Where(c.VIP.IsFalse()).
+		Update(ctx, db, c.Phone.ToExpr(out.Col("phone")), c.Score.ToExpr(out.Col("score")))
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(n)
+}
+
 func ExampleDynQuery_Compute() {
 	ctx, db := requestContext(), appDB
 	c, s := fleetdb.Contacts, fleetdb.Shipments

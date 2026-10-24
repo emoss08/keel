@@ -27,6 +27,7 @@ func (q *query) update(ctx context.Context, db *DB, sets []Assignment) (int64, e
 	r := newRender(run.sc, ctx, run.db)
 	defer r.recycle()
 	sc, alias := r.push(q.ref, joinFrom, q.allTenants)
+	joined := r.bulkJoins(sc, q)
 	var changed []int32
 	setSQL := r.section(func() {
 		touched := make(map[int32]bool, len(sets))
@@ -68,14 +69,21 @@ func (q *query) update(ctx context.Context, db *DB, sets []Assignment) (int64, e
 	where := r.section(func() {
 		wrote := r.tenantPred(t, alias, q.allTenants)
 		wrote = r.preds(r.intercepted(t, OpUpdate, false), wrote)
-		r.preds(q.where, wrote)
+		wrote = r.preds(q.where, wrote)
+		r.bulkJoinConds(q, joined, wrote)
 	})
 	var conds []byte
-	from := r.section(func() { conds = r.writeFromJoins(sc, " FROM ") })
+	from := r.section(func() {
+		conds = r.writeFromJoins(sc, " FROM ")
+		r.writeBulkJoins(q, joined, len(sc.joins) > 0, " FROM ")
+	})
+	with := r.section(func() { writeWith(r, q.ctes) })
 	r.pop()
 	if r.err != nil {
 		return 0, run.close(ctx, r.err)
 	}
+	r.buf = append(r.buf, with...)
+	r.release(with)
 	r.s("UPDATE ")
 	r.s(t.Quoted)
 	r.b(' ')
@@ -114,17 +122,25 @@ func (q *query) delete(ctx context.Context, db *DB) (int64, error) {
 	r := newRender(run.sc, ctx, run.db)
 	defer r.recycle()
 	sc, alias := r.push(q.ref, joinFrom, q.allTenants)
+	joined := r.bulkJoins(sc, q)
 	where := r.section(func() {
 		wrote := r.tenantPred(t, alias, q.allTenants)
 		wrote = r.preds(r.intercepted(t, OpDelete, false), wrote)
-		r.preds(q.where, wrote)
+		wrote = r.preds(q.where, wrote)
+		r.bulkJoinConds(q, joined, wrote)
 	})
 	var conds []byte
-	using := r.section(func() { conds = r.writeFromJoins(sc, " USING ") })
+	using := r.section(func() {
+		conds = r.writeFromJoins(sc, " USING ")
+		r.writeBulkJoins(q, joined, len(sc.joins) > 0, " USING ")
+	})
+	with := r.section(func() { writeWith(r, q.ctes) })
 	r.pop()
 	if r.err != nil {
 		return 0, run.close(ctx, r.err)
 	}
+	r.buf = append(r.buf, with...)
+	r.release(with)
 	r.s("DELETE FROM ")
 	r.s(t.Quoted)
 	r.b(' ')
@@ -143,6 +159,54 @@ func (q *query) delete(ctx context.Context, db *DB) (int64, error) {
 		err = db.afterWrite(ctx, run, th, OpDelete, bh.rows, bh.olds, nil)
 	}
 	return n, run.close(ctx, err)
+}
+
+// bulkJoins gives the explicit joins of a bulk update or delete their aliases in scope sc, so the
+// statement's assignments and predicates can use their columns, and returns the aliases. Only
+// inner joins of tables and CTEs fit the FROM or USING list of an UPDATE or DELETE.
+func (r *render) bulkJoins(sc *scope, q *query) []string {
+	aliases := make([]string, len(q.joins))
+	for i, j := range q.joins {
+		if j.lateral != nil || j.kind != " JOIN " {
+			r.fail(errf("bulk updates and deletes take inner joins of tables and CTEs only; %s is%s",
+				j.ref.name(), j.kind))
+		}
+		aliases[i] = r.newAlias(aliasBase(j.ref))
+		sc.refs = append(sc.refs, scoped{ref: j.ref, alias: aliases[i]})
+	}
+	return aliases
+}
+
+// writeBulkJoins writes the explicit joins of a bulk update or delete as FROM or USING items
+// (keyword), after the relation joins when there are any.
+func (r *render) writeBulkJoins(q *query, aliases []string, after bool, keyword string) {
+	for i, j := range q.joins {
+		if i > 0 || after {
+			r.s(", ")
+		} else {
+			r.s(keyword)
+		}
+		r.s(r.tableName(j.ref))
+		r.b(' ')
+		r.s(aliases[i])
+	}
+}
+
+// bulkJoinConds writes the join conditions of a bulk update's or delete's explicit joins into its
+// WHERE clause, with each joined table's tenant predicate.
+func (r *render) bulkJoinConds(q *query, aliases []string, wrote bool) {
+	for i, j := range q.joins {
+		tenant := r.section(func() { r.tenantPred(j.ref.Table, aliases[i], q.allTenants) })
+		if len(tenant) > 0 {
+			if wrote {
+				r.s(" AND ")
+			}
+			r.buf = append(r.buf, tenant...)
+			wrote = true
+		}
+		r.release(tenant)
+		wrote = r.preds(j.on, wrote)
+	}
 }
 
 // bulk sends a bulk UPDATE, DELETE or INSERT … SELECT on t, written under alias (empty for an

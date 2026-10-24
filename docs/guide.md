@@ -2221,7 +2221,27 @@ Assignments:
 | `col.ToExpr(e)` | `col = e`, for example `s.Weight.ToExpr(keel.Raw("? * 2", s.Weight))` |
 
 The `autoupdate` column is stamped and the `version` column incremented unless an assignment names
-them. Assignments must be columns of the query's table. Bulk writes run no model hooks and no
+them. Assignments must be columns of the query's table.
+
+A bulk update or delete takes `With` and inner `Join`s of tables and CTEs, which become `FROM`
+(`USING`) items, their `ON` predicates and tenant predicates joining the `WHERE` clause. With
+`keel.Unnest`, a CTE over Go slices bound as one array each, every row gets its own values in one
+statement, whatever the number of rows:
+
+```go
+c := fleetdb.Contacts
+out := keel.Unnest("outcome", []string{"id", "phone", "score"}, ids, phones, scores)
+n, err := c.With(out).
+    Join(out, out.Col("id").EqCol(c.ID)).
+    Where(c.VIP.IsFalse()).
+    Update(ctx, db, c.Phone.ToExpr(out.Col("phone")), c.Score.ToExpr(out.Col("score")))
+// WITH "outcome" ("id", "phone", "score") AS (SELECT * FROM unnest($1::text[], $2::text[], $3::int8[]))
+// UPDATE "contacts" c SET … FROM "outcome" o WHERE … AND o."id" = c."id"
+```
+
+`Unnest` takes slices of strings, integers, floats, bools, times or byte slices (named types
+included) of equal length; it is also a CTE for reads. `LeftJoin` and lateral joins are refused:
+an `UPDATE`'s `FROM` list cannot outer-join the updated table. Bulk writes run no model hooks and no
 `BeforeWrite` hooks; see [which hooks run](#which-hooks-run).
 
 ### Upsert
@@ -3515,6 +3535,7 @@ The same pattern works for an application:
 | `ColumnExpr("count(*) FILTER (WHERE ...)")` | `keel.Count().Filter(pred)` |
 | `.DistinctOn("customer_id")` | `.DistinctOn(s.CustomerID)` |
 | `.With("busy", q).Table("busy")` | `keel.CTE("busy", cols, q)` plus `With(busy)` |
+| `NewUpdate().With("_data", db.NewValues(&rows)).TableExpr("_data").Set(...)`, or `UPDATE … FROM unnest(?::text[], …)` | `keel.Unnest("data", cols, slices...)` plus `With(data).Join(data, …).Update(…)` |
 | `.Union(q)`, `.UnionAll(q)` | `keel.Union(q1, q2)`, `keel.UnionAll(q1, q2)` |
 | `.For("UPDATE NOWAIT")` | `.Lock(keel.ForUpdate, keel.NoWait)` |
 | `db.NewInsert().Model(sh).Exec(ctx)` | `s.Create(ctx, db, sh)` |
