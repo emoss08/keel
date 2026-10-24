@@ -1,7 +1,8 @@
 // Command keel generates typed data-access packages for keel models and manages migrations.
 //
-//	keel gen [-out {dir}/{name}db] [-kinds keelkinds] [-check] ./internal/...
+//	keel gen [-out {dir}/{name}db] [-kinds keelkinds] [-tables keeltables] [-check] ./internal/...
 //	keel migrate <command> [flags] [args]
+//	keel analytics ts [-check] -out path
 //
 // Every command but gen is keelcli's: in a terminal runs draw live views and keel with no
 // arguments opens the console; elsewhere output is plain lines, or JSON with -json. Run keel help
@@ -22,6 +23,7 @@ import (
 	"time"
 
 	"github.com/emoss08/keel"
+	"github.com/emoss08/keel/analytics/analyticscli"
 	"github.com/emoss08/keel/gen"
 	"github.com/emoss08/keel/keelcli"
 	"github.com/emoss08/keel/migrate"
@@ -51,12 +53,12 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 func app(f *migrateFlags) keelcli.App {
 	return keelcli.App{
 		Name:        "keel",
-		Description: "typed data access for Postgres: gen writes the packages, the other commands manage migrations.",
+		Description: "typed data access for Postgres: gen writes the packages, analytics ts the analytics TypeScript module, the other commands manage migrations.",
 		Version:     version(),
 		Config:      f.config,
 		Flags:       f.bind,
 		Setup:       f.setup,
-		Commands:    []keelcli.Command{genCommand()},
+		Commands:    []keelcli.Command{genCommand(), analyticscli.Standalone()},
 	}
 }
 

@@ -80,6 +80,41 @@ func Command(cfg Config) keelcli.Command {
 	}
 }
 
+// standaloneUsage lists the analytics commands of the keel command itself.
+const standaloneUsage = `Usage: keel analytics <command> [arguments]
+
+Commands:
+  ts [-check] -out path   write the TypeScript module of analytics/ir, or check it
+
+i18n, describe and rollups need the application's tables and rollups: register
+analyticscli.Command(analyticscli.Config{Tables: keeltables.All(), ...}) in the
+application's database binary.
+`
+
+// Standalone returns the analytics commands that need no application tables, as the keel command
+// registers them: ts. The others answer with how to register Command in the application's binary.
+func Standalone() keelcli.Command {
+	return keelcli.Command{
+		Name:    "analytics",
+		Usage:   "ts [-check] -out path",
+		Summary: "generate the analytics TypeScript module (applications register the rest)",
+		Run: func(_ context.Context, e *keelcli.Env, args []string) error {
+			en := &env{out: e.Stdout, flags: e.FlagSet, parse: e.Parse, json: e.JSON}
+			if len(args) == 0 {
+				return keelcli.Usagef("analyticscli: name a command\n\n%s", standaloneUsage)
+			}
+			switch args[0] {
+			case "help", "-h", "-help", "--help":
+				_, err := io.WriteString(en.out, standaloneUsage)
+				return err
+			case "ts":
+				return en.ts(args[1:])
+			}
+			return keelcli.Usagef("analyticscli: %q is not a command of keel analytics\n\n%s", args[0], standaloneUsage)
+		},
+	}
+}
+
 // Run runs one analytics command, args without the leading "analytics", writing its output to
 // out. A go:generate program calls it with its own arguments:
 //

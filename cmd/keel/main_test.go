@@ -105,6 +105,20 @@ func TestUsage(t *testing.T) {
 	contains(t, "help gen", ok(t, "help", "gen"), "Usage: keel gen [-out {dir}/{name}db]")
 }
 
+func TestAnalyticsTS(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "client", "analytics.ts")
+	if code, _, _ := cli(t, "analytics", "ts", "-check", "-out", path); code != 3 {
+		t.Fatalf("a missing module passed the check: exit %d", code)
+	}
+	contains(t, "analytics ts", ok(t, "analytics", "ts", "-out", path), "wrote "+path)
+	contains(t, "analytics ts -check", ok(t, "analytics", "ts", "-check", "-out", path), "up to date")
+	code, _, errOut := cli(t, "analytics", "i18n", "-out", path)
+	if code != 2 || !strings.Contains(errOut, "keeltables.All()") {
+		t.Fatalf("analytics i18n without tables: exit %d %s", code, errOut)
+	}
+	contains(t, "help", ok(t, "help"), "analytics")
+}
+
 func TestMigrateCommands(t *testing.T) {
 	dsn := database(t)
 	dir := t.TempDir()
