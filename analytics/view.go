@@ -8,7 +8,6 @@ import (
 
 	"github.com/emoss08/keel/analytics/formula"
 	"github.com/emoss08/keel/analytics/ir"
-	"github.com/emoss08/keel/analytics/table"
 	"github.com/emoss08/keel/schema"
 )
 
@@ -28,40 +27,64 @@ type View struct {
 
 // EntityView is one entity of a View.
 type EntityView struct {
-	Key      string      `json:"key"`
-	Label    string      `json:"label"`
-	Plural   string      `json:"plural,omitempty"`
-	Doc      string      `json:"doc,omitempty"`
-	Category string      `json:"category,omitempty"`
-	Access   Access      `json:"access"`
-	Fields   []FieldView `json:"fields"`
-	Edges    []EdgeView  `json:"edges"`
+	// Key names the entity in definitions.
+	Key string `json:"key"`
+	// Label and Plural are the translated names.
+	Label  string `json:"label"`
+	Plural string `json:"plural,omitempty"`
+	// Doc is the model's doc comment.
+	Doc string `json:"doc,omitempty"`
+	// Category is the translated category.
+	Category string `json:"category,omitempty"`
+	// Access is the caller's access to start a report from the entity.
+	Access Access `json:"access"`
+	// Fields are the entity's own fields.
+	Fields []FieldView `json:"fields"`
+	// Edges are the entity's own edges.
+	Edges []EdgeView `json:"edges"`
 }
 
 // FieldView is one field of a View, with the operators a condition on it can use.
 type FieldView struct {
-	Key        string       `json:"key"`
-	Label      string       `json:"label"`
-	Doc        string       `json:"doc,omitempty"`
-	Type       formula.Type `json:"type"`
-	Measure    bool         `json:"measure,omitempty"`
-	Aggs       []ir.Agg     `json:"aggs"`
-	Operators  []ir.Op      `json:"operators"`
-	Format     string       `json:"format,omitempty"`
-	Enum       []EnumValue  `json:"enum,omitempty"`
-	Filterable bool         `json:"filterable"`
-	Groupable  bool         `json:"groupable"`
-	Access     Access       `json:"access"`
+	// Key names the field in paths.
+	Key string `json:"key"`
+	// Label is the translated label.
+	Label string `json:"label"`
+	// Doc is the field's doc comment.
+	Doc string `json:"doc,omitempty"`
+	// Type is the field's value type.
+	Type formula.Type `json:"type"`
+	// Measure is true for a field reports aggregate by default.
+	Measure bool `json:"measure,omitempty"`
+	// Aggs are the aggregations the field supports.
+	Aggs []ir.Agg `json:"aggs"`
+	// Operators are the filter operators a condition on the field can use.
+	Operators []ir.Op `json:"operators"`
+	// Format is the field's display kind.
+	Format string `json:"format,omitempty"`
+	// Enum lists an enum field's values with translated labels.
+	Enum []EnumValue `json:"enum,omitempty"`
+	// Filterable and Groupable say whether the field can be filtered on and grouped by.
+	Filterable bool `json:"filterable"`
+	Groupable  bool `json:"groupable"`
+	// Access is the caller's access to the field through its path.
+	Access Access `json:"access"`
 }
 
 // EdgeView is one edge of a View.
 type EdgeView struct {
-	Name   string `json:"name"`
-	Label  string `json:"label"`
-	Doc    string `json:"doc,omitempty"`
+	// Name names the edge in paths.
+	Name string `json:"name"`
+	// Label is the translated label.
+	Label string `json:"label"`
+	// Doc is the relation's doc comment.
+	Doc string `json:"doc,omitempty"`
+	// Target is the key of the entity the edge leads to.
 	Target string `json:"target"`
-	ToMany bool   `json:"toMany,omitempty"`
-	Pick   bool   `json:"pick,omitempty"`
+	// ToMany is true for an edge to many rows; Pick for a pick relation.
+	ToMany bool `json:"toMany,omitempty"`
+	Pick   bool `json:"pick,omitempty"`
+	// Access is the caller's access to cross the edge.
 	Access Access `json:"access"`
 }
 
@@ -288,13 +311,4 @@ func calcFields(col ir.Column) []string {
 		return nil
 	}
 	return tree.References(formula.KindField)
-}
-
-// sensitivityOf returns the highest sensitivity of a set of accesses.
-func sensitivityOf(as ...Access) table.Sensitivity {
-	var s table.Sensitivity
-	for _, a := range as {
-		s = max(s, a.Sensitivity)
-	}
-	return s
 }

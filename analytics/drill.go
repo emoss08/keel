@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/emoss08/keel/analytics/formula"
 	"github.com/emoss08/keel/analytics/ir"
 )
 
@@ -62,7 +63,7 @@ func defaultDrillColumns(ctx context.Context, cat *Catalog, entity string, polic
 		if len(out) >= ir.MaxDrillColumns-4 {
 			break
 		}
-		if !dec.field(ctx, f, nil).Allowed || f.Type == "json" {
+		if !dec.field(ctx, f, nil).Allowed || f.Type == formula.JSON {
 			continue
 		}
 		out = append(out, ir.Column{ID: fmt.Sprintf("f%d", len(out)+1), Dimension: &ir.Dimension{Field: f.Key}})

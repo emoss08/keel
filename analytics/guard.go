@@ -50,7 +50,6 @@ func checkComplexity(cx Complexity, l ComplexityLimits) error {
 // expired ones first.
 type planCache struct {
 	mu      sync.Mutex
-	ttl     time.Duration
 	entries map[string]planEntry
 }
 

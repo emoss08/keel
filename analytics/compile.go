@@ -213,7 +213,7 @@ func (c *Compiled) ToSQL(ctx context.Context, db *keel.DB) (string, []any, error
 	return q.ToSQL(c.Context(ctx), db)
 }
 
-// Level returns the grouping level of a row from the value of the hidden level column.
+// levelOf returns the grouping level of a row from the value of the hidden level column.
 func (c *Compiled) levelOf(mask int64) table.Level {
 	if l, ok := c.levels[mask]; ok {
 		return l
@@ -358,7 +358,12 @@ func (c *compiler) complexity() Complexity {
 	}
 	cx.Dimensions = len(c.grouped)
 	if c.pivot != nil {
-		cx.PivotColumns = len(c.pivot.cells()) * len(c.def.Pivot.Columns)
+		width := len(c.pivot.cells())
+		if c.pivot.dynamic() && c.opts.PivotValues == nil {
+			n, _ := countOf(c.def.Pivot.Top.N, c.params)
+			width = n + len(c.pivot.cells())
+		}
+		cx.PivotColumns = width * len(c.def.Pivot.Columns)
 	}
 	return cx
 }

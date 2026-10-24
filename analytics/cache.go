@@ -90,12 +90,17 @@ func (r *Runner) cacheKey(ctx context.Context, comp *Compiled, q *keel.DynQuery,
 // cachedResult is a cache entry: the result as a rows envelope with its schema, its page cursor
 // and its count.
 type cachedResult struct {
-	Columns   []table.Column  `json:"columns,omitempty"`
-	Rows      json.RawMessage `json:"rows,omitempty"`
-	Cursor    string          `json:"cursor,omitempty"`
-	Count     int64           `json:"count,omitempty"`
-	Truncated bool            `json:"truncated,omitempty"`
-	Rollup    string          `json:"rollup,omitempty"`
+	// Columns is the output schema.
+	Columns []table.Column `json:"columns,omitempty"`
+	// Rows is the rows envelope.
+	Rows json.RawMessage `json:"rows,omitempty"`
+	// Cursor is the next page's cursor.
+	Cursor string `json:"cursor,omitempty"`
+	// Count is a count's result.
+	Count int64 `json:"count,omitempty"`
+	// Truncated and Rollup are the result's truncation and rollup.
+	Truncated bool   `json:"truncated,omitempty"`
+	Rollup    string `json:"rollup,omitempty"`
 }
 
 // encodeResult encodes a result for the cache.

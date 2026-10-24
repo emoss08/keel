@@ -410,7 +410,7 @@ func (c *compiler) top(s stage) (stage, error) {
 	if t.Bottom {
 		orders = []keel.Order{by.Asc().NullsLast()}
 	}
-	orders = append(orders, c.tiebreak(s)...)
+	orders = append(orders, c.tiebreak(s, map[string]bool{t.By: true})...)
 	rank := keel.DynOf(keel.RowNumber()).Over(keel.PartitionBy(parts...).OrderBy(orders...))
 	s.selectAs(rank, rankLabel)
 	o := keel.DynFromQuery(s.q)
@@ -431,14 +431,17 @@ func (c *compiler) top(s stage) (stage, error) {
 }
 
 // tiebreak returns the order terms that make the stage's rows unique: the grouping columns and
-// the level of an aggregated report, the record key of a record list.
-func (c *compiler) tiebreak(s stage) []keel.Order {
+// the level of an aggregated report, the record key of a record list; it leaves out the columns
+// already sorted.
+func (c *compiler) tiebreak(s stage, sorted map[string]bool) []keel.Order {
 	var out []keel.Order
 	if c.res.Aggregated {
 		for _, p := range c.grouped {
-			out = append(out, s.col(label(p.def.ID, "")).Asc())
+			if !sorted[p.def.ID] {
+				out = append(out, s.col(label(p.def.ID, "")).Asc())
+			}
 		}
-		if len(c.sets) > 0 {
+		if len(c.sets) > 0 && !sorted[levelLabel] {
 			out = append(out, s.col(levelLabel).Asc())
 		}
 		return out
@@ -469,9 +472,7 @@ func (c *compiler) order(s stage) {
 			orders = append(orders, e.Asc())
 		}
 	}
-	for _, o := range c.tiebreak(s) {
-		orders = append(orders, o)
-	}
+	orders = append(orders, c.tiebreak(s, sorted)...)
 	if !c.res.Aggregated && s.exprs != nil && c.rollup == nil {
 		for _, e := range c.recordKeysOf(s) {
 			orders = append(orders, e.Asc())
@@ -529,6 +530,7 @@ func (c *compiler) clusters(s stage, sorted map[string]bool) []keel.Order {
 		}
 		sorted[p.def.ID] = true
 	}
+	sorted[levelLabel] = true
 	return append(out, level.Asc())
 }
 

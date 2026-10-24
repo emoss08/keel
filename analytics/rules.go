@@ -44,12 +44,17 @@ type RuleSet struct {
 
 // TransformRule is one transform: what it applies to and what it takes.
 type TransformRule struct {
-	Op            ir.TransformOp `json:"op"`
-	Text          bool           `json:"text"`
-	Precision     bool           `json:"precision"`
-	Factor        bool           `json:"factor"`
-	MaxPrecision  int            `json:"maxPrecision,omitempty"`
-	PreservesType bool           `json:"preservesType"`
+	// Op is the transform.
+	Op ir.TransformOp `json:"op"`
+	// Text is true for a transform of text; the others transform numbers.
+	Text bool `json:"text"`
+	// Precision and Factor say whether it takes a precision or a factor.
+	Precision bool `json:"precision"`
+	Factor    bool `json:"factor"`
+	// MaxPrecision is the most places it keeps.
+	MaxPrecision int `json:"maxPrecision,omitempty"`
+	// PreservesType is true when the result has the value's type; the others return decimals.
+	PreservesType bool `json:"preservesType"`
 }
 
 // BandRule bounds numeric bands.
@@ -60,12 +65,16 @@ type BandRule struct {
 
 // WindowRule is one window function: whether it is ordered by a column and what it takes.
 type WindowRule struct {
-	Fn      ir.WindowFn `json:"fn"`
-	Ordered bool        `json:"ordered"`
-	Numeric bool        `json:"numeric"`
-	Offset  bool        `json:"offset"`
-	Size    bool        `json:"size"`
-	Desc    bool        `json:"desc"`
+	// Fn is the window function.
+	Fn ir.WindowFn `json:"fn"`
+	// Ordered is true when it needs an ordering column.
+	Ordered bool `json:"ordered"`
+	// Numeric is true when it reads a numeric column.
+	Numeric bool `json:"numeric"`
+	// Offset, Size and Desc say whether it takes an offset, a size and a direction.
+	Offset bool `json:"offset"`
+	Size   bool `json:"size"`
+	Desc   bool `json:"desc"`
 }
 
 // NamingRule is how output columns are named.
@@ -84,15 +93,24 @@ type NamingRule struct {
 
 // LimitRule is the default definition limits a builder enforces as the user types.
 type LimitRule struct {
-	MaxColumns     int `json:"maxColumns"`
-	MaxDimensions  int `json:"maxDimensions"`
-	MaxLimit       int `json:"maxLimit"`
-	MaxPageSize    int `json:"maxPageSize"`
+	// MaxColumns caps the columns of a report.
+	MaxColumns int `json:"maxColumns"`
+	// MaxDimensions caps the grouping columns of an aggregated report.
+	MaxDimensions int `json:"maxDimensions"`
+	// MaxLimit caps the row limit.
+	MaxLimit int `json:"maxLimit"`
+	// MaxPageSize caps a page.
+	MaxPageSize int `json:"maxPageSize"`
+	// MaxPivotValues caps the values of a pivot.
 	MaxPivotValues int `json:"maxPivotValues"`
-	MaxWindows     int `json:"maxWindows"`
-	MaxPathDepth   int `json:"maxPathDepth"`
-	MaxDays        int `json:"maxDays"`
-	MaxCharts      int `json:"maxCharts"`
+	// MaxWindows caps the window columns.
+	MaxWindows int `json:"maxWindows"`
+	// MaxPathDepth caps the relations a field path crosses.
+	MaxPathDepth int `json:"maxPathDepth"`
+	// MaxDays caps the day count of last_n_days and next_n_days.
+	MaxDays int `json:"maxDays"`
+	// MaxCharts caps the charts of a report.
+	MaxCharts int `json:"maxCharts"`
 }
 
 // The patterns of derived labels.

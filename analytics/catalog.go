@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
-	"unicode/utf8"
 
 	"github.com/emoss08/keel/analytics/formula"
 	"github.com/emoss08/keel/analytics/ir"
@@ -134,7 +133,7 @@ func integerKind(k schema.Kind) bool {
 // Build makes the catalog of the reportable tables among tables (those with Table.Report set) and
 // checks its graph: every edge leads to a reportable entity, every pick walks real relations and
 // orders by a total order, and joined tables share their tenant columns. Tables that are not
-// reportable are skipped, so the generated kinds list can be passed whole.
+// reportable are skipped, so an application can pass every generated table.
 func Build(tables []*schema.Table, opts Options) (*Catalog, error) {
 	c := &Catalog{byKey: map[string]*Entity{}, byTable: map[*schema.Table]*Entity{}, opts: opts}
 	for _, t := range tables {
@@ -541,13 +540,4 @@ func orDefault(s, def string) string {
 		return def
 	}
 	return s
-}
-
-// firstUpper upper-cases a label's first letter.
-func firstUpper(s string) string {
-	r, n := utf8.DecodeRuneInString(s)
-	if n == 0 {
-		return s
-	}
-	return string(unicode.ToUpper(r)) + s[n:]
 }

@@ -132,11 +132,10 @@ func (c *compiler) rollupMeasure(f *frame, p *colPlan, pivot keel.Pred) (keel.Dy
 	t := c.preTransform(p)
 	switch rm.Agg {
 	case ReSum:
-		e := aggregate(ir.AggSum, x, filter, t)
 		if p.def.Measure.Agg == ir.AggCount || p.def.Measure.Agg == ir.AggCountDistinct {
 			return coalesceZero(aggregate(ir.AggSum, x, filter, formula.Int)), nil
 		}
-		return e, nil
+		return aggregate(ir.AggSum, x, filter, t), nil
 	case ReMin:
 		return aggregate(ir.AggMin, x, filter, t), nil
 	case ReMax:

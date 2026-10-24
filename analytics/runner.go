@@ -148,7 +148,7 @@ func NewRunner(db *keel.DB, cat *Catalog, opts RunnerOptions) (*Runner, error) {
 		}
 	}
 	r := &Runner{db: db, cat: cat, opts: opts, running: map[string]*running{},
-		plans: &planCache{ttl: opts.ExplainTTL, entries: map[string]planEntry{}}}
+		plans: &planCache{entries: map[string]planEntry{}}}
 	if opts.Slots > 0 {
 		r.slotSQL = slotSQL(opts.Slots)
 	}
@@ -404,7 +404,7 @@ func (r *Runner) mapErr(ctx context.Context, err error) error {
 		return &Error{Code: CodeTimeout, Message: "the report took too long to run", Err: err}
 	case keel.Code(err) == "57014":
 		return &Error{Code: CodeSuperseded, Message: "a later run with the same key replaced this one", Err: err}
-	case strings.Contains(msg, "cursor"):
+	case strings.HasPrefix(msg, "keel: invalid cursor"), strings.HasPrefix(msg, "keel: cursor "):
 		return &Error{Code: CodeCursor, Message: "the cursor is not one this report produced", Err: err}
 	}
 	return err
