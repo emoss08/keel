@@ -83,8 +83,10 @@ func checkStoredKeys(m *model, r *relation) error {
 
 // relKeys resolves the column pairs of a belongs, one or many relation: each foreign-key column of
 // fkSide and the column of keySide it references, by default keySide's primary key for the first
-// pair and the column named like the foreign key for the others. Tenant columns are refused, since
-// keel adds them to every join, and so are pairs whose columns hold different kinds of value.
+// pair and the column named like the foreign key for the others. A tenant column both sides carry
+// is refused, since keel adds it to every join; one that references a table without it (an
+// organization_id referencing organizations.id) is an ordinary key. Pairs whose columns hold
+// different kinds of value are refused.
 func relKeys(fkSide, keySide *model, pairs []schema.RelKey) (fks, keys []int32, err error) {
 	for i, p := range pairs {
 		fk := fkSide.column(p.FK)
@@ -95,11 +97,9 @@ func relKeys(fkSide, keySide *model, pairs []schema.RelKey) (fks, keys []int32, 
 		if err != nil {
 			return nil, nil, err
 		}
-		for _, c := range []*column{fk, key} {
-			if c.tag.Flags.Has(schema.FlagTenant) {
-				return nil, nil, fmt.Errorf("%s is a tenant column; keel adds tenant columns to every join, do not list them",
-					c.tag.Name)
-			}
+		if sharedTenant(fk, keySide) || sharedTenant(key, fkSide) {
+			return nil, nil, fmt.Errorf("%s is a tenant column; keel adds tenant columns to every join, do not list them",
+				p.FK)
 		}
 		if keyFamily(fk.kind) != keyFamily(key.kind) {
 			return nil, nil, fmt.Errorf("%s.%s and %s.%s hold different kinds of value", fkSide.name, fk.field,
@@ -108,6 +108,15 @@ func relKeys(fkSide, keySide *model, pairs []schema.RelKey) (fks, keys []int32, 
 		fks, keys = append(fks, fk.idx), append(keys, key.idx)
 	}
 	return fks, keys, nil
+}
+
+// sharedTenant reports whether c is a tenant column that other also carries as a tenant column.
+func sharedTenant(c *column, other *model) bool {
+	if !c.tag.Flags.Has(schema.FlagTenant) {
+		return false
+	}
+	o := other.column(c.tag.Name)
+	return o != nil && o.tag.Flags.Has(schema.FlagTenant)
 }
 
 // referencedKey returns the column of keySide that relation key pair i references.

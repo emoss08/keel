@@ -180,6 +180,9 @@ func TestGenerateErrors(t *testing.T) {
 		{"computed relation key", "type A struct {\n\tkeel.Table ~keel:\"a\"~\n\tID string ~keel:\"id,pk\"~\n\tBID string ~keel:\"b_id,computed\"~\n\tB *B ~keel:\"belongs:b_id\"~\n}\n" +
 			"type B struct {\n\tkeel.Table ~keel:\"b\"~\n\tID string ~keel:\"id,pk\"~\n}\n", field(5) + ": A.B: A.BID is computed and cannot key a relation"},
 		{"relation key tenant", relKeyModels(`belongs:b_id|org`), field(6) + ": A.B: org is a tenant column"},
+		{"relation key shared tenant", "type A struct {\n\tkeel.Table ~keel:\"a\"~\n\tID string ~keel:\"id,pk\"~\n\tOrg string ~keel:\"org,pk,tenant\"~\n" +
+			"\tB *B ~keel:\"belongs:org\"~\n}\n" + "type B struct {\n\tkeel.Table ~keel:\"b\"~\n\tID string ~keel:\"id,pk\"~\n\tOrg string ~keel:\"org,tenant\"~\n}\n",
+			field(5) + ": A.B: org is a tenant column"},
 		{"relation key missing", relKeyModels(`belongs:b_id|nope`), field(6) + ": A.B: A has no column nope"},
 		{"relation key not named alike", relKeyModels(`belongs:b_id|w_id`), field(6) + ": A.B: B has no column w_id; name the referenced column with w_id=<column>"},
 		{"relation key kinds", relKeyModels(`belongs:b_id|w_id=n`), field(6) + ": A.B: A.WID and B.N hold different kinds of value"},
@@ -264,6 +267,29 @@ type A struct {
 	}
 	if t.Failed() {
 		t.Log(src)
+	}
+}
+
+func TestGenerateTenantKeyToParent(t *testing.T) {
+	files, err := generate(t, `type Org struct {
+	keel.Table ~keel:"orgs"~
+
+	ID string ~keel:"id,pk"~
+}
+
+type A struct {
+	keel.Table ~keel:"a"~
+
+	ID    string ~keel:"id,pk"~
+	OrgID string ~keel:"org_id,pk,tenant"~
+	Org   *Org   ~keel:"belongs:org_id"~
+}
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if src := string(files[0].Content); !strings.Contains(src, `{Name: "Org", Alias: "o", Kind: schema.BelongsTo, Local: []int32{1}, Remote: []int32{0}`) {
+		t.Errorf("generated code lacks the Org relation keyed by org_id:\n%s", src)
 	}
 }
 
