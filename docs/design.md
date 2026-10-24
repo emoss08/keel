@@ -144,13 +144,21 @@ methods. Plain `int` is refused: its width is not portable.
 | `belongs:<fk>` | this table's `<fk>` references the target's primary key |
 | `one:<fk>` | the target's `<fk>` references this table's primary key, at most one row |
 | `many:<fk>` | the target's `<fk>` references this table's primary key |
+| `belongs:<fk>\|<fk>[=<key>]…` (and `one:`, `many:`) | a key of several columns; each item is a foreign-key column and, after `=`, the referenced column (default: the primary key for the first, the same name for the others) |
 | `m2m:<join_table>.<local_fk>.<remote_fk>` | rows linked through a join table |
 | `pick:<rel>.<rel>…,first=<seg>.<col>\|…` (or `last=`) | one row along a path that crosses a to-many relation, the first (last) in a total order |
 
 Relation tags take `label=` and `noreport`; `first=` and `last=` only on `pick`.
 
-The primary key of a related table, besides its tenant columns, must be a single column, and the
-keys of to-many relations must be string or integer columns. When both sides have tenant columns,
+`Relation.Local` and `Relation.Remote` hold one column per key pair, and every renderer walks all
+pairs: join conditions (`relCond`, `relCondNoTenant`), relation loads (`= ANY($1)` for one column,
+`(cols) IN (SELECT * FROM unnest($1, …))` for several, unnested keys for `Limit` loads and picks,
+keyed statements returning one key column per pair), picks, dynamic paths and pre-aggregation keys.
+A key of several columns indexes parents by its values joined with NUL (`joinKey`), which text
+cannot hold; single-column keys stay a string or an integer, without allocation. With one column
+and no `=`, the referenced primary key, besides its tenant columns, must be a single column; the
+keys of to-many and pick relations must be string or integer columns; many-to-many relations take
+one column per side; tenant columns are refused in a key. When both sides have tenant columns,
 keel adds them to the join: as constants from the scope under a tenant scope, as column equalities
 under a system scope.
 

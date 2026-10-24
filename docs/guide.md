@@ -506,6 +506,7 @@ array field is written as an empty array, unless the column is `nullzero`.
 | `belongs:<fk>` | this table's `<fk>` column references the target's primary key | `Customer *Customer \`keel:"belongs:customer_id"\`` |
 | `one:<fk>` | the target's `<fk>` references this table's primary key; at most one row | `Profile *DriverProfile \`keel:"one:worker_id"\`` |
 | `many:<fk>` | the target's `<fk>` references this table's primary key | `Moves []*Move \`keel:"many:shipment_id"\`` |
+| `belongs:<fk>\|<fk>[=<key>]…` (and `one:`, `many:`) | a key of several columns: every pair joins; see [Relations](#relations) | `Source *Leave \`keel:"belongs:source_leave_id\|worker_id"\`` |
 | `m2m:<join_table>.<local_fk>.<remote_fk>` | rows linked through a join table: `<local_fk>` references this table, `<remote_fk>` the target | `Tags []*Tag \`keel:"m2m:shipment_tags.shipment_id.tag_id"\`` |
 | `pick:<relation>.<relation>…` | one row picked along a path that crosses a to-many relation (see [Pick relations](#pick-relations)) | `OriginStop *Stop \`keel:"pick:moves.stops,first=moves.sequence\|stops.sequence"\`` |
 | `first=<segment>.<column>\|…` / `last=…` | a pick's order: the first or the last row by these columns; exactly one is required on `pick` and allowed nowhere else | see `pick` |
@@ -591,12 +592,53 @@ A relation field is a pointer (to-one: `belongs`, `one`, `pick`) or a slice (to-
 `m2m`) of another model. A model may relate to itself (`Worker.Manager *Worker
 \`keel:"belongs:manager_id"\``) and to the same target twice (`Customer` and `BillTo`).
 
+A relation can join on several columns: list them with `|`. Each item names a foreign-key column
+(this table's for `belongs`, the target's for `one` and `many`) and, after `=`, the column it
+references on the other side; without `=`, the first item references the primary key and the
+others the column of the same name. A ledger entry that draws on a leave of the same worker:
+
+```go
+type Leave struct {
+    keel.Table `keel:"leaves"`
+    ID       ids.ID `keel:"id,pk,autoid:lv_"`
+    // …tenant columns…
+    WorkerID ids.ID `keel:"worker_id"`
+
+    Entries   []*LeaveEntry `keel:"many:source_leave_id|worker_id"`
+    LastEntry *LeaveEntry   `keel:"pick:entries,last=entries.posted_at"`
+}
+
+type LeaveEntry struct {
+    keel.Table `keel:"leave_entries"`
+    ID            ids.ID `keel:"id,pk,autoid:lve_"`
+    // …tenant columns…
+    WorkerID      ids.ID `keel:"worker_id"`
+    SourceLeaveID ids.ID `keel:"source_leave_id,nullzero"`
+    PostedAt      int64  `keel:"posted_at"`
+
+    Source *Leave `keel:"belongs:source_leave_id|worker_id"` // = leaves.id AND = leaves.worker_id
+}
+```
+
+Every use honours every pair: joins and relation path filters (`e.Source().Days.Gt(1)`), loads
+(to-many loads filter by `(fk1, fk2) IN (SELECT * FROM unnest($1, $2))` and attach by the whole key,
+`Limit` loads and picks unnest one array per key column), `Any` and `None`, picks whose first hop
+has several columns, bulk updates and deletes through the relation, the dynamic layer's paths,
+`Rel`, `Any`, `None` and pre-aggregations, and the analytics edges built on them.
+
 Rules:
 
-- The referenced primary key, besides its tenant columns, must be a single column. Tenant columns
-  are not part of the relation key: when both sides have them, keel adds them to every join, as
-  constants from the scope under a tenant scope and as column equalities under a system scope.
-- Keys of to-many relations must be string or integer columns.
+- A key column given without `=`, other than the first, must exist on the other side under the
+  same name; name it with `=` otherwise. Paired columns must hold the same kind of value (any two
+  integer widths pair). The referenced columns should be unique on their table (the primary key,
+  or a unique constraint as `(id, worker_id)` above).
+- With one column and no `=`, the referenced primary key, besides its tenant columns, must be a
+  single column.
+- Tenant columns are not part of the relation key and are refused in it: when both sides have
+  them, keel adds them to every join, as constants from the scope under a tenant scope and as
+  column equalities under a system scope.
+- Keys of to-many and pick relations must be string or integer columns. Many-to-many relations
+  take one column per side.
 - The target must be a model of the same `keel gen` run.
 
 ### Pick relations
@@ -3397,6 +3439,7 @@ The same pattern works for an application:
 | `bun:"rel:belongs-to,join:customer_id=id"` | `keel:"belongs:customer_id"` |
 | `bun:"rel:has-one,join:id=worker_id"` | `keel:"one:worker_id"` |
 | `bun:"rel:has-many,join:id=shipment_id"` | `keel:"many:shipment_id"` |
+| `bun:"rel:belongs-to,join:source_pto_id=id,join:worker_id=worker_id"` | `keel:"belongs:source_pto_id\|worker_id"`; drop the `organization_id` and `business_unit_id` pairs, the tenancy adds them |
 | `bun:"m2m:shipment_tags,join:Shipment=Tag"` | `keel:"m2m:shipment_tags.shipment_id.tag_id"` |
 | a hand-written `LEFT JOIN LATERAL (… ORDER BY … LIMIT 1)` for a shipment's first stop | `keel:"pick:moves.stops,first=moves.sequence\|stops.sequence"` and `Load(s.OriginStop())` |
 | labels, descriptions and enum values curated in a report catalog | derived by `keel gen` from names, doc comments and constants ([Derived metadata](#derived-metadata)) |

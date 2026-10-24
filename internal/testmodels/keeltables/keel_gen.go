@@ -12,6 +12,8 @@ func All() []*schema.Table {
 	return []*schema.Table{
 		fleetdb.ContactsSchema(),
 		fleetdb.CustomersSchema(),
+		fleetdb.LeaveEntriesSchema(),
+		fleetdb.LeavesSchema(),
 		fleetdb.LocationsSchema(),
 		fleetdb.MovesSchema(),
 		fleetdb.NotesSchema(),

@@ -137,11 +137,15 @@ func markKeys(models []*model) {
 		for _, r := range m.rels {
 			switch r.kind {
 			case schema.BelongsTo:
-				c := m.columns[r.local[0]]
-				c.key = true
-				c.exposed = c.exposed || !r.tag.NoReport
+				for _, l := range r.local {
+					c := m.columns[l]
+					c.key = true
+					c.exposed = c.exposed || !r.tag.NoReport
+				}
 			case schema.HasOne, schema.HasMany:
-				r.target.columns[r.remote[0]].key = true
+				for _, rc := range r.remote {
+					r.target.columns[rc].key = true
+				}
 			}
 		}
 	}

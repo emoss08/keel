@@ -490,6 +490,301 @@ func valueCustomer(p unsafe.Pointer, c int32) any {
 	return nil
 }
 
+// leavesTable is the schema of fleet.Leave.
+var leavesTable = schema.Table{
+	Name:   "leaves",
+	Quoted: `"leaves"`,
+	Alias:  "l",
+	Model:  "fleet.Leave",
+	Label:  `Leave`,
+	Plural: `Leaves`,
+	Doc:    `Leave is a worker's paid time off.`,
+	Report: &schema.TableReport{Category: `Workforce`},
+	Columns: []schema.Column{
+		{Name: "id", Quoted: `"id"`, Field: "ID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagAutoID, Label: `ID`, Report: &reportDimStringId},
+		{Name: "organization_id", Quoted: `"organization_id"`, Field: "OrganizationID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagTenant, Label: `Organization ID`, Report: &reportDimStringIdHidden},
+		{Name: "business_unit_id", Quoted: `"business_unit_id"`, Field: "BusinessUnitID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagTenant, Label: `Business Unit ID`, Report: &reportDimStringIdHidden},
+		{Name: "worker_id", Quoted: `"worker_id"`, Field: "WorkerID", Kind: schema.KindString, Flags: 0, Label: `Worker ID`, Report: &reportDimStringId},
+		{Name: "days", Quoted: `"days"`, Field: "Days", Kind: schema.KindInt32, Flags: 0, Label: `Days`, Report: &reportMeasureInteger},
+	},
+	Relations: []schema.Relation{
+		{Name: "Entries", Alias: "e", Kind: schema.HasMany, Local: []int32{0, 3}, Remote: []int32{4, 3}, Label: `Entries`, Doc: `Entries are the ledger entries that draw on the leave, which belong to the same worker.`},
+		{Name: "LastEntry", Alias: "le", Kind: schema.Pick, Local: []int32{0, 3}, Remote: nil, Label: `Last Entry`, Doc: `LastEntry is the leave's latest ledger entry.`, Path: []int32{0}, Order: []schema.PickKey{{Hop: 0, Column: 6}, {Hop: 0, Column: 0}}, Last: true},
+	},
+	PK:         []int32{0, 1, 2},
+	Tenant:     []int32{1, 2},
+	Select:     []int32{0, 1, 2, 3, 4},
+	Insert:     []int32{0, 1, 2, 3, 4},
+	Update:     []int32{3, 4},
+	Returning:  nil,
+	Version:    -1,
+	AutoID:     0,
+	AutoCreate: -1,
+	AutoUpdate: -1,
+	IDPrefix:   "lv_",
+	New:        newLeave,
+	NewN:       newNLeave,
+	Size:       unsafe.Sizeof(fleet.Leave{}),
+	Ptr:        ptrLeave,
+	Value:      valueLeave,
+	Attach:     attachLeave,
+}
+
+var leavesRef = keel.Ref{Table: &leavesTable}
+
+// LeavesTable is the table of fleet.Leave.
+type LeavesTable struct {
+	keel.Handle[fleet.Leave]
+	ID             keelkinds.IdsIDCol
+	OrganizationID keelkinds.IdsIDCol
+	BusinessUnitID keelkinds.IdsIDCol
+	WorkerID       keelkinds.IdsIDCol
+	Days           keel.Int32Col
+}
+
+// Leaves references the leaves table.
+var Leaves = &LeavesTable{
+	Handle:         keel.Handle[fleet.Leave]{Ref: &leavesRef},
+	ID:             keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: &leavesRef, Index: 0}}},
+	OrganizationID: keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: &leavesRef, Index: 1}}},
+	BusinessUnitID: keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: &leavesRef, Index: 2}}},
+	WorkerID:       keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: &leavesRef, Index: 3}}},
+	Days:           keel.Int32Col{Col: keel.Col{Ref: &leavesRef, Index: 4}},
+}
+
+// BuildLeaves builds the handle of leaves for ref. Generated relation and alias methods call it.
+func BuildLeaves(r *keel.Ref) *LeavesTable {
+	return &LeavesTable{
+		Handle:         keel.Handle[fleet.Leave]{Ref: r},
+		ID:             keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: r, Index: 0}}},
+		OrganizationID: keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: r, Index: 1}}},
+		BusinessUnitID: keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: r, Index: 2}}},
+		WorkerID:       keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: r, Index: 3}}},
+		Days:           keel.Int32Col{Col: keel.Col{Ref: r, Index: 4}},
+	}
+}
+
+// LeavesSchema returns the schema of leaves.
+func LeavesSchema() *schema.Table { return &leavesTable }
+
+// As returns a handle that references leaves under its own alias.
+func (t *LeavesTable) As(alias string) *LeavesTable { return keel.Alias(t.Ref, alias, BuildLeaves) }
+
+// Entries is the many relation.
+func (t *LeavesTable) Entries() *LeaveEntriesTable { return keel.Path(t.Ref, 0, BuildLeaveEntries) }
+
+// LastEntry is the pick relation.
+func (t *LeavesTable) LastEntry() *LeaveEntriesTable { return keel.Path(t.Ref, 1, BuildLeaveEntries) }
+
+// Get returns the leaves row with the given key, or keel.ErrNotFound.
+func (t *LeavesTable) Get(ctx context.Context, db *keel.DB, key ids.ID) (*fleet.Leave, error) {
+	return t.Where(t.ID.Eq(key)).One(ctx, db)
+}
+
+func newLeave() unsafe.Pointer { return unsafe.Pointer(new(fleet.Leave)) }
+
+func newNLeave(n int) unsafe.Pointer { return unsafe.Pointer(unsafe.SliceData(make([]fleet.Leave, n))) }
+
+func ptrLeave(p unsafe.Pointer, c int32) any {
+	r := (*fleet.Leave)(p)
+	switch c {
+	case 0:
+		return (*string)(unsafe.Pointer(&r.ID))
+	case 1:
+		return (*string)(unsafe.Pointer(&r.OrganizationID))
+	case 2:
+		return (*string)(unsafe.Pointer(&r.BusinessUnitID))
+	case 3:
+		return (*string)(unsafe.Pointer(&r.WorkerID))
+	case 4:
+		return &r.Days
+	}
+	return nil
+}
+
+func valueLeave(p unsafe.Pointer, c int32) any {
+	r := (*fleet.Leave)(p)
+	switch c {
+	case 0:
+		return string(r.ID)
+	case 1:
+		return string(r.OrganizationID)
+	case 2:
+		return string(r.BusinessUnitID)
+	case 3:
+		return string(r.WorkerID)
+	case 4:
+		return r.Days
+	}
+	return nil
+}
+
+func attachLeave(p unsafe.Pointer, rel int32, child unsafe.Pointer) {
+	r := (*fleet.Leave)(p)
+	switch rel {
+	case 0:
+		r.Entries = append(r.Entries, (*fleet.LeaveEntry)(child))
+	case 1:
+		r.LastEntry = (*fleet.LeaveEntry)(child)
+	}
+}
+
+// leaveEntriesTable is the schema of fleet.LeaveEntry.
+var leaveEntriesTable = schema.Table{
+	Name:   "leave_entries",
+	Quoted: `"leave_entries"`,
+	Alias:  "le",
+	Model:  "fleet.LeaveEntry",
+	Label:  `Leave Entry`,
+	Plural: `Leave Entries`,
+	Doc:    `LeaveEntry is a ledger entry of a worker's leave balance. It draws on a leave of the same worker: its relation to the leave joins on both columns.`,
+	Report: &schema.TableReport{Category: `Workforce`},
+	Columns: []schema.Column{
+		{Name: "id", Quoted: `"id"`, Field: "ID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagAutoID, Label: `ID`, Report: &reportDimStringId},
+		{Name: "organization_id", Quoted: `"organization_id"`, Field: "OrganizationID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagTenant, Label: `Organization ID`, Report: &reportDimStringIdHidden},
+		{Name: "business_unit_id", Quoted: `"business_unit_id"`, Field: "BusinessUnitID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagTenant, Label: `Business Unit ID`, Report: &reportDimStringIdHidden},
+		{Name: "worker_id", Quoted: `"worker_id"`, Field: "WorkerID", Kind: schema.KindString, Flags: 0, Label: `Worker ID`, Report: &reportDimStringIdHidden},
+		{Name: "source_leave_id", Quoted: `"source_leave_id"`, Field: "SourceLeaveID", Kind: schema.KindString, Flags: schema.FlagNullZero, Label: `Source Leave ID`, Report: &reportDimStringIdHidden},
+		{Name: "hours", Quoted: `"hours"`, Field: "Hours", Kind: schema.KindInt32, Flags: 0, Label: `Hours`, Report: &reportMeasureInteger},
+		{Name: "posted_at", Quoted: `"posted_at"`, Field: "PostedAt", Kind: schema.KindInt64, Flags: 0, Label: `Posted At`, Report: &reportDimEpoch},
+	},
+	Relations: []schema.Relation{
+		{Name: "Source", Alias: "s", Kind: schema.BelongsTo, Local: []int32{4, 3}, Remote: []int32{0, 3}, Label: `Source`, Doc: `Source is the leave the entry draws on.`},
+	},
+	PK:         []int32{0, 1, 2},
+	Tenant:     []int32{1, 2},
+	Select:     []int32{0, 1, 2, 3, 4, 5, 6},
+	Insert:     []int32{0, 1, 2, 3, 4, 5, 6},
+	Update:     []int32{3, 4, 5, 6},
+	Returning:  nil,
+	Version:    -1,
+	AutoID:     0,
+	AutoCreate: -1,
+	AutoUpdate: -1,
+	IDPrefix:   "lve_",
+	New:        newLeaveEntry,
+	NewN:       newNLeaveEntry,
+	Size:       unsafe.Sizeof(fleet.LeaveEntry{}),
+	Ptr:        ptrLeaveEntry,
+	Value:      valueLeaveEntry,
+	Attach:     attachLeaveEntry,
+}
+
+var leaveEntriesRef = keel.Ref{Table: &leaveEntriesTable}
+
+// LeaveEntriesTable is the table of fleet.LeaveEntry.
+type LeaveEntriesTable struct {
+	keel.Handle[fleet.LeaveEntry]
+	ID             keelkinds.IdsIDCol
+	OrganizationID keelkinds.IdsIDCol
+	BusinessUnitID keelkinds.IdsIDCol
+	WorkerID       keelkinds.IdsIDCol
+	SourceLeaveID  keelkinds.IdsIDCol
+	Hours          keel.Int32Col
+	PostedAt       keel.Int64Col
+}
+
+// LeaveEntries references the leave_entries table.
+var LeaveEntries = &LeaveEntriesTable{
+	Handle:         keel.Handle[fleet.LeaveEntry]{Ref: &leaveEntriesRef},
+	ID:             keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: &leaveEntriesRef, Index: 0}}},
+	OrganizationID: keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: &leaveEntriesRef, Index: 1}}},
+	BusinessUnitID: keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: &leaveEntriesRef, Index: 2}}},
+	WorkerID:       keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: &leaveEntriesRef, Index: 3}}},
+	SourceLeaveID:  keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: &leaveEntriesRef, Index: 4}}},
+	Hours:          keel.Int32Col{Col: keel.Col{Ref: &leaveEntriesRef, Index: 5}},
+	PostedAt:       keel.Int64Col{Col: keel.Col{Ref: &leaveEntriesRef, Index: 6}},
+}
+
+// BuildLeaveEntries builds the handle of leave_entries for ref. Generated relation and alias methods call it.
+func BuildLeaveEntries(r *keel.Ref) *LeaveEntriesTable {
+	return &LeaveEntriesTable{
+		Handle:         keel.Handle[fleet.LeaveEntry]{Ref: r},
+		ID:             keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: r, Index: 0}}},
+		OrganizationID: keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: r, Index: 1}}},
+		BusinessUnitID: keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: r, Index: 2}}},
+		WorkerID:       keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: r, Index: 3}}},
+		SourceLeaveID:  keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: r, Index: 4}}},
+		Hours:          keel.Int32Col{Col: keel.Col{Ref: r, Index: 5}},
+		PostedAt:       keel.Int64Col{Col: keel.Col{Ref: r, Index: 6}},
+	}
+}
+
+// LeaveEntriesSchema returns the schema of leave_entries.
+func LeaveEntriesSchema() *schema.Table { return &leaveEntriesTable }
+
+// As returns a handle that references leave_entries under its own alias.
+func (t *LeaveEntriesTable) As(alias string) *LeaveEntriesTable {
+	return keel.Alias(t.Ref, alias, BuildLeaveEntries)
+}
+
+// Source is the belongs relation.
+func (t *LeaveEntriesTable) Source() *LeavesTable { return keel.Path(t.Ref, 0, BuildLeaves) }
+
+// Get returns the leave_entries row with the given key, or keel.ErrNotFound.
+func (t *LeaveEntriesTable) Get(ctx context.Context, db *keel.DB, key ids.ID) (*fleet.LeaveEntry, error) {
+	return t.Where(t.ID.Eq(key)).One(ctx, db)
+}
+
+func newLeaveEntry() unsafe.Pointer { return unsafe.Pointer(new(fleet.LeaveEntry)) }
+
+func newNLeaveEntry(n int) unsafe.Pointer {
+	return unsafe.Pointer(unsafe.SliceData(make([]fleet.LeaveEntry, n)))
+}
+
+func ptrLeaveEntry(p unsafe.Pointer, c int32) any {
+	r := (*fleet.LeaveEntry)(p)
+	switch c {
+	case 0:
+		return (*string)(unsafe.Pointer(&r.ID))
+	case 1:
+		return (*string)(unsafe.Pointer(&r.OrganizationID))
+	case 2:
+		return (*string)(unsafe.Pointer(&r.BusinessUnitID))
+	case 3:
+		return (*string)(unsafe.Pointer(&r.WorkerID))
+	case 4:
+		return (*string)(unsafe.Pointer(&r.SourceLeaveID))
+	case 5:
+		return &r.Hours
+	case 6:
+		return &r.PostedAt
+	}
+	return nil
+}
+
+func valueLeaveEntry(p unsafe.Pointer, c int32) any {
+	r := (*fleet.LeaveEntry)(p)
+	switch c {
+	case 0:
+		return string(r.ID)
+	case 1:
+		return string(r.OrganizationID)
+	case 2:
+		return string(r.BusinessUnitID)
+	case 3:
+		return string(r.WorkerID)
+	case 4:
+		if r.SourceLeaveID == "" {
+			return nil
+		}
+		return string(r.SourceLeaveID)
+	case 5:
+		return r.Hours
+	case 6:
+		return r.PostedAt
+	}
+	return nil
+}
+
+func attachLeaveEntry(p unsafe.Pointer, rel int32, child unsafe.Pointer) {
+	r := (*fleet.LeaveEntry)(p)
+	switch rel {
+	case 0:
+		r.Source = (*fleet.Leave)(child)
+	}
+}
+
 // locationsTable is the schema of fleet.Location.
 var locationsTable = schema.Table{
 	Name:   "locations",
@@ -1758,6 +2053,9 @@ func afterLoadWorker(ctx context.Context, p unsafe.Pointer) error {
 
 func init() {
 	contactsTable.Relations[0].Target = CustomersSchema()
+	leavesTable.Relations[0].Target = LeaveEntriesSchema()
+	leavesTable.Relations[1].Target = LeaveEntriesSchema()
+	leaveEntriesTable.Relations[0].Target = LeavesSchema()
 	movesTable.Relations[0].Target = ShipmentsSchema()
 	movesTable.Relations[1].Target = StopsSchema()
 	movesTable.Relations[2].Target = StopsSchema()

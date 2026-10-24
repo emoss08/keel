@@ -230,6 +230,39 @@ type Note struct {
 	Customer *Customer `keel:"belongs:customer_id"`
 }
 
+// Leave is a worker's paid time off.
+type Leave struct {
+	keel.Table `keel:"leaves,report=Workforce"`
+
+	ID             ids.ID `keel:"id,pk,autoid:lv_"`
+	OrganizationID ids.ID `keel:"organization_id,pk,tenant"`
+	BusinessUnitID ids.ID `keel:"business_unit_id,pk,tenant"`
+	WorkerID       ids.ID `keel:"worker_id"`
+	Days           int32  `keel:"days"`
+
+	// Entries are the ledger entries that draw on the leave, which belong to the same worker.
+	Entries []*LeaveEntry `keel:"many:source_leave_id|worker_id"`
+	// LastEntry is the leave's latest ledger entry.
+	LastEntry *LeaveEntry `keel:"pick:entries,last=entries.posted_at"`
+}
+
+// LeaveEntry is a ledger entry of a worker's leave balance. It draws on a leave of the same
+// worker: its relation to the leave joins on both columns.
+type LeaveEntry struct {
+	keel.Table `keel:"leave_entries,report=Workforce"`
+
+	ID             ids.ID `keel:"id,pk,autoid:lve_"`
+	OrganizationID ids.ID `keel:"organization_id,pk,tenant"`
+	BusinessUnitID ids.ID `keel:"business_unit_id,pk,tenant"`
+	WorkerID       ids.ID `keel:"worker_id"`
+	SourceLeaveID  ids.ID `keel:"source_leave_id,nullzero"`
+	Hours          int32  `keel:"hours"`
+	PostedAt       int64  `keel:"posted_at"`
+
+	// Source is the leave the entry draws on.
+	Source *Leave `keel:"belongs:source_leave_id|worker_id"`
+}
+
 // Plant is a table without tenant columns, shared by every tenant.
 type Plant struct {
 	keel.Table `keel:"plants"`

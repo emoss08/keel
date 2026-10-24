@@ -3,6 +3,7 @@ package keel
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"unsafe"
 
 	"github.com/emoss08/keel/schema"
@@ -19,6 +20,19 @@ const (
 	keyInt
 )
 
+// keyKindsOf returns the key kinds of columns cols of t.
+func keyKindsOf(t *schema.Table, cols []int32) ([]keyKind, error) {
+	kinds := make([]keyKind, len(cols))
+	for i, c := range cols {
+		k, err := keyKindOf(t, c)
+		if err != nil {
+			return nil, err
+		}
+		kinds[i] = k
+	}
+	return kinds, nil
+}
+
 func keyKindOf(t *schema.Table, col int32) (keyKind, error) {
 	switch t.Columns[col].Kind {
 	case schema.KindString:
@@ -29,10 +43,49 @@ func keyKindOf(t *schema.Table, col int32) (keyKind, error) {
 	return 0, errf("%s.%s: relation keys must be string or integer columns", t.Name, t.Columns[col].Name)
 }
 
-// relKey is one relation key value. It is comparable, so keys index parents without boxing.
+// relKey is one relation key value. It is comparable, so keys index parents without boxing. A key
+// of several columns is their values joined in s (see joinKey).
 type relKey struct {
 	s string
 	n int64
+}
+
+// maxKeyParts is the number of key columns read without allocating the parts.
+const maxKeyParts = 4
+
+// readKeys reads key columns cols of row as one relKey: the column's value for one column, the
+// values joined for several. ok is false when a column is NULL, or holds a nullzero zero value.
+func readKeys(t *schema.Table, row unsafe.Pointer, cols []int32, kinds []keyKind) (relKey, bool) {
+	if len(cols) == 1 {
+		return readKey(t, row, cols[0])
+	}
+	var buf [maxKeyParts]relKey
+	parts := buf[:0]
+	for _, c := range cols {
+		k, ok := readKey(t, row, c)
+		if !ok {
+			return relKey{}, false
+		}
+		parts = append(parts, k)
+	}
+	return joinKey(parts, kinds), true
+}
+
+// joinKey encodes the parts of a key of several columns as one comparable relKey: the values in
+// order, integers in decimal, separated by NUL, which text values cannot hold.
+func joinKey(parts []relKey, kinds []keyKind) relKey {
+	b := make([]byte, 0, 48)
+	for i, p := range parts {
+		if i > 0 {
+			b = append(b, 0)
+		}
+		if kinds[i] == keyString {
+			b = append(b, p.s...)
+		} else {
+			b = strconv.AppendInt(b, p.n, 10)
+		}
+	}
+	return relKey{s: string(b)}
 }
 
 // readKey reads a key column of row. ok is false for a NULL key, and for the zero value of a
@@ -80,7 +133,28 @@ func readKeyValue(t *schema.Table, row unsafe.Pointer, col int32) (relKey, bool)
 	return relKey{}, false
 }
 
-// keyScanner decodes the leading key column of a keyed statement into a relKey.
+// keyScanners decode the leading key columns of a keyed statement into one relKey.
+type keyScanners []keyScanner
+
+// scan decodes the key columns of a row: the column's value for one column, the values joined
+// for several.
+func (ks keyScanners) scan(m *pgtype.Map, fds []pgconn.FieldDescription, raw [][]byte, kinds []keyKind) (relKey, error) {
+	if len(ks) == 1 {
+		return ks[0].scan(m, fds[0], raw[0], kinds[0])
+	}
+	var buf [maxKeyParts]relKey
+	parts := buf[:0]
+	for i := range ks {
+		k, err := ks[i].scan(m, fds[i], raw[i], kinds[i])
+		if err != nil {
+			return relKey{}, err
+		}
+		parts = append(parts, k)
+	}
+	return joinKey(parts, kinds), nil
+}
+
+// keyScanner decodes one leading key column of a keyed statement into a relKey.
 type keyScanner struct {
 	plan pgtype.ScanPlan
 	s    string
@@ -101,51 +175,142 @@ func (k *keyScanner) scan(m *pgtype.Map, fd pgconn.FieldDescription, raw []byte,
 	return relKey{s: k.s, n: k.n}, nil
 }
 
-// parentIndex groups the parents of a to-many load by key and keeps the distinct keys as the keel
-// array parameter bound to = ANY($1).
+// parentIndex groups the parents of a to-many load by key and keeps the distinct keys as one keel
+// array parameter per key column, bound to = ANY($1) or unnested.
 type parentIndex struct {
-	kind  keyKind
+	kinds []keyKind
 	byKey map[relKey][]unsafe.Pointer
-	strs  textArray
-	ints  int8Array
+	strs  []textArray
+	ints  []int8Array
 }
 
-func indexParents(t *schema.Table, parents []unsafe.Pointer, col int32, kind keyKind) *parentIndex {
-	ix := &parentIndex{kind: kind, byKey: make(map[relKey][]unsafe.Pointer, len(parents))}
+func indexParents(t *schema.Table, parents []unsafe.Pointer, cols []int32, kinds []keyKind) *parentIndex {
+	ix := &parentIndex{kinds: kinds, byKey: make(map[relKey][]unsafe.Pointer, len(parents)),
+		strs: make([]textArray, len(cols)), ints: make([]int8Array, len(cols))}
 	for _, p := range parents {
-		k, ok := readKey(t, p, col)
+		k, ok := readKeys(t, p, cols, kinds)
 		if !ok {
 			continue
 		}
 		ps, seen := ix.byKey[k]
 		if !seen {
-			if kind == keyString {
-				ix.strs = append(ix.strs, k.s)
-			} else {
-				ix.ints = append(ix.ints, k.n)
-			}
+			ix.addKey(t, p, cols, k)
 		}
 		ix.byKey[k] = append(ps, p)
 	}
 	return ix
 }
 
-func (ix *parentIndex) len() int { return len(ix.byKey) }
-
-// arg is the key array to bind.
-func (ix *parentIndex) arg() any {
-	if ix.kind == keyString {
-		return ix.strs
+// addKey appends the values of a new key to the key arrays; k is the key of one column, the
+// columns are read again for several.
+func (ix *parentIndex) addKey(t *schema.Table, p unsafe.Pointer, cols []int32, k relKey) {
+	for i, c := range cols {
+		part := k
+		if len(cols) > 1 {
+			part, _ = readKey(t, p, c)
+		}
+		if ix.kinds[i] == keyString {
+			ix.strs[i] = append(ix.strs[i], part.s)
+		} else {
+			ix.ints[i] = append(ix.ints[i], part.n)
+		}
 	}
-	return ix.ints
 }
 
-// arrayType is the array type the key array is cast to where Postgres cannot infer it.
-func (ix *parentIndex) arrayType() string {
-	if ix.kind == keyString {
+func (ix *parentIndex) len() int { return len(ix.byKey) }
+
+// cols is the number of key columns.
+func (ix *parentIndex) cols() int { return len(ix.kinds) }
+
+// arg is the key array of key column i to bind.
+func (ix *parentIndex) arg(i int) any {
+	if ix.kinds[i] == keyString {
+		return ix.strs[i]
+	}
+	return ix.ints[i]
+}
+
+// arrayType is the array type key array i is cast to where Postgres cannot infer it.
+func (ix *parentIndex) arrayType(i int) string {
+	if ix.kinds[i] == keyString {
 		return "text[]"
 	}
 	return "int8[]"
+}
+
+// keyName is the name of key column i of an unnested key list: k for a single column, k1, k2, …
+// for several.
+func (ix *parentIndex) keyName(i int) string {
+	if ix.cols() == 1 {
+		return "k"
+	}
+	return "k" + strconv.Itoa(i+1)
+}
+
+// writeUnnest writes unnest($1::t1[], …) AS alias(k…): the distinct keys as rows.
+func (ix *parentIndex) writeUnnest(r *render, alias string) {
+	r.s("unnest(")
+	for i := range ix.cols() {
+		if i > 0 {
+			r.s(", ")
+		}
+		r.arg(ix.arg(i))
+		r.s("::")
+		r.s(ix.arrayType(i))
+	}
+	r.s(") AS ")
+	r.s(alias)
+	r.b('(')
+	for i := range ix.cols() {
+		if i > 0 {
+			r.s(", ")
+		}
+		r.s(ix.keyName(i))
+	}
+	r.b(')')
+}
+
+// writeKeyEq writes the equalities of columns cols of the table under alias with the unnested key
+// columns of keyAlias.
+func (ix *parentIndex) writeKeyEq(r *render, t *schema.Table, alias string, cols []int32, keyAlias string) {
+	for i, c := range cols {
+		if i > 0 {
+			r.s(" AND ")
+		}
+		r.s(alias)
+		r.b('.')
+		r.s(t.Columns[c].Quoted)
+		r.s(" = ")
+		r.s(keyAlias)
+		r.b('.')
+		r.s(ix.keyName(i))
+	}
+}
+
+// writeIn writes the filter of a to-many load: col = ANY($1) for one key column, (cols) IN (SELECT
+// * FROM unnest(…)) for several.
+func (ix *parentIndex) writeIn(r *render, t *schema.Table, alias string, cols []int32) {
+	if ix.cols() == 1 {
+		r.s(alias)
+		r.b('.')
+		r.s(t.Columns[cols[0]].Quoted)
+		r.s(" = ANY(")
+		r.arg(ix.arg(0))
+		r.b(')')
+		return
+	}
+	r.b('(')
+	for i, c := range cols {
+		if i > 0 {
+			r.s(", ")
+		}
+		r.s(alias)
+		r.b('.')
+		r.s(t.Columns[c].Quoted)
+	}
+	r.s(") IN (SELECT * FROM ")
+	ix.writeUnnest(r, r.newAlias("k"))
+	r.b(')')
 }
 
 // pending is one to-many load: the node and the parent rows it attaches to.
@@ -198,25 +363,22 @@ func loadPending(ctx context.Context, run *runner, work []pending) error {
 	return loadPending(ctx, run, next)
 }
 
-// loadStmt builds the statement that loads a to-many or pick node for its parents: one = ANY($1)
-// filter over the parents' keys, through the join table for many-to-many, LATERAL per parent key
-// when the load has a limit or picks a row. It returns a nil statement when no parent has a key.
+// loadStmt builds the statement that loads a to-many or pick node for its parents: a filter over
+// the parents' keys (= ANY($1) for one key column, (cols) IN (SELECT * FROM unnest(…)) for several),
+// through the join table for many-to-many, LATERAL per parent key when the load has a limit or picks
+// a row. It returns a nil statement when no parent has a key.
 func loadStmt(ctx context.Context, run *runner, w pending) (*stmt, *selectPlan, error) {
 	n := w.node
 	parent := n.parent.table
 	rel := &parent.Relations[n.rel]
-	if len(rel.Local) != 1 {
-		return nil, nil, errf("relation %s.%s: to-many loads need a single-column key", parent.Name, rel.Name)
+	if rel.Kind == schema.ManyToMany && len(rel.Local) != 1 {
+		return nil, nil, errf("relation %s.%s: many-to-many loads need a single-column key", parent.Name, rel.Name)
 	}
-	local, remote := rel.Local[0], int32(-1)
-	if len(rel.Remote) == 1 {
-		remote = rel.Remote[0]
-	}
-	kind, err := keyKindOf(parent, local)
+	kinds, err := keyKindsOf(parent, rel.Local)
 	if err != nil {
 		return nil, nil, err
 	}
-	ix := indexParents(parent, w.parents, local, kind)
+	ix := indexParents(parent, w.parents, rel.Local, kinds)
 	if ix.len() == 0 {
 		return nil, nil, nil
 	}
@@ -239,26 +401,21 @@ func loadStmt(ctx context.Context, run *runner, w pending) (*stmt, *selectPlan, 
 		}
 		plan = pickSelect(r, &q, n, ix)
 	case rel.Kind == schema.ManyToMany:
-		plan = q.renderSelect(r, n, m2mOpts(r, rel, n.table, remote, ix))
+		plan = q.renderSelect(r, n, m2mOpts(r, rel, n.table, rel.Remote[0], ix))
 		if q.limit > 0 {
 			return nil, nil, errf("relation %s.%s: many-to-many loads do not take a Limit", parent.Name, rel.Name)
 		}
 	case q.limit > 0:
-		plan = lateralSelect(r, &q, n, ix, remote)
+		plan = lateralSelect(r, &q, n, ix, rel.Remote)
 	default:
 		plan = q.renderSelect(r, n, selectOpts{extraWhere: func(r *render, alias string) {
-			r.s(alias)
-			r.b('.')
-			r.s(n.table.Columns[remote].Quoted)
-			r.s(" = ANY(")
-			r.arg(ix.arg())
-			r.b(')')
+			ix.writeIn(r, n.table, alias, rel.Remote)
 		}})
 	}
 	if r.err != nil {
 		return nil, nil, r.err
 	}
-	plan.keyKind = kind
+	plan.keyKinds = kinds
 	plan.sizeHint = min(ix.len(), maxSlab)
 	plan.track()
 	s := &stmt{sql: string(r.buf), args: r.argsCopy(), op: "select", table: n.table.Name,
@@ -268,7 +425,7 @@ func loadStmt(ctx context.Context, run *runner, w pending) (*stmt, *selectPlan, 
 		return plan.scan(run.sc, s.sql, rows, func(row unsafe.Pointer, key relKey) {
 			if !keyed {
 				var ok bool
-				if key, ok = readKey(child, row, remote); !ok {
+				if key, ok = readKeys(child, row, rel.Remote, kinds); !ok {
 					return
 				}
 			}
@@ -308,37 +465,28 @@ func m2mOpts(r *render, rel *schema.Relation, target *schema.Table, remote int32
 			r.b('.')
 			r.s(rel.JoinLocalQ[0])
 			r.s(" = ANY(")
-			r.arg(ix.arg())
+			r.arg(ix.arg(0))
 			r.b(')')
 		},
 	}
 }
 
 // lateralSelect loads at most q.limit rows per parent key:
-// SELECT … FROM unnest($1) k CROSS JOIN LATERAL (SELECT … WHERE fk = k.k … LIMIT n).
-func lateralSelect(r *render, q *query, n *lnode, ix *parentIndex, remote int32) *selectPlan {
+// SELECT … FROM unnest($1, …) k CROSS JOIN LATERAL (SELECT … WHERE fk = k.k … LIMIT n).
+func lateralSelect(r *render, q *query, n *lnode, ix *parentIndex, remote []int32) *selectPlan {
 	keyAlias := r.newAlias("k")
 	var plan *selectPlan
 	body := r.section(func() {
 		plan = q.renderSelect(r, n, selectOpts{extraWhere: func(r *render, alias string) {
-			r.s(alias)
-			r.b('.')
-			r.s(n.table.Columns[remote].Quoted)
-			r.s(" = ")
-			r.s(keyAlias)
-			r.s(".k")
+			ix.writeKeyEq(r, n.table, alias, remote, keyAlias)
 		}})
 	})
 	outer := r.newAlias("lat")
 	r.s("SELECT ")
 	r.s(outer)
-	r.s(".* FROM unnest(")
-	r.arg(ix.arg())
-	r.s("::")
-	r.s(ix.arrayType())
-	r.s(") AS ")
-	r.s(keyAlias)
-	r.s("(k) CROSS JOIN LATERAL (")
+	r.s(".* FROM ")
+	ix.writeUnnest(r, keyAlias)
+	r.s(" CROSS JOIN LATERAL (")
 	r.buf = append(r.buf, body...)
 	r.s(") ")
 	r.s(outer)

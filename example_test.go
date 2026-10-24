@@ -1875,6 +1875,24 @@ func ExampleTSVectorCol_Match() {
 	}
 }
 
+func Example_relationKeys() {
+	ctx, db := requestContext(), appDB
+	l := fleetdb.Leaves
+	e := l.Entries() // many:source_leave_id|worker_id
+	leaves, err := l.
+		Where(e.Any(e.Hours.Gte(8))).
+		Load(e.Order(e.PostedAt.Asc()), l.LastEntry()).
+		Order(l.ID.Asc()).
+		Limit(100).
+		List(ctx, db)
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, lv := range leaves {
+		fmt.Println(lv.ID, len(lv.Entries), lv.LastEntry != nil)
+	}
+}
+
 func ExampleDynQuery_Compute() {
 	ctx, db := requestContext(), appDB
 	c, s := fleetdb.Contacts, fleetdb.Shipments

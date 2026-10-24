@@ -41,25 +41,17 @@ func resolveRelation(all map[*types.Named]*model, m *model, r *relation) error {
 	r.target = target
 	switch r.kind {
 	case schema.BelongsTo:
-		fk := m.column(r.tag.RelKey)
-		if fk == nil {
-			return fmt.Errorf("%s has no column %s", m.name, r.tag.RelKey)
-		}
-		pk, err := target.singleKey()
+		fks, keys, err := relKeys(m, target, r.tag.RelKeys)
 		if err != nil {
 			return err
 		}
-		r.local, r.remote = []int32{fk.idx}, []int32{pk.idx}
+		r.local, r.remote = fks, keys
 	case schema.HasOne, schema.HasMany:
-		fk := target.column(r.tag.RelKey)
-		if fk == nil {
-			return fmt.Errorf("%s has no column %s", target.name, r.tag.RelKey)
-		}
-		pk, err := m.singleKey()
+		fks, keys, err := relKeys(target, m, r.tag.RelKeys)
 		if err != nil {
 			return err
 		}
-		r.local, r.remote = []int32{pk.idx}, []int32{fk.idx}
+		r.local, r.remote = keys, fks
 	case schema.ManyToMany:
 		pk, err := m.singleKey()
 		if err != nil {
@@ -89,6 +81,62 @@ func checkStoredKeys(m *model, r *relation) error {
 	return nil
 }
 
+// relKeys resolves the column pairs of a belongs, one or many relation: each foreign-key column of
+// fkSide and the column of keySide it references, by default keySide's primary key for the first
+// pair and the column named like the foreign key for the others. Tenant columns are refused, since
+// keel adds them to every join, and so are pairs whose columns hold different kinds of value.
+func relKeys(fkSide, keySide *model, pairs []schema.RelKey) (fks, keys []int32, err error) {
+	for i, p := range pairs {
+		fk := fkSide.column(p.FK)
+		if fk == nil {
+			return nil, nil, fmt.Errorf("%s has no column %s", fkSide.name, p.FK)
+		}
+		key, err := referencedKey(keySide, p, i)
+		if err != nil {
+			return nil, nil, err
+		}
+		for _, c := range []*column{fk, key} {
+			if c.tag.Flags.Has(schema.FlagTenant) {
+				return nil, nil, fmt.Errorf("%s is a tenant column; keel adds tenant columns to every join, do not list them",
+					c.tag.Name)
+			}
+		}
+		if keyFamily(fk.kind) != keyFamily(key.kind) {
+			return nil, nil, fmt.Errorf("%s.%s and %s.%s hold different kinds of value", fkSide.name, fk.field,
+				keySide.name, key.field)
+		}
+		fks, keys = append(fks, fk.idx), append(keys, key.idx)
+	}
+	return fks, keys, nil
+}
+
+// referencedKey returns the column of keySide that relation key pair i references.
+func referencedKey(keySide *model, p schema.RelKey, i int) (*column, error) {
+	switch {
+	case p.Key != "":
+		if c := keySide.column(p.Key); c != nil {
+			return c, nil
+		}
+		return nil, fmt.Errorf("%s has no column %s", keySide.name, p.Key)
+	case i == 0:
+		return keySide.singleKey()
+	}
+	if c := keySide.column(p.FK); c != nil {
+		return c, nil
+	}
+	return nil, fmt.Errorf("%s has no column %s; name the referenced column with %s=<column>", keySide.name, p.FK, p.FK)
+}
+
+// keyFamily groups the kinds whose values compare equal in a join: the integers, and every other
+// kind on its own.
+func keyFamily(k schema.Kind) schema.Kind {
+	switch k {
+	case schema.KindInt16, schema.KindInt32:
+		return schema.KindInt64
+	}
+	return k
+}
+
 // resolvePick walks a pick relation's path, checks that it crosses a to-many relation and ends at
 // the field's model, and resolves its order, appending the target's key so the order is total.
 func resolvePick(m *model, r *relation) error {
@@ -99,10 +147,12 @@ func resolvePick(m *model, r *relation) error {
 	}
 	first := m.rels[r.path[0]]
 	r.local = first.local
-	if k := m.columns[r.local[0]].kind; k != schema.KindString && k != schema.KindInt64 &&
-		k != schema.KindInt32 && k != schema.KindInt16 {
-		return fmt.Errorf("pick path %s starts from %s.%s, which is not a string or integer column", path,
-			m.name, m.columns[r.local[0]].field)
+	for _, l := range r.local {
+		if k := m.columns[l].kind; k != schema.KindString && k != schema.KindInt64 &&
+			k != schema.KindInt32 && k != schema.KindInt16 {
+			return fmt.Errorf("pick path %s starts from %s.%s, which is not a string or integer column", path,
+				m.name, m.columns[l].field)
+		}
 	}
 	key, err := r.target.singleKey()
 	if err != nil {

@@ -176,7 +176,56 @@ func TestGenerateErrors(t *testing.T) {
 		{"computed readonly", oneA(`R string ~keel:"r,readonly,computed"~`), field(3) + ": A.…computed excludes pk, tenant, version, autoid, autocreate, autoupdate, readonly"},
 		{"computed relation key", "type A struct {\n\tkeel.Table ~keel:\"a\"~\n\tID string ~keel:\"id,pk\"~\n\tBID string ~keel:\"b_id,computed\"~\n\tB *B ~keel:\"belongs:b_id\"~\n}\n" +
 			"type B struct {\n\tkeel.Table ~keel:\"b\"~\n\tID string ~keel:\"id,pk\"~\n}\n", field(5) + ": A.B: A.BID is computed and cannot key a relation"},
+		{"relation key tenant", relKeyModels(`belongs:b_id|org`), field(6) + ": A.B: org is a tenant column"},
+		{"relation key missing", relKeyModels(`belongs:b_id|nope`), field(6) + ": A.B: A has no column nope"},
+		{"relation key not named alike", relKeyModels(`belongs:b_id|w_id`), field(6) + ": A.B: B has no column w_id; name the referenced column with w_id=<column>"},
+		{"relation key kinds", relKeyModels(`belongs:b_id|w_id=n`), field(6) + ": A.B: A.WID and B.N hold different kinds of value"},
 	})
+}
+
+// relKeyModels is a model A whose relation B, on line 6, has the tag given, and a model B.
+func relKeyModels(tag string) string {
+	return "type A struct {\n\tkeel.Table ~keel:\"a\"~\n\tID string ~keel:\"id,pk\"~\n\tOrg string ~keel:\"org,pk,tenant\"~\n" +
+		"\tBID string ~keel:\"b_id\"~\n\tB *B ~keel:\"" + tag + "\"~\n\tWID string ~keel:\"w_id\"~\n}\n" +
+		"type B struct {\n\tkeel.Table ~keel:\"b\"~\n\tID string ~keel:\"id,pk\"~\n\tOrg string ~keel:\"org,pk,tenant\"~\n" +
+		"\tN int64 ~keel:\"n\"~\n}\n"
+}
+
+func TestGenerateRelationKeys(t *testing.T) {
+	files, err := generate(t, `type Leave struct {
+	keel.Table ~keel:"leaves"~
+
+	ID       string        ~keel:"id,pk"~
+	WorkerID string        ~keel:"worker_id"~
+	Code     int32         ~keel:"code"~
+	Entries  []*LeaveEntry ~keel:"many:source_id|worker_id|code_ref=code"~
+}
+
+type LeaveEntry struct {
+	keel.Table ~keel:"leave_entries"~
+
+	ID       string ~keel:"id,pk"~
+	WorkerID string ~keel:"worker_id"~
+	SourceID string ~keel:"source_id"~
+	CodeRef  int64  ~keel:"code_ref"~
+	Source   *Leave ~keel:"belongs:source_id|worker_id|code_ref=code"~
+}
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(files[0].Content)
+	for _, want := range []string{
+		`{Name: "Entries", Alias: "e", Kind: schema.HasMany, Local: []int32{0, 1, 2}, Remote: []int32{2, 1, 3}`,
+		`{Name: "Source", Alias: "s", Kind: schema.BelongsTo, Local: []int32{2, 1, 3}, Remote: []int32{0, 1, 2}`,
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("generated code lacks %q", want)
+		}
+	}
+	if t.Failed() {
+		t.Log(src)
+	}
 }
 
 func TestGenerateComputed(t *testing.T) {

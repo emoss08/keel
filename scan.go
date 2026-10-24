@@ -21,9 +21,10 @@ type selectPlan struct {
 	keep    []bool
 	rows    [][]unsafe.Pointer
 
-	// keyed statements return a relation key before the columns (many-to-many loads).
-	keyed   bool
-	keyKind keyKind
+	// keyed statements return a relation key, one column per key column of keyKinds, before the
+	// columns (many-to-many and pick loads).
+	keyed    bool
+	keyKinds []keyKind
 	// sizeHint is the expected number of base rows. Row slabs start at this size, so a statement
 	// that returns as many rows as expected allocates each table's rows once.
 	sizeHint int
@@ -56,7 +57,7 @@ func (p *selectPlan) scan(sc *scopeState, sql string, rows pgx.Rows, emit func(r
 	fds := rows.FieldDescriptions()
 	off := 0
 	if p.keyed {
-		off = 1
+		off = len(p.keyKinds)
 	}
 	if len(fds) != len(p.cols)+off {
 		return errf("statement returned %d columns, expected %d", len(fds), len(p.cols)+off)
@@ -74,18 +75,18 @@ func (p *selectPlan) scan(sc *scopeState, sql string, rows pgx.Rows, emit func(r
 	for i, n := range p.nodes {
 		slabs[i] = slab{t: n.table, next: hint}
 	}
-	var keys keyScanner
+	keys := make(keyScanners, off)
 	cur := make([]unsafe.Pointer, len(p.nodes))
 	for rows.Next() {
 		raw := rows.RawValues()
 		var key relKey
 		if p.keyed {
-			k, err := keys.scan(m, fds[0], raw[0], p.keyKind)
+			k, err := keys.scan(m, fds, raw, p.keyKinds)
 			if err != nil {
 				return err
 			}
 			key = k
-			raw = raw[1:]
+			raw = raw[off:]
 		}
 		for ni, n := range p.nodes {
 			if ni == 0 {
