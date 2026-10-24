@@ -43,8 +43,9 @@ func (db *DB) copyRows(ctx context.Context, t *schema.Table, rows []unsafe.Point
 		return 0, err
 	}
 	st := db.stampsFor(t)
+	hctx := run.hookCtx(ctx)
 	for _, row := range rows {
-		if err := db.prepareInsert(ctx, run.sc, t, th, row, st); err != nil {
+		if err := db.prepareInsert(hctx, run.sc, t, th, row, st); err != nil {
 			return 0, run.close(ctx, err)
 		}
 	}

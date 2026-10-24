@@ -55,7 +55,7 @@ type CompileOptions struct {
 	Strategy Strategy
 	// LateralParents is the most parents StrategyAuto reads with lateral subqueries (default 100).
 	LateralParents int
-	// Rollups answers a report from a rollup table when one covers it.
+	// Rollups answers a report from a rollup table when one covers it (see RollupRouter).
 	Rollups RollupRouter
 	// PivotValues are a dynamic pivot's discovered values; the runner sets them after running the
 	// discovery statement.
@@ -77,11 +77,15 @@ type Compiled struct {
 	Query *keel.DynQuery
 	// Discovery is the statement that finds a dynamic pivot's values, or nil.
 	Discovery *keel.DynQuery
-	// Tables are the tables the statements read, for data versions.
+	// Tables are the tables whose rows the result reflects, for data versions: the tables the
+	// statements read, or for a report answered from a rollup the rollup's source tables, whose
+	// writes are what change it.
 	Tables []string
 	// Complexity counts what the statements do, for the complexity guard.
 	Complexity Complexity
-	// Rollup names the rollup table that answers the report, or "" for the base tables.
+	// Rollup names the rollup table that answers the report, or "" for the base tables. A Runner
+	// checks the rollup's freshness in the run's transaction and reads the base tables when it is
+	// stale; running Query yourself skips that check.
 	Rollup string
 	// Limit is the row limit applied, without the probe row; zero for none.
 	Limit int
@@ -91,6 +95,7 @@ type Compiled struct {
 	Params map[string]any
 
 	dec       *decisions
+	plan      *RollupPlan
 	levels    map[int64]table.Level
 	slots     []int
 	level     int
@@ -332,7 +337,7 @@ func (c *compiler) compile() (*Compiled, error) {
 	out.Complexity = c.complexity()
 	out.Tables = c.tableNames()
 	if c.rollup != nil {
-		out.Rollup = c.rollup.Name
+		out.Rollup, out.plan = c.rollup.Name, c.rollup
 	}
 	return out, nil
 }

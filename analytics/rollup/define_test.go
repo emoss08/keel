@@ -31,7 +31,7 @@ func TestDefineRejects(t *testing.T) {
 		{"column through a relation", func() (*rollup.Rollup, error) {
 			return rollup.Define("r", fleetdb.CustomersSchema(), rollup.Day(fleetdb.Customers.CreatedAt),
 				rollup.Dims(s.Customer().Name), count)
-		}, "taken from another handle"},
+		}, "taken through a relation"},
 		{"grain not a time", func() (*rollup.Rollup, error) {
 			return rollup.Define("r", ship, rollup.Day(s.Weight), nil, count)
 		}, "holds neither dates, times nor epochs"},
@@ -180,13 +180,5 @@ func TestWriteMigrations(t *testing.T) {
 	ok(t, err)
 	if string(body) != rollup.Migration(changed) || !strings.HasSuffix(filepath.Base(more[0]), "_rollup_shipments_daily.sql") {
 		t.Fatalf("wrote %s", more[0])
-	}
-}
-
-func TestCamel(t *testing.T) {
-	for in, want := range map[string]string{"ProNumber": "proNumber", "CustomerID": "customerId", "HTTPServer": "httpServer", "ID": "id", "BillToID": "billToId"} {
-		if got := rollup.Camel(in); got != want {
-			t.Errorf("Camel(%s) = %s, want %s", in, got, want)
-		}
 	}
 }

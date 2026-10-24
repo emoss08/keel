@@ -27,10 +27,6 @@ type RefreshOptions struct {
 	MaxBatches int
 	// StatementTimeout bounds each statement of a refresh transaction; zero means none.
 	StatementTimeout time.Duration
-	// OnBegin runs at the start of every refresh transaction, before anything else. Refresh reads
-	// every tenant's source rows and writes every tenant's rollup rows, so under row-level
-	// security use it to set what lets the role do that.
-	OnBegin func(ctx context.Context, tx pgx.Tx) error
 }
 
 // Report counts what a refresh did.
@@ -79,7 +75,10 @@ func Refresh(ctx context.Context, db *keel.DB, rollups ...*Rollup) (Report, erro
 }
 
 // RefreshWith recomputes the rollups' dirty slices, a batch per transaction, until none is left
-// that it can claim. Each transaction claims dirty rows with FOR UPDATE SKIP LOCKED, takes an
+// that it can claim. Each transaction is a keel.Write, so Config.OnBegin runs first with ctx:
+// refresh reads every tenant's source rows and writes every tenant's rollup rows, so under
+// row-level security call it with the context that lets the application's role do that (a system
+// scope). Observers see its statements. Each transaction claims dirty rows with FOR UPDATE SKIP LOCKED, takes an
 // advisory lock per slice (exclusive per tenant for a whole-tenant rebuild, shared per tenant and
 // exclusive per slice otherwise) without waiting, deletes the dirty rows of the slices it locked
 // that are committed, then deletes and re-inserts those slices of the rollup tables from the source
@@ -122,14 +121,14 @@ func Rebuild(ctx context.Context, db *keel.DB, o RefreshOptions, r *Rollup, tena
 		return Report{}, err
 	}
 	u := unit{rollup: r.name, tenant: keel.TenantKeyOf(tenant...), whole: true}
-	err = rf.tx(ctx, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", u.tenantLock()); err != nil {
+	err = rf.tx(ctx, func(ctx context.Context) error {
+		if err := keel.LockKey(ctx, db, u.tenantLock()); err != nil {
 			return err
 		}
-		if err := rf.unmark(ctx, tx, []unit{u}); err != nil {
+		if err := rf.unmark(ctx, []unit{u}); err != nil {
 			return err
 		}
-		return rf.recompute(ctx, tx, []unit{u})
+		return rf.recompute(ctx, []unit{u})
 	})
 	rf.rep.Batches = 1
 	rf.rep.Duration = time.Since(start)
@@ -140,16 +139,23 @@ func Rebuild(ctx context.Context, db *keel.DB, o RefreshOptions, r *Rollup, tena
 }
 
 // MarkAll marks every tenant with rows in each rollup's source for a whole rebuild, which the next
-// Refresh carries out, and returns the number of marks written. A rollup's migration does this
-// once; call it again after writing to a source table with its triggers disabled.
+// Refresh carries out, and returns the number of marks written, in one transaction (a keel.Write,
+// so Config.OnBegin runs with ctx). A rollup's migration does this once; call it again after
+// writing to a source table with its triggers disabled.
 func MarkAll(ctx context.Context, db *keel.DB, rollups ...*Rollup) (int64, error) {
+	stmts := make([]keel.Statement, len(rollups))
+	for i, r := range rollups {
+		stmts[i] = keel.Statement{SQL: r.markAllSQL(false)}
+	}
+	n, err := keel.WriteValue(ctx, db, func(ctx context.Context) ([]int64, error) {
+		return keel.ExecBatch(ctx, db, stmts...)
+	})
+	if err != nil {
+		return 0, fmt.Errorf("rollup: mark all: %w", err)
+	}
 	var total int64
-	for _, r := range rollups {
-		tag, err := db.Pool().Exec(ctx, r.markAllSQL(false))
-		if err != nil {
-			return total, fmt.Errorf("rollup: %s: mark all: %w", r.name, err)
-		}
-		total += tag.RowsAffected()
+	for _, m := range n {
+		total += m
 	}
 	return total, nil
 }
@@ -162,20 +168,16 @@ func Pending(ctx context.Context, db *keel.DB, rollups ...*Rollup) (map[string]i
 		names[i] = r.name
 		out[r.name] = 0
 	}
-	rows, err := db.Pool().Query(ctx, "SELECT rollup, count(*) FROM keel_rollup_dirty WHERE rollup = ANY($1) GROUP BY rollup", names)
-	if err != nil {
-		return nil, fmt.Errorf("rollup: pending: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
+	err := keel.QueryRows(ctx, db, func(row pgx.CollectableRow) error {
 		var name string
 		var n int64
-		if err := rows.Scan(&name, &n); err != nil {
-			return nil, fmt.Errorf("rollup: pending: %w", err)
+		if err := row.Scan(&name, &n); err != nil {
+			return err
 		}
 		out[name] = n
-	}
-	if err := rows.Err(); err != nil {
+		return nil
+	}, "SELECT rollup, count(*) FROM keel_rollup_dirty WHERE rollup = ANY($1) GROUP BY rollup", names)
+	if err != nil {
 		return nil, fmt.Errorf("rollup: pending: %w", err)
 	}
 	return out, nil
@@ -262,17 +264,13 @@ func tenantTypes(ctx context.Context, db *keel.DB, r *Rollup) ([]string, error) 
 	for i, ci := range r.source.Tenant {
 		names[i] = r.source.Columns[ci].Name
 	}
-	rows, err := db.Pool().Query(ctx, `SELECT a.attname, format_type(a.atttypid, a.atttypmod) FROM pg_attribute a
-		WHERE a.attrelid = to_regclass($1) AND a.attnum > 0 AND NOT a.attisdropped AND a.attname = ANY($2)`,
-		r.source.Quoted, names)
-	if err != nil {
-		return nil, fmt.Errorf("rollup: %s: read tenant column types: %w", r.name, err)
-	}
-	byName, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) ([2]string, error) {
+	byName, err := keel.QueryAll(ctx, db, func(row pgx.CollectableRow) ([2]string, error) {
 		var p [2]string
 		err := row.Scan(&p[0], &p[1])
 		return p, err
-	})
+	}, `SELECT a.attname, format_type(a.atttypid, a.atttypmod) FROM pg_attribute a
+		WHERE a.attrelid = to_regclass($1) AND a.attnum > 0 AND NOT a.attisdropped AND a.attname = ANY($2)`,
+		r.source.Quoted, names)
 	if err != nil {
 		return nil, fmt.Errorf("rollup: %s: read tenant column types: %w", r.name, err)
 	}
@@ -327,33 +325,28 @@ func (r *Rollup) refreshPlan(types []string) *refreshPlan {
 	return p
 }
 
-// tx runs fn in a refresh transaction.
-func (rf *refresher) tx(ctx context.Context, fn func(tx pgx.Tx) error) error {
-	return pgx.BeginFunc(ctx, rf.db.Pool(), func(tx pgx.Tx) error {
+// tx runs fn in a refresh transaction: a keel.Write on the primary, with the statement timeout.
+func (rf *refresher) tx(ctx context.Context, fn func(ctx context.Context) error) error {
+	return keel.Write(ctx, rf.db, func(ctx context.Context) error {
 		if rf.o.StatementTimeout > 0 {
-			ms := strconv.FormatInt(rf.o.StatementTimeout.Milliseconds(), 10)
-			if _, err := tx.Exec(ctx, "SELECT set_config('statement_timeout', $1, true)", ms); err != nil {
+			ms := strconv.FormatInt(max(rf.o.StatementTimeout.Milliseconds(), 1), 10)
+			if _, err := keel.Exec(ctx, rf.db, "SELECT set_config('statement_timeout', $1, true)", ms); err != nil {
 				return err
 			}
 		}
-		if rf.o.OnBegin != nil {
-			if err := rf.o.OnBegin(ctx, tx); err != nil {
-				return err
-			}
-		}
-		return fn(tx)
+		return fn(ctx)
 	})
 }
 
 // batch runs one refresh transaction and reports whether another may find work.
 func (rf *refresher) batch(ctx context.Context) (bool, error) {
 	var more bool
-	err := rf.tx(ctx, func(tx pgx.Tx) error {
-		units, claimed, err := rf.claim(ctx, tx)
+	err := rf.tx(ctx, func(ctx context.Context) error {
+		units, claimed, err := rf.claim(ctx)
 		if err != nil || len(units) == 0 {
 			return err
 		}
-		locked, err := rf.lock(ctx, tx, units)
+		locked, err := rf.lock(ctx, units)
 		if err != nil {
 			return err
 		}
@@ -361,11 +354,11 @@ func (rf *refresher) batch(ctx context.Context) (bool, error) {
 		if len(locked) == 0 {
 			return nil
 		}
-		if err := rf.unmark(ctx, tx, locked); err != nil {
+		if err := rf.unmark(ctx, locked); err != nil {
 			return err
 		}
 		more = claimed == rf.o.BatchSize
-		return rf.recompute(ctx, tx, locked)
+		return rf.recompute(ctx, locked)
 	})
 	rf.rep.Batches++
 	if err != nil {
@@ -376,13 +369,8 @@ func (rf *refresher) batch(ctx context.Context) (bool, error) {
 
 // claim locks up to BatchSize of the oldest dirty rows no other worker holds and returns the
 // distinct units they name, a whole-tenant mark absorbing the tenant's slices.
-func (rf *refresher) claim(ctx context.Context, tx pgx.Tx) ([]unit, int, error) {
-	rows, err := tx.Query(ctx, `SELECT rollup, tenant_key, bucket FROM keel_rollup_dirty
-		WHERE rollup = ANY($1) ORDER BY marked_at LIMIT $2 FOR UPDATE SKIP LOCKED`, rf.names, rf.o.BatchSize)
-	if err != nil {
-		return nil, 0, err
-	}
-	claimed, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (unit, error) {
+func (rf *refresher) claim(ctx context.Context) ([]unit, int, error) {
+	claimed, err := keel.QueryAll(ctx, rf.db, func(row pgx.CollectableRow) (unit, error) {
 		var u unit
 		var b pgtype.Timestamptz
 		if err := row.Scan(&u.rollup, &u.tenant, &b); err != nil {
@@ -392,7 +380,8 @@ func (rf *refresher) claim(ctx context.Context, tx pgx.Tx) ([]unit, int, error) 
 		u.null = b.InfinityModifier == pgtype.Infinity
 		u.bucket = b.Time
 		return u, nil
-	})
+	}, `SELECT rollup, tenant_key, bucket FROM keel_rollup_dirty
+		WHERE rollup = ANY($1) ORDER BY marked_at LIMIT $2 FOR UPDATE SKIP LOCKED`, rf.names, rf.o.BatchSize)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -424,21 +413,17 @@ func distinctUnits(in []unit) []unit {
 }
 
 // lock takes the units' advisory locks without waiting and returns the units it locked.
-func (rf *refresher) lock(ctx context.Context, tx pgx.Tx, units []unit) ([]unit, error) {
+func (rf *refresher) lock(ctx context.Context, units []unit) ([]unit, error) {
 	tenants := make([]string, len(units))
 	slices := make([]string, len(units))
 	wholes := make([]bool, len(units))
 	for i, u := range units {
 		tenants[i], slices[i], wholes[i] = u.tenantLock(), u.sliceLock(), u.whole
 	}
-	rows, err := tx.Query(ctx, `SELECT u.i FROM unnest($1::text[], $2::text[], $3::bool[]) WITH ORDINALITY AS u(tk, sk, whole, i)
+	idx, err := keel.QueryAll(ctx, rf.db, pgx.RowTo[int64], `SELECT u.i FROM unnest($1::text[], $2::text[], $3::bool[]) WITH ORDINALITY AS u(tk, sk, whole, i)
 		WHERE CASE WHEN u.whole THEN pg_try_advisory_xact_lock(hashtextextended(u.tk, 0))
 		ELSE pg_try_advisory_xact_lock_shared(hashtextextended(u.tk, 0)) AND pg_try_advisory_xact_lock(hashtextextended(u.sk, 0)) END`,
 		tenants, slices, wholes)
-	if err != nil {
-		return nil, err
-	}
-	idx, err := pgx.CollectRows(rows, pgx.RowTo[int64])
 	if err != nil {
 		return nil, err
 	}
@@ -450,14 +435,14 @@ func (rf *refresher) lock(ctx context.Context, tx pgx.Tx, units []unit) ([]unit,
 }
 
 // unmark deletes the committed dirty rows of the units, skipping rows another worker holds.
-func (rf *refresher) unmark(ctx context.Context, tx pgx.Tx, units []unit) error {
+func (rf *refresher) unmark(ctx context.Context, units []unit) error {
 	names := make([]string, len(units))
 	tenants := make([]string, len(units))
 	buckets := make([]pgtype.Timestamptz, len(units))
 	for i, u := range units {
 		names[i], tenants[i], buckets[i] = u.rollup, u.tenant, u.dirtyBucket()
 	}
-	_, err := tx.Exec(ctx, `DELETE FROM keel_rollup_dirty WHERE ctid = ANY(ARRAY(
+	_, err := keel.Exec(ctx, rf.db, `DELETE FROM keel_rollup_dirty WHERE ctid = ANY(ARRAY(
 		SELECT d.ctid FROM keel_rollup_dirty d
 		  JOIN unnest($1::text[], $2::text[], $3::timestamptz[]) AS u(r, k, b)
 		    ON d.rollup = u.r AND d.tenant_key = u.k AND (u.b = '-infinity' OR d.bucket = u.b)
@@ -466,8 +451,8 @@ func (rf *refresher) unmark(ctx context.Context, tx pgx.Tx, units []unit) error 
 }
 
 // recompute deletes the units' rows from their rollup tables and inserts them again from the
-// source tables, one round trip for every rollup.
-func (rf *refresher) recompute(ctx context.Context, tx pgx.Tx, units []unit) error {
+// source tables, in one round trip for every rollup.
+func (rf *refresher) recompute(ctx context.Context, units []unit) error {
 	byRollup := map[string][]unit{}
 	var order []string
 	for _, u := range units {
@@ -476,31 +461,28 @@ func (rf *refresher) recompute(ctx context.Context, tx pgx.Tx, units []unit) err
 		}
 		byRollup[u.rollup] = append(byRollup[u.rollup], u)
 	}
-	b := &pgx.Batch{}
+	var stmts []keel.Statement
 	counts := make([]queueCounts, len(order))
 	for i, name := range order {
-		c, err := rf.rollups[name].queue(b, byRollup[name])
+		c, err := rf.rollups[name].queue(&stmts, byRollup[name])
 		if err != nil {
 			return err
 		}
 		counts[i] = c
 	}
-	br := tx.SendBatch(ctx, b)
+	affected, err := keel.ExecBatch(ctx, rf.db, stmts...)
+	if err != nil {
+		return err
+	}
 	for i, name := range order {
 		var n int64
-		for j := 0; j <= counts[i].inserts; j++ {
-			tag, err := br.Exec()
-			if err != nil {
-				_ = br.Close()
-				return err
-			}
-			if j > 0 {
-				n += tag.RowsAffected()
-			}
+		for _, m := range affected[1 : 1+counts[i].inserts] {
+			n += m
 		}
+		affected = affected[1+counts[i].inserts:]
 		rf.rep.add(name, counts[i].slices, counts[i].whole, n)
 	}
-	return br.Close()
+	return nil
 }
 
 // queueCounts is what queue added for one rollup.
@@ -510,9 +492,9 @@ type queueCounts struct {
 	inserts int
 }
 
-// queue adds to b the statements that recompute units of p's rollup: one DELETE, then an INSERT
-// for each kind of unit present.
-func (p *refreshPlan) queue(b *pgx.Batch, units []unit) (queueCounts, error) {
+// queue appends the statements that recompute units of p's rollup: one DELETE, then an INSERT for
+// each kind of unit present.
+func (p *refreshPlan) queue(stmts *[]keel.Statement, units []unit) (queueCounts, error) {
 	n := len(p.r.source.Tenant)
 	var all, buckets, nulls, wholes columns
 	for _, u := range units {
@@ -530,10 +512,10 @@ func (p *refreshPlan) queue(b *pgx.Batch, units []unit) (queueCounts, error) {
 			buckets.add(vals, u.dirtyBucket())
 		}
 	}
-	b.Queue(p.deleteSQL, all.args(n, true)...)
+	*stmts = append(*stmts, keel.Statement{SQL: p.deleteSQL, Args: all.args(n, true)})
 	c := queueCounts{slices: len(buckets.buckets) + len(nulls.buckets), whole: len(wholes.buckets)}
 	if len(buckets.buckets) > 0 {
-		b.Queue(p.bucketSQL, buckets.args(n, true)...)
+		*stmts = append(*stmts, keel.Statement{SQL: p.bucketSQL, Args: buckets.args(n, true)})
 		c.inserts++
 	}
 	for _, q := range []struct {
@@ -543,11 +525,11 @@ func (p *refreshPlan) queue(b *pgx.Batch, units []unit) (queueCounts, error) {
 		if len(q.cols.buckets) == 0 {
 			continue
 		}
-		if n == 0 {
-			b.Queue(q.sql)
-		} else {
-			b.Queue(q.sql, q.cols.args(n, false)...)
+		st := keel.Statement{SQL: q.sql}
+		if n > 0 {
+			st.Args = q.cols.args(n, false)
 		}
+		*stmts = append(*stmts, st)
 		c.inserts++
 	}
 	return c, nil

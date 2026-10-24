@@ -26,11 +26,11 @@ export const TRANSFORM_OPS: readonly TransformOp[] = ["round", "ceil", "floor", 
 export type ChartType = "bar" | "hbar" | "line" | "area" | "pie" | "donut" | "scatter" | "kpi" | "map";
 export const CHART_TYPES: readonly ChartType[] = ["bar", "hbar", "line", "area", "pie", "donut", "scatter", "kpi", "map"];
 
-export type FormulaClass = "any" | "number" | "text" | "temporal" | "bool" | "ordered" | "digits" | "unit";
-export const FORMULA_CLASSES: readonly FormulaClass[] = ["any", "number", "text", "temporal", "bool", "ordered", "digits", "unit"];
+export type FormulaClass = "any" | "number" | "text" | "temporal" | "bool" | "ordered" | "mean" | "digits" | "unit";
+export const FORMULA_CLASSES: readonly FormulaClass[] = ["any", "number", "text", "temporal", "bool", "ordered", "mean", "digits", "unit"];
 
-export type FormulaResult = "fixed" | "same" | "common" | "fractional";
-export const FORMULA_RESULTS: readonly FormulaResult[] = ["fixed", "same", "common", "fractional"];
+export type FormulaResult = "fixed" | "same" | "common" | "fractional" | "mean";
+export const FORMULA_RESULTS: readonly FormulaResult[] = ["fixed", "same", "common", "fractional", "mean"];
 
 /** Band groups a number into ranges: a fixed width, or ascending boundaries where the last range is open-ended. A grouped value is the lower bound of its range. */
 export type Band = {
@@ -412,6 +412,7 @@ export type FormulaFunction = {
 export type FormulaOperator = {
   doc: string;
   form: string;
+  instantSql?: string;
   precedence: number;
   sql: string;
   symbol: string;
@@ -1338,15 +1339,15 @@ export const FORMULA_FUNCTIONS: readonly FormulaFunction[] = [
   },
   {
     "name": "avg",
-    "doc": "The mean of the values in the group.",
+    "doc": "The mean of the values in the group; the mean of dates or times is the date or time at their average (to the second for an epoch, to the day for a date).",
     "example": "avg({weight})",
     "params": [
       {
-        "name": "number",
-        "class": "number"
+        "name": "value",
+        "class": "mean"
       }
     ],
-    "result": "fractional",
+    "result": "mean",
     "aggregate": true,
     "sql": {
       "template": "avg({0})"
@@ -1482,8 +1483,9 @@ export const FORMULA_OPERATORS: readonly FormulaOperator[] = [
     "symbol": "-",
     "form": "infix",
     "precedence": 50,
-    "doc": "Subtraction.",
-    "sql": "({0} - {1})"
+    "doc": "Subtraction; between two dates or times, the seconds from the second to the first: an int for two epochs, a decimal otherwise.",
+    "sql": "({0} - {1})",
+    "instantSql": "extract(epoch from ({0} - {1}))"
   },
   {
     "symbol": "*",

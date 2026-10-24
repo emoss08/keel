@@ -160,3 +160,50 @@ func TestMutationOldOnEveryUpdateAndDelete(t *testing.T) {
 		eq(t, log[i], want[i])
 	}
 }
+
+func TestAfterWriteHookJoinsTheImplicitTransaction(t *testing.T) {
+	d := openDB(t, nil)
+	ctx := newTenant()
+	tags := 0
+	fail := false
+	keel.OnCreate(d, fleetdb.Customers, keel.AfterWrite, func(ctx context.Context, m *keel.Mutation[fleet.Customer]) error {
+		if !keel.InTx(ctx, d) {
+			t.Error("an AfterWrite hook of an implicit transaction ran outside it")
+		}
+		_, err := keel.Exec(ctx, d, "INSERT INTO tags (id, organization_id, business_unit_id, name) VALUES ($1, $2, $3, $4)",
+			"tag_"+m.Row.ID, m.Row.OrganizationID, m.Row.BusinessUnitID, m.Row.Code)
+		if err != nil {
+			return err
+		}
+		n, err := keel.QueryValue[int64](ctx, d, "SELECT count(*) FROM customers WHERE id = $1", m.Row.ID)
+		if err == nil && n != 1 {
+			t.Errorf("the hook does not see the row it was called for: %d", n)
+		}
+		tags++
+		return err
+	})
+	boom := errors.New("boom")
+	keel.OnCreate(d, fleetdb.Customers, keel.AfterWrite, func(context.Context, *keel.Mutation[fleet.Customer]) error {
+		if fail {
+			return boom
+		}
+		return nil
+	})
+	count := func(code string) int64 {
+		t.Helper()
+		return must(keel.QueryValue[int64](context.Background(), d,
+			"SELECT (SELECT count(*) FROM customers WHERE code = $1) + (SELECT count(*) FROM tags WHERE name = $1)", code))(t)
+	}
+
+	kept := &fleet.Customer{Name: "Kept", Code: "K" + newTenantID()}
+	ok(t, fleetdb.Customers.Create(ctx, d, kept))
+	eq(t, count(kept.Code), int64(2))
+
+	fail = true
+	lost := &fleet.Customer{Name: "Lost", Code: "L" + newTenantID()}
+	if err := fleetdb.Customers.Create(ctx, d, lost); !errors.Is(err, boom) {
+		t.Fatalf("got %v", err)
+	}
+	eq(t, count(lost.Code), int64(0))
+	eq(t, tags, 2)
+}

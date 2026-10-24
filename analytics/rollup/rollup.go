@@ -17,7 +17,6 @@ package rollup
 import (
 	"errors"
 	"fmt"
-	"reflect"
 	"regexp"
 	"slices"
 	"time"
@@ -33,33 +32,21 @@ var rollupName = regexp.MustCompile(`^[a-z][a-z0-9_]{0,39}$`)
 
 // colRef is a column taken from a generated handle, or the error of taking it.
 type colRef struct {
-	ref   *keel.Ref
+	table *schema.Table
 	index int32
 	err   error
 }
 
-// colType is the type every generated column kind embeds.
-var colType = reflect.TypeFor[keel.Col]()
-
-// columnOf takes the keel.Col a generated column handle embeds, at any depth of embedding.
+// columnOf takes the table and index of a generated column handle.
 func columnOf(e keel.Expr) colRef {
 	if e == nil {
-		return colRef{err: errors.New("rollup: a column is nil")}
+		return colRef{err: errors.New("a column is nil")}
 	}
-	v := reflect.ValueOf(e)
-	for {
-		if v.Type() == colType {
-			c := v.Interface().(keel.Col)
-			if c.Ref == nil || c.Ref.Table == nil {
-				return colRef{err: errors.New("rollup: a column has no table")}
-			}
-			return colRef{ref: c.Ref, index: c.Index}
-		}
-		if v.Kind() != reflect.Struct || v.NumField() == 0 || !v.Type().Field(0).Anonymous {
-			return colRef{err: fmt.Errorf("rollup: %T is not a generated column", e)}
-		}
-		v = v.Field(0)
+	t, i, ok := keel.ColumnOf(e)
+	if !ok {
+		return colRef{err: fmt.Errorf("%T is not a generated column of a table's own handle (a column taken through a relation belongs to the related row)", e)}
 	}
+	return colRef{table: t, index: i}
 }
 
 // Grain is the period a rollup aggregates a date, time or epoch column to.
@@ -215,15 +202,14 @@ func (r *Rollup) check(grain Grain, dims []Dim, measures []Measure) error {
 		return fmt.Errorf("time zone %q: %w", r.zoneName, err)
 	}
 	r.zone = loc
-	var base *keel.Ref
-	if r.grain, err = r.own(grain.col, &base); err != nil {
+	if r.grain, err = r.own(grain.col); err != nil {
 		return fmt.Errorf("grain: %w", err)
 	}
 	if err := r.checkGrain(); err != nil {
 		return err
 	}
 	for _, d := range dims {
-		idx, err := r.own(d.col, &base)
+		idx, err := r.own(d.col)
 		if err != nil {
 			return fmt.Errorf("dimension: %w", err)
 		}
@@ -236,7 +222,7 @@ func (r *Rollup) check(grain Grain, dims []Dim, measures []Measure) error {
 		return errors.New("a rollup needs at least one measure")
 	}
 	for _, m := range measures {
-		rm, err := r.checkMeasure(m, &base)
+		rm, err := r.checkMeasure(m)
 		if err != nil {
 			return err
 		}
@@ -247,21 +233,14 @@ func (r *Rollup) check(grain Grain, dims []Dim, measures []Measure) error {
 	return nil
 }
 
-// own returns the index of c, checking it is a column of the source table taken from the same
-// handle as the columns before it, not through a relation.
-func (r *Rollup) own(c colRef, base **keel.Ref) (int32, error) {
+// own returns the index of c, checking it is a column of the source table itself.
+func (r *Rollup) own(c colRef) (int32, error) {
 	if c.err != nil {
 		return -1, c.err
 	}
-	if c.ref.Table != r.source {
-		return -1, fmt.Errorf("%s.%s is not a column of %s", c.ref.Table.Name,
-			c.ref.Table.Columns[c.index].Name, r.source.Name)
-	}
-	if *base == nil {
-		*base = c.ref
-	} else if *base != c.ref {
-		return -1, fmt.Errorf("%s is taken from another handle of %s, such as a relation or an alias",
-			r.source.Columns[c.index].Name, r.source.Name)
+	if c.table != r.source {
+		return -1, fmt.Errorf("%s.%s is not a column of %s", c.table.Name,
+			c.table.Columns[c.index].Name, r.source.Name)
 	}
 	return c.index, nil
 }
@@ -303,11 +282,11 @@ func (r *Rollup) checkDim(idx int32) error {
 }
 
 // checkMeasure resolves m, checking that its column suits its aggregation.
-func (r *Rollup) checkMeasure(m Measure, base **keel.Ref) (resolvedMeasure, error) {
+func (r *Rollup) checkMeasure(m Measure) (resolvedMeasure, error) {
 	if m.rows {
 		return resolvedMeasure{agg: ir.AggCount, col: -1}, nil
 	}
-	idx, err := r.own(m.col, base)
+	idx, err := r.own(m.col)
 	if err != nil {
 		return resolvedMeasure{}, fmt.Errorf("measure: %w", err)
 	}

@@ -19,9 +19,10 @@ type Table struct{}
 type Ref struct {
 	Table *schema.Table
 
-	parent *Ref
-	rel    int32
-	alias  string
+	parent   *Ref
+	rel      int32
+	alias    string
+	numbered bool
 }
 
 // relation returns the relation that leads from the parent to r.

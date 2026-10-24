@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/emoss08/keel"
-	"github.com/emoss08/keel/analytics/formula"
+	"github.com/emoss08/keel/analytics"
 	"github.com/emoss08/keel/analytics/ir"
 	"github.com/emoss08/keel/analytics/rollup"
 	"github.com/emoss08/keel/internal/testmodels/fleet"
@@ -87,6 +87,12 @@ func (c *clock) set(t time.Time) { c.unix.Store(t.Unix()) }
 // clk's time. It skips without Postgres unless KEEL_TEST_REQUIRE is set.
 func openDB(t testing.TB, clk *clock) *keel.DB {
 	t.Helper()
+	return openDBWith(t, clk, nil)
+}
+
+// openDBWith is openDB with edit applied to the configuration.
+func openDBWith(t testing.TB, clk *clock, edit func(cfg *keel.Config)) *keel.DB {
+	t.Helper()
 	setupOnce.Do(func() { setupErr = setup() })
 	if setupErr != nil {
 		if os.Getenv("KEEL_TEST_REQUIRE") != "" {
@@ -111,6 +117,9 @@ func openDB(t testing.TB, clk *clock) *keel.DB {
 		NewID: func(prefix string) string { return prefix + randHex() },
 		Now:   clk.now,
 	}
+	if edit != nil {
+		edit(&cfg)
+	}
 	d, err := keel.Open(context.Background(), cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -128,9 +137,11 @@ func setup() error {
 		admin = "postgres://keel:keel@localhost:55432/keel?sslmode=disable"
 	}
 	rollups := fstest.MapFS{
-		"20270101000000_rollup_shipments_daily.sql":   {Data: []byte(rollup.Migration(daily))},
-		"20270101000001_rollup_shipments_monthly.sql": {Data: []byte(rollup.Migration(monthly))},
-		"20270101000002_rollup_stops_daily.sql":       {Data: []byte(rollup.Migration(stopsDaily))},
+		"20270101000000_rollup_shipments_daily.sql":           {Data: []byte(rollup.Migration(daily))},
+		"20270101000001_rollup_shipments_monthly.sql":         {Data: []byte(rollup.Migration(monthly))},
+		"20270101000002_rollup_stops_daily.sql":               {Data: []byte(rollup.Migration(stopsDaily))},
+		"20270101000003_rollup_shipments_chicago.sql":         {Data: []byte(rollup.Migration(chicagoDaily))},
+		"20270101000004_rollup_shipments_chicago_monthly.sql": {Data: []byte(rollup.Migration(chicagoMonthly))},
 	}
 	var err error
 	testDSN, dropTest, err = migrate.Template(ctx, migrate.TemplateOptions{
@@ -247,125 +258,27 @@ func (f *fixture) converged() {
 	}
 }
 
-// catalog is an analytics catalog over the fleet schema with rollup's default keys, for resolving
-// report definitions in tests.
-type catalog struct {
-	tables map[string]*schema.Table
-	keys   rollup.Keys
-}
-
-func fleetCatalog() *catalog {
-	k := rollup.DefaultKeys()
-	c := &catalog{tables: map[string]*schema.Table{}, keys: k}
-	for _, t := range []*schema.Table{fleetdb.ShipmentsSchema(), fleetdb.CustomersSchema(), fleetdb.MovesSchema()} {
-		c.tables[k.Entity(t)] = t
+// fleetCatalog is the analytics catalog of the fleet models, which reports resolve against.
+var fleetCatalog = sync.OnceValue(func() *analytics.Catalog {
+	cat, err := analytics.Build([]*schema.Table{fleetdb.ShipmentsSchema(), fleetdb.CustomersSchema(),
+		fleetdb.MovesSchema(), fleetdb.StopsSchema(), fleetdb.LocationsSchema(), fleetdb.TagsSchema(),
+		fleetdb.WorkersSchema(), fleetdb.PlantsSchema()}, analytics.Options{})
+	if err != nil {
+		panic(err)
 	}
-	return c
-}
+	return cat
+})
 
-func (c *catalog) HasEntity(key string) bool { return c.tables[key] != nil }
-
-func (c *catalog) EntityKeys() []string { return slices.Sorted(mapKeys(c.tables)) }
-
-func mapKeys[V any](m map[string]V) func(func(string) bool) {
-	return func(yield func(string) bool) {
-		for k := range m {
-			if !yield(k) {
-				return
-			}
-		}
-	}
-}
-
-func (c *catalog) Field(entity, key string) (ir.FieldInfo, bool) {
-	t := c.tables[entity]
-	if t == nil {
-		return ir.FieldInfo{}, false
-	}
-	for i := range t.Columns {
-		col := &t.Columns[i]
-		if col.Report == nil || !col.Report.Included || c.keys.Field(t, int32(i)) != key {
-			continue
-		}
-		info := ir.FieldInfo{Type: formulaType(col.Report.Type), Filterable: true, Groupable: true}
-		for _, a := range col.Report.Aggs.Names() {
-			info.Aggs = append(info.Aggs, ir.Agg(a))
-		}
-		for _, e := range col.Enum {
-			info.Enum = append(info.Enum, e.Value)
-		}
-		return info, true
-	}
-	return ir.FieldInfo{}, false
-}
-
-func (c *catalog) FieldKeys(entity string) []string {
-	t := c.tables[entity]
-	var out []string
-	for i := range t.Columns {
-		out = append(out, c.keys.Field(t, int32(i)))
-	}
-	return out
-}
-
-func (c *catalog) Edge(entity, name string) (ir.EdgeInfo, bool) {
-	t := c.tables[entity]
-	if t == nil {
-		return ir.EdgeInfo{}, false
-	}
-	for i := range t.Relations {
-		rel := &t.Relations[i]
-		if c.keys.Edge(t, int32(i)) != name || rel.Target == nil || rel.Kind == schema.Pick {
-			continue
-		}
-		target := c.keys.Entity(rel.Target)
-		if c.tables[target] == nil {
-			return ir.EdgeInfo{}, false
-		}
-		return ir.EdgeInfo{Target: target, ToMany: rel.Kind.ToMany()}, true
-	}
-	return ir.EdgeInfo{}, false
-}
-
-func (c *catalog) EdgeNames(entity string) []string {
-	t := c.tables[entity]
-	var out []string
-	for i := range t.Relations {
-		out = append(out, c.keys.Edge(t, int32(i)))
-	}
-	return out
-}
-
-func formulaType(v schema.ValueType) formula.Type {
-	switch v {
-	case schema.ValueString:
-		return formula.String
-	case schema.ValueEnum:
-		return formula.Enum
-	case schema.ValueInt:
-		return formula.Int
-	case schema.ValueFloat:
-		return formula.Float
-	case schema.ValueDecimal:
-		return formula.Decimal
-	case schema.ValueBool:
-		return formula.Bool
-	case schema.ValueTime:
-		return formula.Timestamp
-	case schema.ValueDate:
-		return formula.Date
-	case schema.ValueEpoch:
-		return formula.Epoch
-	}
-	return formula.JSON
-}
-
-// resolve decodes a definition and resolves it against the fleet catalog.
-func resolve(t testing.TB, js string) *ir.Resolved {
+// query decodes a definition and resolves it against the fleet catalog, as a router is asked
+// about it in loc at now with params.
+func query(t testing.TB, js string, loc *time.Location, now time.Time, params map[string]any) analytics.RollupQuery {
 	t.Helper()
 	def, err := ir.Decode([]byte(js))
 	ok(t, err)
 	res, err := ir.Resolve(def, fleetCatalog(), ir.Limits{})
 	ok(t, err)
-	return res
+	if loc == nil {
+		loc = time.UTC
+	}
+	return analytics.RollupQuery{Catalog: fleetCatalog(), Resolved: res, Params: params, Location: loc, Now: now}
 }

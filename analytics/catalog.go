@@ -17,9 +17,13 @@ import (
 
 // Options configures Build.
 type Options struct {
-	// Translate returns the text for a label key (an entity key "shipment", a field or edge key
-	// "shipment.proNumber", an enum value key "shipment.status.InTransit", a category key
-	// "category.Operations"), or fallback, the label keel gen derived. Nil uses the fallbacks.
+	// Translate returns the text for a translation key in the request's language, or fallback,
+	// the text keel derived. Keys are an entity's key ("shipment"), a field's or an edge's
+	// ("shipment.proNumber", "shipment.customer"), an enum value's ("shipment.status.InTransit"),
+	// each with "@description" for its doc comment and an entity's with "@plural"; a category's
+	// ("@category.Operations"); and the engine's own words ("@agg.sum", "@window.rank",
+	// "@pivot.other", "@pattern.measure"). Catalog.Messages lists every key with its fallback.
+	// Nil uses the fallbacks.
 	Translate func(ctx context.Context, key, fallback string) string
 }
 
@@ -73,7 +77,8 @@ type Field struct {
 	Type formula.Type
 	// Kind says whether the field groups (dimension) or aggregates (measure) by default.
 	Kind schema.ReportKind
-	// Aggs are the aggregations the field supports.
+	// Aggs are the aggregations the field supports: those keel gen derived, and avg for a date or
+	// time that takes min and max, since the mean of instants is an instant.
 	Aggs []ir.Agg
 	// Format is the display kind keel gen resolved (format= or the type's KeelFormat).
 	Format string
@@ -206,7 +211,11 @@ func fieldOf(e *Entity, i int32) (*Field, bool) {
 	f := &Field{Key: key, Entity: e, Column: i, Label: orDefault(col.Label, col.Name),
 		LabelKey: e.Key + "." + key, Doc: col.Doc, Type: typ, Kind: info.Kind, Format: info.Format,
 		Filterable: true, Groupable: info.Kind == schema.Dimension && typ != formula.JSON}
-	for _, name := range info.Aggs.Names() {
+	aggs := info.Aggs
+	if typ.Temporal() && aggs.Has(schema.AggMin|schema.AggMax) {
+		aggs |= schema.AggAvg
+	}
+	for _, name := range aggs.Names() {
 		f.Aggs = append(f.Aggs, ir.Agg(name))
 	}
 	for _, v := range col.Enum {

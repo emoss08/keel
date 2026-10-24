@@ -32,6 +32,40 @@ type render struct {
 
 	shared    []sharedArg
 	sharedMap map[argKey]int
+	ctes      []cteName
+}
+
+// cteName is the name a statement gives a CTE that keel names: its base name, numbered when the
+// statement already holds a CTE of that base.
+type cteName struct {
+	ref    *Ref
+	quoted string
+}
+
+// tableName returns the quoted name ref's table has in the statement: its own, or for a CTE keel
+// names (a dynamic query's With, derived tables and set operations) the base name the first time
+// the statement uses that base and base_2, base_3, … after, so CTEs nested in one statement never
+// shadow each other. Names depend only on the statement's shape.
+func (r *render) tableName(ref *Ref) string {
+	if !ref.numbered {
+		return ref.Table.Quoted
+	}
+	same := 0
+	for _, n := range r.ctes {
+		if n.ref == ref {
+			return n.quoted
+		}
+		if n.ref.Table.Name == ref.Table.Name {
+			same++
+		}
+	}
+	name := ref.Table.Name
+	if same > 0 {
+		name += "_" + strconv.Itoa(same+1)
+	}
+	q := schema.Quote(name)
+	r.ctes = append(r.ctes, cteName{ref: ref, quoted: q})
+	return q
 }
 
 // argKey identifies a bind that may share its placeholder with an earlier one. Postgres infers a
@@ -128,6 +162,8 @@ func (r *render) recycle() {
 	r.bare = false
 	clear(r.shared)
 	r.shared = r.shared[:0]
+	clear(r.ctes)
+	r.ctes = r.ctes[:0]
 	if len(r.sharedMap) > 4*sharedScan {
 		r.sharedMap = nil
 	} else if r.sharedMap != nil {

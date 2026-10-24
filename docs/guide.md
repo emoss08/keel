@@ -3277,11 +3277,76 @@ The same pattern works for an application:
 | `INSERT … SELECT` through `NewInsert().Table(...)` | `s.InsertFrom(ctx, db, q, cols...)` |
 | `db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {...})` | `keel.Write(ctx, db, func(ctx context.Context) error {...})`; pass `ctx`, not a `tx` |
 | `bun.IDB` parameters to share a transaction | nothing; the transaction travels on the context |
-| `NewRaw` / string fragments | `keel.Raw("…?…", col, value)`; `db.Pool()` for what keel cannot express (unscoped) |
+| `NewRaw` / string fragments | `keel.Raw("…?…", col, value)` inside a query; whole statements through `keel.Exec`, `keel.QueryRows`, `keel.QueryAll` or `keel.QueryValue`, which join the context's transaction (unscoped) |
 | `bun.Ident`, `bun.Safe` | an expression argument of `keel.Raw` |
 | `sql.ErrNoRows` | `keel.ErrNotFound` |
 | `pgdriver.Error` with `IntegrityViolation()` | `keel.IsUnique`, `IsForeignKey`, `IsCheck`, `Constraint` |
 | `bun.QueryHook` | `keel.Observer` |
+
+## Running alongside another data layer
+
+An application moving to keel can keep writing through its old data layer while it moves, with
+both in one transaction. The old layer must run on pgx (Bun runs on pgx through its stdlib driver,
+`pgdriver` cannot): it begins the transaction on a pgx connection, and `keel.JoinTx` makes keel run
+inside it.
+
+```go
+conn, err := pool.Acquire(ctx) // the pgxpool both layers share
+defer conn.Release()
+tx, err := conn.Begin(ctx)     // or the other layer's BeginTx on this connection
+// … the other layer sets its scope (row-level security) and writes …
+
+kctx, done := keel.JoinTx(ctx, db, conn.Conn())
+err = keel.Write(kctx, db, func(ctx context.Context) error {
+    return shipmentdb.Shipments.Create(ctx, db, sh)
+})
+if err != nil {
+    _ = tx.Rollback(ctx)
+    done(false)
+    return err
+}
+err = tx.Commit(ctx)
+done(err == nil)
+```
+
+- Every keel operation on `kctx` runs on that connection, in the owner's transaction. keel sends no
+  `BEGIN`, `COMMIT` or `Config.OnBegin` statements: the owner began the transaction and set its
+  scope. `keel.Read` and `keel.Write` join it, `keel.Savepoint` nests in it, and replicas are not
+  used.
+- Scope checks, tenancy, interceptors, read filters, hooks and observers apply as in a keel
+  transaction. A failing `AfterWrite` hook returns its error; rolling back is the owner's call.
+- `done` tells keel how the transaction ended. `done(true)` after `COMMIT` runs the `Committed`
+  hooks and `AfterCommit` callbacks and moves the data versions of the tables keel wrote;
+  `done(false)` after `ROLLBACK` drops them. Only the first call counts, and keel refuses to run on
+  `kctx` afterwards instead of running outside the transaction.
+- Writes the other layer makes are invisible to keel's data versions; call `keel.MarkChanged` with
+  their tables.
+- The connection belongs to one goroutine at a time, as any transaction does.
+
+Seeds run the same way: `seed.Options.Transact` replaces the `keel.Write` around each seed (and
+each tenant of a `PerTenant` seed). It begins the other layer's transaction, joins it, calls `fn`
+and commits, so a seed's rows, the other layer's writes and the seed's bookkeeping row commit or
+roll back together:
+
+```go
+opts.Transact = func(ctx context.Context, fn func(ctx context.Context) error) error {
+    tx, err := bunDB.BeginTx(ctx, nil)
+    if err != nil {
+        return err
+    }
+    kctx, done := keel.JoinTx(ctx, db, pgxConnOf(tx)) // the pgx connection under Bun's stdlib driver
+    if err := fn(kctx); err != nil {
+        _ = tx.Rollback()
+        done(false)
+        return err
+    }
+    err = tx.Commit()
+    done(err == nil)
+    return err
+}
+```
+
+The seed lock is a session lock on a connection of its own and needs no transaction.
 
 ## Analytics: report definitions and formulas
 
@@ -3487,7 +3552,7 @@ The tables are generated from the registry by `go generate ./analytics/ir`.
 | `a is not null` | 30 | True when the operand is not null. |
 | `a \|\| b` | 40 | Both sides as text, joined; null when either is null. |
 | `a + b` | 50 | Addition. |
-| `a - b` | 50 | Subtraction. |
+| `a - b` | 50 | Subtraction; between two dates or times, the seconds from the second to the first: an int for two epochs, a decimal otherwise. |
 | `a * b` | 60 | Multiplication. |
 | `a / b` | 60 | Division; int / int is decimal, and dividing by zero gives null. |
 | `a % b` | 60 | Remainder of int or decimal division; by zero gives null. |
@@ -3519,7 +3584,7 @@ The tables are generated from the registry by `go generate ./analytics/ir`.
 | `count(value?: any)` | int | aggregate | The number of rows in the group, or of rows where the value is not null. | `count({moves.id})` |
 | `count_distinct(value: any)` | int | aggregate | The number of distinct non-null values in the group. | `count_distinct({customer.id})` |
 | `sum(number: number)` | the type of number | aggregate | The total of the values in the group. | `sum({totalCharge}) / sum({moves.distance})` |
-| `avg(number: number)` | decimal (float for a float) | aggregate | The mean of the values in the group. | `avg({weight})` |
+| `avg(value: mean)` | the type of a date or time, else decimal (float for a float) | aggregate | The mean of the values in the group; the mean of dates or times is the date or time at their average (to the second for an epoch, to the day for a date). | `avg({weight})` |
 | `min(value: ordered)` | the type of value | aggregate | The smallest value in the group. | `min({shippedAt})` |
 | `max(value: ordered)` | the type of value | aggregate | The largest value in the group. | `max({deliveredAt})` |
 

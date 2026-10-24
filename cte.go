@@ -26,6 +26,14 @@ func CTE(name string, columns []string, body subquery) *CTETable {
 	return &CTETable{ref: cteRef(name, columns), body: body}
 }
 
+// numberedCTE declares a CTE keel names: each statement that renders it numbers the CTEs of
+// its base name, so nested statements never shadow one another.
+func numberedCTE(base string, columns []string, body subquery) *CTETable {
+	c := CTE(base, columns, body)
+	c.ref.numbered = true
+	return c
+}
+
 // RecursiveCTE declares WITH RECURSIVE name (columns) AS (base UNION ALL step). Give it its step with
 // Recurse, which can join the CTE itself to walk a hierarchy:
 //
@@ -77,7 +85,7 @@ func (c *CTETable) Query() *Query[Row] { return &Query[Row]{q: query{ref: c.ref}
 type Row struct{}
 
 func (c *CTETable) writeDefinition(r *render) {
-	r.s(c.ref.Table.Quoted)
+	r.s(r.tableName(c.ref))
 	r.s(" (")
 	for i := range c.ref.Table.Columns {
 		if i > 0 {

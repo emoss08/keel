@@ -95,14 +95,14 @@ func (c *Catalog) For(ctx context.Context, policy Policy) *View {
 	v := &View{Version: c.version, cat: c, dec: newDecisions(c, policy), ctx: ctx}
 	for _, e := range c.entities {
 		ev := EntityView{Key: e.Key, Label: c.Label(ctx, e.Key, e.Label),
-			Plural: c.Label(ctx, e.Key+".plural", e.Plural), Doc: e.Doc,
-			Category: c.Label(ctx, "category."+e.Category, e.Category), Access: v.dec.entity(ctx, e)}
+			Plural: c.Label(ctx, e.Key+pluralSuffix, e.Plural), Doc: c.Label(ctx, e.Key+docSuffix, e.Doc),
+			Category: c.Label(ctx, categoryPrefix+e.Category, e.Category), Access: v.dec.entity(ctx, e)}
 		for _, f := range e.Fields {
 			ev.Fields = append(ev.Fields, v.fieldView(f, nil))
 		}
 		for _, g := range e.Edges {
 			ev.Edges = append(ev.Edges, EdgeView{Name: g.Name, Label: c.Label(ctx, g.LabelKey, g.Label),
-				Doc: g.Doc, Target: g.Target.Key, ToMany: g.ToMany, Pick: g.Pick,
+				Doc: c.Label(ctx, g.LabelKey+docSuffix, g.Doc), Target: g.Target.Key, ToMany: g.ToMany, Pick: g.Pick,
 				Access: v.dec.edge(ctx, g, nil)})
 		}
 		v.Entities = append(v.Entities, ev)
@@ -113,11 +113,11 @@ func (c *Catalog) For(ctx context.Context, policy Policy) *View {
 // fieldView describes a field reached through via.
 func (v *View) fieldView(f *Field, via Path) FieldView {
 	c, ctx := v.cat, v.ctx
-	fv := FieldView{Key: f.Key, Label: c.Label(ctx, f.LabelKey, f.Label), Doc: f.Doc, Type: f.Type,
+	fv := FieldView{Key: f.Key, Label: c.Label(ctx, f.LabelKey, f.Label), Doc: c.Label(ctx, f.LabelKey+docSuffix, f.Doc), Type: f.Type,
 		Measure: f.Kind == schema.Measure, Aggs: slices.Clone(f.Aggs), Operators: ir.OpsFor(f.Type),
 		Format: f.Format, Filterable: f.Filterable, Groupable: f.Groupable, Access: v.dec.path(ctx, via, f)}
 	for _, e := range f.Enum {
-		e.Label = c.Label(ctx, e.LabelKey, e.Label)
+		e.Label, e.Doc = c.Label(ctx, e.LabelKey, e.Label), c.Label(ctx, e.LabelKey+docSuffix, e.Doc)
 		fv.Enum = append(fv.Enum, e)
 	}
 	return fv

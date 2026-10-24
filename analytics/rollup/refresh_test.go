@@ -10,8 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/emoss08/keel"
 	"github.com/emoss08/keel/analytics/rollup"
 	"github.com/emoss08/keel/internal/testmodels/fleet"
@@ -129,17 +127,21 @@ func TestRefreshBatchesAndBounds(t *testing.T) {
 	if rep.Batches != 1 || rep.Slices > 5 {
 		t.Fatalf("a bounded refresh did %+v", rep)
 	}
-	var began atomic.Int32
-	rep, err = rollup.RefreshWith(context.Background(), d, rollup.RefreshOptions{
-		BatchSize: 5,
-		OnBegin: func(ctx context.Context, tx pgx.Tx) error {
+	var began, system atomic.Int32
+	scoped := openDBWith(t, clk, func(cfg *keel.Config) {
+		cfg.OnBegin = func(ctx context.Context, tx keel.TxInfo) ([]keel.Statement, error) {
 			began.Add(1)
-			return nil
-		},
-	}, daily)
+			if _, ok := ctx.Value(systemKey{}).(string); ok && !tx.ReadOnly {
+				system.Add(1)
+			}
+			return []keel.Statement{{SQL: "SELECT set_config('keel.refresh', 'on', true)"}}, nil
+		}
+	})
+	sys := context.WithValue(context.Background(), systemKey{}, "refresh")
+	rep, err = rollup.RefreshWith(sys, scoped, rollup.RefreshOptions{BatchSize: 5}, daily)
 	ok(t, err)
-	if int(began.Load()) != rep.Batches || rep.Batches < 2 {
-		t.Fatalf("OnBegin ran %d times for %d batches", began.Load(), rep.Batches)
+	if int(began.Load()) < rep.Batches || system.Load() != began.Load() || rep.Batches < 2 {
+		t.Fatalf("OnBegin ran %d times (%d with the refresh's scope) for %d batches", began.Load(), system.Load(), rep.Batches)
 	}
 	f.converged()
 	if _, err := rollup.Refresh(context.Background(), d); err == nil {

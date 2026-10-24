@@ -3,6 +3,8 @@ package keel
 import (
 	"time"
 	"unsafe"
+
+	"github.com/emoss08/keel/schema"
 )
 
 // Col references one column of a table. Generated code builds every column statically; the typed
@@ -15,6 +17,23 @@ type Col struct {
 func (c Col) writeSQL(r *render) { r.col(c) }
 
 func (c Col) column() Col { return c }
+
+// ColumnOf returns the table and the column index of a generated column handle, such as
+// fleetdb.Shipments.CreatedAt, for packages that take columns in declarations. ok is false for an
+// expression that is not a column, and for a column reached through a relation path
+// (fleetdb.Shipments.Customer.Name), which belongs to a related row rather than to the table. A
+// column of an alias made with As is the table's own column.
+func ColumnOf(e Expr) (table *schema.Table, index int32, ok bool) {
+	c, isCol := e.(columnar)
+	if !isCol {
+		return nil, -1, false
+	}
+	col := c.column()
+	if col.Ref == nil || col.Ref.Table == nil || col.Ref.isPath() {
+		return nil, -1, false
+	}
+	return col.Ref.Table, col.Index, true
+}
 
 // columnar is implemented by every column kind, so Pick and Save accept any of them.
 type columnar interface {

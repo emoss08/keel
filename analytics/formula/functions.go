@@ -21,6 +21,9 @@ const (
 	ClassBool Class = "bool"
 	// ClassOrdered accepts any type with an order: numbers, text and instants.
 	ClassOrdered Class = "ordered"
+	// ClassMean accepts the types a mean is defined for: numbers and instants (date, timestamp
+	// and epoch).
+	ClassMean Class = "mean"
 	// ClassDigits accepts an integer literal from 0 to MaxDigits.
 	ClassDigits Class = "digits"
 	// ClassUnit accepts a text literal from the parameter's Units.
@@ -29,7 +32,7 @@ const (
 
 // Classes returns every parameter class.
 func Classes() []Class {
-	return []Class{ClassAny, ClassNumber, ClassText, ClassTemporal, ClassBool, ClassOrdered, ClassDigits, ClassUnit}
+	return []Class{ClassAny, ClassNumber, ClassText, ClassTemporal, ClassBool, ClassOrdered, ClassMean, ClassDigits, ClassUnit}
 }
 
 // MaxDigits is the largest precision round and trunc accept.
@@ -63,10 +66,15 @@ const (
 	ResultCommon Result = "common"
 	// ResultFractional is float for a float argument and decimal otherwise.
 	ResultFractional Result = "fractional"
+	// ResultMean is the type of an instant argument (the mean of instants is an instant), float
+	// for a float argument and decimal otherwise.
+	ResultMean Result = "mean"
 )
 
 // Results returns every result rule.
-func Results() []Result { return []Result{ResultFixed, ResultSame, ResultCommon, ResultFractional} }
+func Results() []Result {
+	return []Result{ResultFixed, ResultSame, ResultCommon, ResultFractional, ResultMean}
+}
 
 // SQL is how the compiler renders a call. Templates hold argument positions ({0}, {1}, …), {args}
 // for every argument joined with ", ", and {tz} for the report time zone, which the compiler binds
@@ -138,6 +146,8 @@ func (f *Function) Returns() string {
 		return "the type of " + f.Params[0].Name
 	case ResultCommon:
 		return "the common type of its values"
+	case ResultMean:
+		return "the type of a date or time, else decimal (float for a float)"
 	default:
 		return "decimal (float for a float)"
 	}
@@ -271,8 +281,8 @@ var registry = []*Function{
 		Params: []Param{{Name: "value", Class: ClassAny}}, Result: ResultFixed, Type: Int, SQL: SQL{Template: "count(DISTINCT {0})"}},
 	{Name: "sum", Doc: "The total of the values in the group.", Example: "sum({totalCharge}) / sum({moves.distance})", Aggregate: true,
 		Params: []Param{{Name: "number", Class: ClassNumber}}, Result: ResultSame, SQL: SQL{Template: "sum({0})", Cast: map[Type]string{Int: "({0})::bigint"}}},
-	{Name: "avg", Doc: "The mean of the values in the group.", Example: "avg({weight})", Aggregate: true,
-		Params: []Param{{Name: "number", Class: ClassNumber}}, Result: ResultFractional, SQL: SQL{Template: "avg({0})"}},
+	{Name: "avg", Doc: "The mean of the values in the group; the mean of dates or times is the date or time at their average (to the second for an epoch, to the day for a date).", Example: "avg({weight})", Aggregate: true,
+		Params: []Param{{Name: "value", Class: ClassMean}}, Result: ResultMean, SQL: SQL{Template: "avg({0})"}},
 	{Name: "min", Doc: "The smallest value in the group.", Example: "min({shippedAt})", Aggregate: true,
 		Params: []Param{{Name: "value", Class: ClassOrdered}}, Result: ResultSame, SQL: SQL{Template: "min({0})"}},
 	{Name: "max", Doc: "The largest value in the group.", Example: "max({deliveredAt})", Aggregate: true,
@@ -304,7 +314,7 @@ func functionNames() []string {
 	return names
 }
 
-// Operator is one operator of the language, with its precedence and SQL template.
+// Operator is one operator of the language, with its precedence and SQL templates.
 type Operator struct {
 	// Symbol is the operator as written.
 	Symbol string `json:"symbol"`
@@ -316,6 +326,9 @@ type Operator struct {
 	Doc string `json:"doc"`
 	// SQL is the rendering template.
 	SQL string `json:"sql"`
+	// InstantSQL renders the operator between two dates or times that are not both epochs, which
+	// are converted to timestamps; empty when the operator does not apply to instants.
+	InstantSQL string `json:"instantSql,omitempty"`
 }
 
 const (
@@ -343,7 +356,7 @@ var operators = []Operator{
 	{Symbol: "is not null", Form: "postfix", Precedence: precCompare, Doc: "True when the operand is not null.", SQL: "({0} IS NOT NULL)"},
 	{Symbol: "||", Form: "infix", Precedence: precConcat, Doc: "Both sides as text, joined; null when either is null.", SQL: "({0} || {1})"},
 	{Symbol: "+", Form: "infix", Precedence: precAdd, Doc: "Addition.", SQL: "({0} + {1})"},
-	{Symbol: "-", Form: "infix", Precedence: precAdd, Doc: "Subtraction.", SQL: "({0} - {1})"},
+	{Symbol: "-", Form: "infix", Precedence: precAdd, Doc: "Subtraction; between two dates or times, the seconds from the second to the first: an int for two epochs, a decimal otherwise.", SQL: "({0} - {1})", InstantSQL: "extract(epoch from ({0} - {1}))"},
 	{Symbol: "*", Form: "infix", Precedence: precMul, Doc: "Multiplication.", SQL: "({0} * {1})"},
 	{Symbol: "/", Form: "infix", Precedence: precMul, Doc: "Division; int / int is decimal, and dividing by zero gives null.", SQL: "({0} / nullif({1}, 0))"},
 	{Symbol: "%", Form: "infix", Precedence: precMul, Doc: "Remainder of int or decimal division; by zero gives null.", SQL: "({0} % nullif({1}, 0))"},
@@ -353,8 +366,12 @@ var operators = []Operator{
 // Operators returns the operator table, loosest binding first.
 func Operators() []Operator { return slices.Clone(operators) }
 
-// OperatorSQL returns the SQL template of an operator node: unary for one argument, binary for two.
-func OperatorSQL(n *Node) string {
+// OperatorSQL returns the SQL template of a checked operator: unary for one argument, binary for
+// two, and the instant form for the difference of two dates or times that are not both epochs.
+func OperatorSQL(t *Typed) string {
+	n := t.Node
+	instant := n.Kind == KindBinary && len(t.Args) == 2 && t.Args[0].Type.Temporal() && t.Args[1].Type.Temporal() &&
+		(t.Args[0].Type != Epoch || t.Args[1].Type != Epoch)
 	form := "infix"
 	if n.Kind == KindUnary {
 		form = "prefix"
@@ -364,6 +381,9 @@ func OperatorSQL(n *Node) string {
 	}
 	for _, o := range operators {
 		if o.Symbol == n.Value && o.Form == form {
+			if instant && o.InstantSQL != "" {
+				return o.InstantSQL
+			}
 			return o.SQL
 		}
 	}

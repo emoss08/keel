@@ -136,6 +136,10 @@ var opInfos = []OpInfo{
 // Ops returns every operator with its description.
 func Ops() []OpInfo { return slices.Clone(opInfos) }
 
+// Relative reports whether the operator selects a period relative to the report's now: today,
+// last_week, last_n_days and the like.
+func (o Op) Relative() bool { return slices.Contains(opsRelative, o) }
+
 // Info returns the operator's description.
 func (o Op) Info() (OpInfo, bool) {
 	for _, i := range opInfos {

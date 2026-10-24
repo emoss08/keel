@@ -8,10 +8,9 @@ import (
 	"path/filepath"
 	"slices"
 
+	"github.com/emoss08/keel/analytics"
 	"github.com/emoss08/keel/analytics/ir/tsgen"
-	"github.com/emoss08/keel/analytics/rollup"
 	"github.com/emoss08/keel/keelcli"
-	"github.com/emoss08/keel/schema"
 )
 
 // ts writes or checks the TypeScript module.
@@ -44,13 +43,17 @@ func (e *env) i18n(args []string) error {
 	if path == "" {
 		return keelcli.Usagef("analyticscli: i18n: -out is required")
 	}
+	cat, err := e.catalog()
+	if err != nil {
+		return err
+	}
 	if check {
-		if err := CheckMessages(path, e.cfg.Tables, e.cfg.Keys); err != nil {
+		if err := CheckMessages(path, cat); err != nil {
 			return problems(err)
 		}
 		return e.wrote(path, true)
 	}
-	if err := WriteMessages(path, e.cfg.Tables, e.cfg.Keys); err != nil {
+	if err := WriteMessages(path, cat); err != nil {
 		return err
 	}
 	return e.wrote(path, false)
@@ -62,7 +65,11 @@ func (e *env) describe(args []string) error {
 	if err != nil {
 		return err
 	}
-	text := Describe(e.cfg.Tables, e.cfg.Keys, e.cfg.Rollups...)
+	cat, err := e.catalog()
+	if err != nil {
+		return err
+	}
+	text := Describe(cat, e.cfg.Rollups...)
 	if path == "" {
 		_, err := e.out.Write([]byte(text))
 		return err
@@ -71,69 +78,6 @@ func (e *env) describe(args []string) error {
 		return fmt.Errorf("analyticscli: describe: %w", err)
 	}
 	return e.wrote(path, false)
-}
-
-// Messages returns the translation keys of the reportable tables' labels with the derived text as
-// each key's fallback:
-//
-//	shipment                         the entity's label           Shipment
-//	shipment@plural                  its plural                   Shipments
-//	shipment@description             its doc comment
-//	shipment.proNumber               a field's label              PRO Number
-//	shipment.proNumber@description   the field's doc comment
-//	shipment.status.InTransit        an enum value's label        In Transit
-//	shipment.customer                a relation's label           Customer
-//	@category.Operations             a report category            Operations
-//
-// Keys are the catalog's entity, field and edge keys; a field, relation or value with nothing to
-// say is left out. Hidden fields, relations marked noreport and relations to tables that are not
-// reportable are left out too.
-func Messages(tables []*schema.Table, keys rollup.Keys) map[string]string {
-	keys = keys.WithDefaults()
-	reportable := map[*schema.Table]bool{}
-	for _, t := range tables {
-		reportable[t] = t.Report != nil
-	}
-	out := map[string]string{}
-	put := func(k, v string) {
-		if v != "" {
-			out[k] = v
-		}
-	}
-	for _, t := range tables {
-		if t.Report == nil {
-			continue
-		}
-		ent := keys.Entity(t)
-		put(ent, t.Label)
-		put(ent+"@plural", t.Plural)
-		put(ent+"@description", t.Doc)
-		if t.Report.Category != "" {
-			put("@category."+t.Report.Category, t.Report.Category)
-		}
-		for i := range t.Columns {
-			c := &t.Columns[i]
-			if c.Report == nil || !c.Report.Included {
-				continue
-			}
-			f := ent + "." + keys.Field(t, int32(i))
-			put(f, c.Label)
-			put(f+"@description", c.Doc)
-			for _, v := range c.Enum {
-				put(f+"."+v.Value, v.Label)
-			}
-		}
-		for i := range t.Relations {
-			r := &t.Relations[i]
-			if r.NoReport || !reportable[r.Target] {
-				continue
-			}
-			e := ent + "." + keys.Edge(t, int32(i))
-			put(e, r.Label)
-			put(e+"@description", r.Doc)
-		}
-	}
-	return out
 }
 
 // encodeMessages returns the catalog as indented JSON with sorted keys and unescaped HTML
@@ -149,10 +93,23 @@ func encodeMessages(m map[string]string) ([]byte, error) {
 	return b.Bytes(), nil
 }
 
-// WriteMessages writes Messages to path as a JSON object of key to fallback text, sorted by key,
+// catalog builds the catalog of the configured tables.
+func (e *env) catalog() (*analytics.Catalog, error) {
+	if len(e.cfg.Tables) == 0 {
+		return nil, keelcli.Usagef("analyticscli: Config.Tables is empty; pass keeltables.All()")
+	}
+	cat, err := analytics.Build(e.cfg.Tables, analytics.Options{})
+	if err != nil {
+		return nil, fmt.Errorf("analyticscli: %w", err)
+	}
+	return cat, nil
+}
+
+// WriteMessages writes the catalog's messages (Catalog.Messages: every translation key the engine
+// asks Options.Translate for, with its fallback text) to path as a JSON object sorted by key,
 // creating the file's directory.
-func WriteMessages(path string, tables []*schema.Table, keys rollup.Keys) error {
-	data, err := encodeMessages(Messages(tables, keys))
+func WriteMessages(path string, cat *analytics.Catalog) error {
+	data, err := encodeMessages(cat.Messages())
 	if err != nil {
 		return fmt.Errorf("analyticscli: i18n: %w", err)
 	}
@@ -164,8 +121,8 @@ func WriteMessages(path string, tables []*schema.Table, keys rollup.Keys) error 
 
 // CheckMessages returns an error naming the keys that differ when the file at path is not what
 // WriteMessages writes.
-func CheckMessages(path string, tables []*schema.Table, keys rollup.Keys) error {
-	want := Messages(tables, keys)
+func CheckMessages(path string, cat *analytics.Catalog) error {
+	want := cat.Messages()
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("analyticscli: i18n: %w", err)

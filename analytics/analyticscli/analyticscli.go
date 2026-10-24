@@ -8,8 +8,16 @@
 //	analytics rollups pending
 //
 // Command returns them as one keelcli.Command; Run runs the same commands without keelcli, for a
-// go:generate program, and Messages, WriteMessages, CheckMessages and Describe are the plain
-// functions behind i18n and describe.
+// go:generate program, and WriteMessages, CheckMessages and Describe are the plain functions
+// behind i18n and describe. The keel command itself runs ts, which needs no application tables;
+// an application registers the rest in its database binary:
+//
+//	keelcli.Main(keelcli.App{
+//	    Name: "fleet-db", Config: dbConfig, Migrations: migrations,
+//	    Commands: []keelcli.Command{analyticscli.Command(analyticscli.Config{
+//	        Tables: keeltables.All(), Rollups: []*rollup.Rollup{ShipmentsDaily},
+//	    })},
+//	})
 package analyticscli
 
 import (
@@ -29,13 +37,12 @@ import (
 
 // Config is what the analytics commands work on.
 type Config struct {
-	// Tables are the application's generated table schemas (fleetdb.ShipmentsSchema(), …); the
-	// reportable ones make the catalog that i18n and describe write.
+	// Tables are every generated table of the application, keeltables.All() from the package
+	// keel gen writes with -tables; the reportable ones make the catalog (analytics.Build) that
+	// i18n and describe write.
 	Tables []*schema.Table
 	// Rollups are the application's declared rollups.
 	Rollups []*rollup.Rollup
-	// Keys name the schema the way the catalog does; zero fields default to rollup.DefaultKeys.
-	Keys rollup.Keys
 	// Open opens a database for rollups refresh and rollups pending when they run through Run,
 	// which closes it when done. Under keelcli they use the App's database instead.
 	Open func(ctx context.Context) (*keel.DB, error)
@@ -69,6 +76,41 @@ func Command(cfg Config) keelcli.Command {
 				return db, func() {}, err
 			}
 			return en.run(ctx, args)
+		},
+	}
+}
+
+// standaloneUsage lists the analytics commands of the keel command itself.
+const standaloneUsage = `Usage: keel analytics <command> [arguments]
+
+Commands:
+  ts [-check] -out path   write the TypeScript module of analytics/ir, or check it
+
+i18n, describe and rollups need the application's tables and rollups: register
+analyticscli.Command(analyticscli.Config{Tables: keeltables.All(), ...}) in the
+application's database binary.
+`
+
+// Standalone returns the analytics commands that need no application tables, as the keel command
+// registers them: ts. The others answer with how to register Command in the application's binary.
+func Standalone() keelcli.Command {
+	return keelcli.Command{
+		Name:    "analytics",
+		Usage:   "ts [-check] -out path",
+		Summary: "generate the analytics TypeScript module (applications register the rest)",
+		Run: func(_ context.Context, e *keelcli.Env, args []string) error {
+			en := &env{out: e.Stdout, flags: e.FlagSet, parse: e.Parse, json: e.JSON}
+			if len(args) == 0 {
+				return keelcli.Usagef("analyticscli: name a command\n\n%s", standaloneUsage)
+			}
+			switch args[0] {
+			case "help", "-h", "-help", "--help":
+				_, err := io.WriteString(en.out, standaloneUsage)
+				return err
+			case "ts":
+				return en.ts(args[1:])
+			}
+			return keelcli.Usagef("analyticscli: %q is not a command of keel analytics\n\n%s", args[0], standaloneUsage)
 		},
 	}
 }

@@ -213,23 +213,11 @@ func TestTrenovaCannedReports(t *testing.T) {
 		if err == nil {
 			_, err = r.Preview(ctx, analytics.Request{Definition: d})
 		}
-		_, instant := averagesInstants[name]
-		switch {
-		case instant && (analytics.ErrorCode(err) != analytics.CodeInvalid || !strings.Contains(err.Error(), "avg is not available")):
-			failed = append(failed, fmt.Sprintf("%s: expected the instant average to be refused, got %v", name, err))
-		case !instant && err != nil:
+		if err != nil {
 			failed = append(failed, name+": "+err.Error())
 		}
 	}
-	if len(failed) > 0 {
+	if len(failed) > 0 || len(names) != 43 {
 		t.Fatalf("%d of %d canned reports:\n%s", len(failed), len(names), strings.Join(failed, "\n"))
 	}
-}
-
-// averagesInstants are the canned reports that average instants (arrival, departure, sent and
-// funded times stored as epochs): the formula registry's avg takes numbers, so they do not
-// validate until the port stores those columns as plain numbers or the registry averages
-// instants.
-var averagesInstants = map[string]struct{}{
-	"facility-activity": {}, "factoring-days-to-fund": {}, "stop-dwell-and-detention": {},
 }

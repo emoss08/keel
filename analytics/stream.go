@@ -105,7 +105,7 @@ func (r *Runner) Run(ctx context.Context, req Request) (*Stream, error) {
 			cancel()
 			return nil, s.err
 		}
-		s.cols = comp.Columns
+		s.cols, s.rollup = comp.Columns, comp.Rollup
 		return s, nil
 	case <-s.done:
 		cancel()

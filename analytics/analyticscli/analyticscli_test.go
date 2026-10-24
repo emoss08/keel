@@ -15,11 +15,13 @@ import (
 	"time"
 
 	"github.com/emoss08/keel"
+	"github.com/emoss08/keel/analytics"
 	"github.com/emoss08/keel/analytics/analyticscli"
 	"github.com/emoss08/keel/analytics/rollup"
 	"github.com/emoss08/keel/internal/testmodels/fleet"
 	"github.com/emoss08/keel/internal/testmodels/fleet/fleetdb"
 	"github.com/emoss08/keel/internal/testmodels/ids"
+	"github.com/emoss08/keel/internal/testmodels/keeltables"
 	"github.com/emoss08/keel/keelcli"
 	"github.com/emoss08/keel/keelcli/fake"
 	"github.com/emoss08/keel/migrate"
@@ -33,73 +35,53 @@ var byStatus = rollup.MustDefine("cli_shipments_by_status", fleetdb.ShipmentsSch
 	rollup.Month(s.CreatedAt), rollup.Dims(s.Status), rollup.Measures(rollup.Count(), rollup.Sum(s.Total)),
 	rollup.WithoutSourceIndex())
 
-func tables() []*schema.Table {
-	return []*schema.Table{fleetdb.ShipmentsSchema(), fleetdb.CustomersSchema(), fleetdb.MovesSchema(), fleetdb.TagsSchema()}
-}
+func tables() []*schema.Table { return keeltables.All() }
 
-func TestMessages(t *testing.T) {
-	m := analyticscli.Messages(tables(), rollup.Keys{})
-	want := map[string]string{
-		"shipment":                       "Shipment",
-		"shipment@plural":                "Shipments",
-		"shipment@description":           "Shipment is a load moved for a customer.",
-		"shipment.proNumber":             "PRO Number",
-		"shipment.proNumber@description": "ProNumber is the carrier's progressive number, unique per tenant.",
-		"shipment.status.InTransit":      "In Transit",
-		"shipment.customer":              "Customer",
-		"shipment.billTo":                "Bill-to Customer",
-		"shipment.moves":                 "Moves",
-		"@category.Operations":           "Operations",
-		"@category.Sales":                "Sales",
-		"customer.name":                  "Name",
-	}
-	for k, v := range want {
-		if m[k] != v {
-			t.Errorf("%s = %q, want %q", k, m[k], v)
-		}
-	}
-	for _, absent := range []string{"shipment.customerId", "shipment.organizationId", "shipment.tags", "tag", "shipment.originStop", "shipment.attributes"} {
-		if _, ok := m[absent]; ok {
-			t.Errorf("%s is in the catalog", absent)
-		}
-	}
+// catalog is the analytics catalog of the fleet models.
+func catalog(t *testing.T) *analytics.Catalog {
+	t.Helper()
+	cat, err := analytics.Build(tables(), analytics.Options{})
+	ok(t, err)
+	return cat
 }
 
 func TestWriteAndCheckMessages(t *testing.T) {
+	cat := catalog(t)
 	path := filepath.Join(t.TempDir(), "i18n", "analytics.json")
-	ok(t, analyticscli.WriteMessages(path, tables(), rollup.Keys{}))
-	ok(t, analyticscli.CheckMessages(path, tables(), rollup.Keys{}))
+	ok(t, analyticscli.WriteMessages(path, cat))
+	ok(t, analyticscli.CheckMessages(path, cat))
 	data, err := os.ReadFile(path)
 	ok(t, err)
-	if !bytes.HasPrefix(data, []byte("{\n  \"@category.Operations\": \"Operations\",\n")) || !bytes.HasSuffix(data, []byte("}\n")) {
+	if !bytes.HasPrefix(data, []byte("{\n  \"@agg.avg\": \"Average\",\n")) || !bytes.HasSuffix(data, []byte("}\n")) {
 		t.Fatalf("the catalog is not sorted, indented JSON:\n%s", data)
 	}
 	var m map[string]string
 	ok(t, json.Unmarshal(data, &m))
+	if m["shipment.proNumber"] != "PRO Number" || m["shipment@plural"] != "Shipments" {
+		t.Fatalf("the messages lack the catalog's labels: %v", m)
+	}
 	m["shipment"] = "Load"
 	stale, _ := json.Marshal(m)
 	ok(t, os.WriteFile(path, stale, 0o644))
-	err = analyticscli.CheckMessages(path, tables(), rollup.Keys{})
+	err = analyticscli.CheckMessages(path, cat)
 	if err == nil || !strings.Contains(err.Error(), "[shipment]") {
 		t.Fatalf("a stale catalog passed: %v", err)
 	}
 }
 
 func TestDescribe(t *testing.T) {
-	text := analyticscli.Describe(tables(), rollup.Keys{}, byStatus)
+	text := analyticscli.Describe(catalog(t), byStatus)
 	for _, want := range []string{
-		"## shipment: Shipment (Operations)\nShipment is a load moved for a customer.\n",
-		"- proNumber (string; dimension; count count_distinct min max): PRO Number. ProNumber is the carrier's progressive number, unique per tenant.\n",
-		`- status (enum: New, Assigned, InTransit "In Transit", Delivered, Canceled; dimension; count count_distinct): Status`,
-		"- total (decimal; measure; count count_distinct sum avg min max; format money): Total\n",
-		"- moves -> move (many): Moves\n",
-		"- cli_shipments_by_status: by month of createdAt in UTC and status; count rows, sum total\n",
+		"entity shipment: Shipment [Operations]",
+		"  proNumber string agg=count,count_distinct,min,max: PRO Number — ProNumber is the carrier's progressive number, unique per tenant.\n",
+		"  edge moves -> move (many): Moves\n",
+		"  cli_shipments_by_status on shipment: by month of createdAt in UTC and status; count rows, sum total\n",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("the description lacks %q", want)
 		}
 	}
-	if strings.Contains(text, "## tag") || strings.Contains(text, "customerId") {
+	if strings.Contains(text, "entity tag") || strings.Contains(text, "customerID") {
 		t.Fatalf("the description lists hidden things:\n%s", text)
 	}
 }
@@ -137,7 +119,7 @@ func TestGenerateCommands(t *testing.T) {
 		{[]string{"analytics", "rollups", "migration", "-out", filepath.Join(dir, "migrations")}, keelcli.ExitOK, "_rollup_cli_shipments_by_status.sql"},
 		{[]string{"analytics", "rollups", "migration", "-out", filepath.Join(dir, "migrations")}, keelcli.ExitOK, "up to date"},
 		{[]string{"analytics", "rollups", "migration", "-check", "-out", filepath.Join(dir, "migrations")}, keelcli.ExitOK, "up to date"},
-		{[]string{"analytics", "describe"}, keelcli.ExitOK, "# Reportable entities"},
+		{[]string{"analytics", "describe"}, keelcli.ExitOK, "entity shipment: Shipment"},
 		{[]string{"analytics", "describe", "-out", filepath.Join(dir, "describe.md")}, keelcli.ExitOK, "wrote"},
 		{[]string{"analytics", "help"}, keelcli.ExitOK, "Usage: analytics <command>"},
 		{[]string{"analytics"}, keelcli.ExitUsage, ""},

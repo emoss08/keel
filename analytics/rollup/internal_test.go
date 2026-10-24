@@ -1,7 +1,6 @@
 package rollup
 
 import (
-	"encoding/json"
 	"slices"
 	"testing"
 	"time"
@@ -43,46 +42,12 @@ func TestTruncateMatchesDateTrunc(t *testing.T) {
 	}
 }
 
-func TestCalendarRange(t *testing.T) {
-	now := time.Date(2026, 1, 1, 3, 0, 0, 0, time.UTC)
-	cases := map[ir.Op][2]string{
-		ir.OpToday:       {"2026-01-01", "2026-01-02"},
-		ir.OpYesterday:   {"2025-12-31", "2026-01-01"},
-		ir.OpTomorrow:    {"2026-01-02", "2026-01-03"},
-		ir.OpThisWeek:    {"2025-12-29", "2026-01-05"},
-		ir.OpLastWeek:    {"2025-12-22", "2025-12-29"},
-		ir.OpLastMonth:   {"2025-12-01", "2026-01-01"},
-		ir.OpThisQuarter: {"2026-01-01", "2026-04-01"},
-		ir.OpLastQuarter: {"2025-10-01", "2026-01-01"},
-		ir.OpLastYear:    {"2025-01-01", "2026-01-01"},
-	}
-	for op, want := range cases {
-		lo, hi := calendarRange(op, now, time.UTC)
-		if lo.Format(time.DateOnly) != want[0] || hi.Format(time.DateOnly) != want[1] {
-			t.Errorf("%s = [%s, %s), want %v", op, lo.Format(time.DateOnly), hi.Format(time.DateOnly), want)
+func TestCamel(t *testing.T) {
+	for in, want := range map[string]string{"ProNumber": "proNumber", "CustomerID": "customerId", "HTTPServer": "httpServer",
+		"ID": "id", "BillToID": "billToId", "total_sum": "totalSum"} {
+		if got := camel(in); got != want {
+			t.Errorf("camel(%s) = %s, want %s", in, got, want)
 		}
-	}
-}
-
-func TestInstant(t *testing.T) {
-	want := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
-	for _, v := range []any{"2026-03-01", "2026-03-01T00:00:00Z", "2026-03-01 00:00:00", want} {
-		if got, ok := instant(v, schema.ValueTime, time.UTC); !ok || !got.Equal(want) {
-			t.Errorf("instant(%v) = %v %v", v, got, ok)
-		}
-	}
-	for _, v := range []any{json.Number("1772323200"), float64(1772323200), int64(1772323200), 1772323200} {
-		if got, ok := instant(v, schema.ValueEpoch, time.UTC); !ok || !got.Equal(want) {
-			t.Errorf("instant(%v) = %v %v", v, got, ok)
-		}
-	}
-	for _, v := range []any{1772323200, "yesterday", 1.5, json.Number("x")} {
-		if _, ok := instant(v, schema.ValueTime, time.UTC); ok {
-			t.Errorf("instant(%v) was read as a time for a timestamptz field", v)
-		}
-	}
-	if _, ok := instant(1.5, schema.ValueEpoch, time.UTC); ok {
-		t.Error("a fractional epoch was read")
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -21,19 +22,108 @@ import (
 // position for OnReplica outside a Write, and changes no data version: call MarkChanged with the
 // tables it writes. Bind values as $1, $2, … arguments; never format them into sql.
 func Exec(ctx context.Context, db *DB, sql string, args ...any) (int64, error) {
+	s := &stmt{sql: sql, args: args, op: "exec"}
+	if err := runRaw(ctx, db, []*stmt{s}); err != nil {
+		return 0, err
+	}
+	return s.tag.RowsAffected(), nil
+}
+
+// ExecBatch runs statements keel does not render in one round trip, in order, as Exec runs one:
+// joining the transaction on the context, else in an implicit transaction when Config.OnBegin is
+// set. It returns the rows each affected. The first failing statement aborts the round trip;
+// inside a transaction the transaction is then failed, and outside one nothing commits.
+// Observers see each statement with the Op "exec".
+func ExecBatch(ctx context.Context, db *DB, stmts ...Statement) ([]int64, error) {
+	if len(stmts) == 0 {
+		return nil, nil
+	}
+	ss := make([]*stmt, len(stmts))
+	for i, st := range stmts {
+		ss[i] = &stmt{sql: st.SQL, args: st.Args, op: "exec"}
+	}
+	if err := runRaw(ctx, db, ss); err != nil {
+		return nil, err
+	}
+	out := make([]int64, len(ss))
+	for i, s := range ss {
+		out[i] = s.tag.RowsAffected()
+	}
+	return out, nil
+}
+
+// QueryRows runs one SQL statement keel does not render and calls fn for each row it returns, in
+// order, with the rows positioned on that row: read it with Scan, Values or a pgx row function
+// such as pgx.RowToStructByName. It joins the transaction on the context, Read or Write, so a read inside a
+// Read with ReplicaTx runs on that replica; outside a transaction it runs on the primary, in an
+// implicit transaction when Config.OnBegin is set. An error from fn stops the rows and is
+// returned. fn must not run statements of its own on the same transaction: the connection is
+// busy until the rows are read.
+//
+// Observers see the statement with the Op "query". As with Exec, keel cannot see what the
+// statement touches: scope checks, interceptors, read filters and hooks do not apply, and a
+// write through it changes no data version. Bind values as $1, $2, … arguments.
+func QueryRows(ctx context.Context, db *DB, fn func(row pgx.CollectableRow) error, sql string,
+	args ...any,
+) error {
+	s := &stmt{sql: sql, args: args, op: "query"}
+	s.scan = func(rows pgx.Rows) error {
+		for rows.Next() {
+			if err := fn(rows); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return runRaw(ctx, db, []*stmt{s})
+}
+
+// QueryAll runs one SQL statement keel does not render, as QueryRows does, and returns every row
+// it returns converted by to, such as pgx.RowTo[int64] or pgx.RowToStructByName[T].
+func QueryAll[T any](ctx context.Context, db *DB, to pgx.RowToFunc[T], sql string, args ...any) ([]T, error) {
+	var out []T
+	err := QueryRows(ctx, db, func(row pgx.CollectableRow) error {
+		v, err := to(row)
+		if err != nil {
+			return err
+		}
+		out = append(out, v)
+		return nil
+	}, sql, args...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// QueryValue runs one SQL statement keel does not render, as QueryRows does, and scans the first
+// column of its first row into a T. It returns ErrNotFound when the statement returns no row.
+func QueryValue[T any](ctx context.Context, db *DB, sql string, args ...any) (T, error) {
+	var out T
+	s := &stmt{sql: sql, args: args, op: "query"}
+	s.scan = func(rows pgx.Rows) error {
+		if !rows.Next() {
+			return ErrNotFound
+		}
+		return rows.Scan(&out)
+	}
+	err := runRaw(ctx, db, []*stmt{s})
+	return out, err
+}
+
+// runRaw runs statements keel does not render in one round trip: in the transaction on the
+// context (on its server, read-only or not), else on the primary, in an implicit transaction when
+// Config.OnBegin is set.
+func runRaw(ctx context.Context, db *DB, stmts []*stmt) error {
 	mode := modeExec
 	if tx := txFrom(ctx, db); tx != nil && tx.readOnly {
 		mode = modePrimaryRead
 	}
 	run, err := db.runnerFor(ctx, mode)
 	if err != nil {
-		return 0, err
+		return err
 	}
-	s := &stmt{sql: sql, args: args, op: "exec"}
-	if err := run.close(ctx, run.one(ctx, s, true)); err != nil {
-		return 0, err
-	}
-	return s.tag.RowsAffected(), nil
+	return run.close(ctx, run.batch(ctx, stmts, true))
 }
 
 // ExecAll runs one statement keel does not render on the primary and on every replica, outside

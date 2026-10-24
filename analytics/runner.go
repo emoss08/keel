@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/emoss08/keel"
+	"github.com/emoss08/keel/analytics/cache"
 	"github.com/emoss08/keel/analytics/ir"
 	"github.com/emoss08/keel/analytics/table"
 )
@@ -41,7 +42,8 @@ type RunnerOptions struct {
 	Timeouts Timeouts
 	// Primary reads the primary instead of a replica.
 	Primary bool
-	// Cache stores results; nil runs every request. It needs data versions on the DB.
+	// Cache stores results; nil runs every request. It needs data versions on the DB. Concurrent
+	// identical requests in this process that miss it compute the result once.
 	Cache Cache
 	// CacheTTL is how long a cached result lives (default 15m): the backstop for writes keel
 	// cannot see.
@@ -52,7 +54,8 @@ type RunnerOptions struct {
 	StreamBatch int
 	// Strategy chooses how to-many measures are pre-aggregated.
 	Strategy Strategy
-	// Rollups answers reports from rollup tables.
+	// Rollups answers reports from rollup tables: rollup.NewRouter(rollups...). The freshness of
+	// the rollup answering a report is checked in the run's transaction.
 	Rollups RollupRouter
 	// OnError receives the errors the runner does not return: a cache that fails to read or
 	// store.
@@ -110,6 +113,7 @@ type Runner struct {
 	opts    RunnerOptions
 	plans   *planCache
 	slotSQL string
+	loader  *cache.Loader
 
 	mu      sync.Mutex
 	running map[string]*running
@@ -142,6 +146,11 @@ func NewRunner(db *keel.DB, cat *Catalog, opts RunnerOptions) (*Runner, error) {
 		return nil, fail(CodeCatalog, "", "NewRunner needs a database and a catalog")
 	}
 	opts = opts.withDefaults()
+	if opts.Rollups != nil {
+		if err := opts.Rollups.Check(cat); err != nil {
+			return nil, &Error{Code: CodeCatalog, Message: "the rollups do not fit the catalog", Err: err}
+		}
+	}
 	if opts.Cache != nil {
 		if _, err := db.DataVersions(context.Background(), ""); err != nil {
 			return nil, &Error{Code: CodeCatalog, Message: "a result cache needs data versions", Err: err}
@@ -149,6 +158,9 @@ func NewRunner(db *keel.DB, cat *Catalog, opts RunnerOptions) (*Runner, error) {
 	}
 	r := &Runner{db: db, cat: cat, opts: opts, running: map[string]*running{},
 		plans: &planCache{entries: map[string]planEntry{}}}
+	if opts.Cache != nil {
+		r.loader = cache.NewLoader(opts.Cache, cache.LoaderOptions{OnError: r.report})
+	}
 	if opts.Slots > 0 {
 		r.slotSQL = slotSQL(opts.Slots)
 	}
@@ -208,23 +220,18 @@ func (r *Runner) materialize(ctx context.Context, req Request, entry string, tim
 		return nil, err
 	}
 	key := r.cacheKeyOf(ctx, comp, entry, req.Format, strconv.Itoa(rows))
-	if res := r.cachedResult(ctx, key); res != nil {
-		return res, nil
-	}
-	var out *Result
-	err = r.execute(ctx, req, comp, timeout, func(ctx context.Context, comp *Compiled) error {
-		res, err := comp.Query.Run(ctx, r.db)
-		if err != nil {
+	return cached(ctx, r, key, func(ctx context.Context) (*Result, error) {
+		var out *Result
+		err := r.execute(ctx, req, comp, timeout, func(ctx context.Context, comp *Compiled) error {
+			res, err := comp.Query.Run(ctx, r.db)
+			if err != nil {
+				return err
+			}
+			out, err = r.resultOf(comp, res)
 			return err
-		}
-		out, err = r.resultOf(comp, res)
-		return err
-	})
-	if err != nil {
-		return nil, err
-	}
-	r.storeResult(ctx, key, out)
-	return out, nil
+		})
+		return out, err
+	}, encodeResult, decodeCached)
 }
 
 // resultOf turns a decoded statement result into a Result, cut at the limit and the byte cap.
@@ -251,22 +258,15 @@ func (r *Runner) Count(ctx context.Context, req Request) (int64, error) {
 		return 0, err
 	}
 	key := r.cacheKeyOf(ctx, comp, "count", req.Format, "")
-	if b, ok := r.cacheGet(ctx, key); ok {
-		if n, err := decodeCount(b); err == nil {
-			return n, nil
-		}
-	}
-	var n int64
-	err = r.execute(ctx, req, comp, r.opts.Timeouts.Count, func(ctx context.Context, comp *Compiled) error {
-		var err error
-		n, err = comp.Query.Count(ctx, r.db)
-		return err
-	})
-	if err != nil {
-		return 0, err
-	}
-	r.cacheSet(ctx, key, encodeCount(n))
-	return n, nil
+	return cached(ctx, r, key, func(ctx context.Context) (int64, error) {
+		var n int64
+		err := r.execute(ctx, req, comp, r.opts.Timeouts.Count, func(ctx context.Context, comp *Compiled) error {
+			var err error
+			n, err = comp.Query.Count(ctx, r.db)
+			return err
+		})
+		return n, err
+	}, encodeCountValue, decodeCountValue)
 }
 
 // Page returns the page of size rows after cursor (empty for the first page) in the report's
@@ -282,31 +282,46 @@ func (r *Runner) Page(ctx context.Context, req Request, cursor string, size int)
 		return nil, err
 	}
 	key := r.cacheKeyOf(ctx, comp, "page", req.Format, cursor+"\x00"+strconv.Itoa(size))
-	if res := r.cachedResult(ctx, key); res != nil {
-		return res, nil
-	}
-	var out *Result
-	err = r.execute(ctx, req, comp, r.opts.Timeouts.Page, func(ctx context.Context, comp *Compiled) error {
-		res, err := comp.Query.Page(ctx, r.db, keel.After(cursor, size))
-		if err != nil {
+	return cached(ctx, r, key, func(ctx context.Context) (*Result, error) {
+		var out *Result
+		err := r.execute(ctx, req, comp, r.opts.Timeouts.Page, func(ctx context.Context, comp *Compiled) error {
+			res, err := comp.Query.Page(ctx, r.db, keel.After(cursor, size))
+			if err != nil {
+				return err
+			}
+			out, err = r.resultOf(comp, res)
 			return err
-		}
-		out, err = r.resultOf(comp, res)
-		return err
-	})
-	if err != nil {
-		return nil, err
-	}
-	r.storeResult(ctx, key, out)
-	return out, nil
+		})
+		return out, err
+	}, encodeResult, decodeCached)
 }
 
-// execute runs fn in a read-only transaction with the run's guards, on a replica unless the
+// execute runs fn in a read-only transaction with the run's guards (see attempt). When the
+// freshness check of the rollup answering the report fails, the failure goes to OnError and the
+// report runs from the base tables in a new transaction.
+func (r *Runner) execute(ctx context.Context, req Request, comp *Compiled, timeout time.Duration,
+	fn func(ctx context.Context, comp *Compiled) error,
+) error {
+	err := r.attempt(ctx, req, comp, timeout, fn)
+	var check *rollupCheck
+	if !errors.As(err, &check) {
+		return err
+	}
+	r.report(check)
+	base, err := comp.withoutRollup(ctx)
+	if err != nil {
+		return err
+	}
+	return r.attempt(ctx, req, base, timeout, fn)
+}
+
+// attempt runs fn in a read-only transaction with the run's guards, on a replica unless the
 // runner reads the primary: the statement timeout and supersede tag set for the transaction, the
-// previous run with the key cancelled, a dynamic pivot's values discovered, every statement's
+// previous run with the key cancelled, the freshness of the rollup answering the report checked
+// (the base tables read when it is stale), a dynamic pivot's values discovered, every statement's
 // cost checked and a tenant slot taken before the statements run. A dynamic pivot runs in
 // REPEATABLE READ so both its statements read one snapshot.
-func (r *Runner) execute(ctx context.Context, req Request, comp *Compiled, timeout time.Duration,
+func (r *Runner) attempt(ctx context.Context, req Request, comp *Compiled, timeout time.Duration,
 	fn func(ctx context.Context, comp *Compiled) error,
 ) error {
 	ctx, cancel := context.WithTimeout(ctx, timeout+time.Second)
@@ -331,8 +346,11 @@ func (r *Runner) execute(ctx context.Context, req Request, comp *Compiled, timeo
 		if err := r.prepare(ctx, timeout, tag); err != nil {
 			return err
 		}
-		comp, err := r.discover(ctx, comp)
+		comp, err := r.fresh(ctx, comp)
 		if err != nil {
+			return err
+		}
+		if comp, err = r.discover(ctx, comp); err != nil {
 			return err
 		}
 		if comp, err = r.choosePreAgg(ctx, comp); err != nil {

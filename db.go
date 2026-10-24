@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -253,6 +254,10 @@ func (db *DB) Close() {
 		db.pool.Close()
 	})
 }
+
+// TenantColumns returns Config.TenantColumns: the tenant columns, in the order the values of a
+// tenant (Config.Tenant) and of a tenant key (TenantKey) come in. The slice is a copy.
+func (db *DB) TenantColumns() []string { return slices.Clone(db.cfg.TenantColumns) }
 
 // Pool returns the underlying pgx pool, for work keel does not cover (LISTEN, COPY of foreign
 // data). Statements sent through it bypass scope checks and hooks.
