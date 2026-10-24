@@ -62,6 +62,9 @@ func builtins(s *session) []builtin {
 	if s.hasFacts() {
 		out = append(out, builtin{"doctor", "", "check the database, its settings and what holds locks", setupDoctor})
 	}
+	if s.app.Tables != nil {
+		out = append(out, builtin{"verify", "", "compare the models with the database's tables", setupVerify})
+	}
 	return append(out, builtin{"version", "", "print the version", setupVersion})
 }
 

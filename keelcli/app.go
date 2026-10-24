@@ -31,6 +31,7 @@ import (
 	"github.com/emoss08/keel/keelcli/migrateport"
 	"github.com/emoss08/keel/keelcli/seedport"
 	"github.com/emoss08/keel/migrate"
+	"github.com/emoss08/keel/schema"
 	"github.com/emoss08/keel/seed"
 )
 
@@ -114,6 +115,9 @@ type App struct {
 
 	// Extensions are the extensions doctor requires.
 	Extensions []string
+	// Tables returns the application's generated tables (keeltables.All()) for the verify
+	// command, which compares them with the database; nil leaves verify out.
+	Tables func() []*schema.Table
 	// Commands adds the application's own commands, which must not reuse a built-in name.
 	Commands []Command
 	// Flags declares the application's global flags, accepted before or after any command.

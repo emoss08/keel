@@ -86,6 +86,7 @@ keelcli.Main(keelcli.App{
 | `Lint` | the application's lint rules, run after the built-in ones |
 | `Seeds`, `Tenants`, `System`, `Parallel` | the seeds and the `seed.Options` every run uses; without `Seeds` there are no seed commands and the console has no Seeds tab |
 | `Extensions` | the extensions `doctor` requires |
+| `Tables` | the application's generated tables (`keeltables.All`), which `verify` compares with the database; without it there is no `verify` |
 | `Commands` | the application's own commands |
 | `Flags`, `Setup` | global flags of the application and the hook that finishes the `App` from them once the command line is parsed (the `keel` command uses them for `-dsn` and `-dir`) |
 | `Engines` | replaces any engine keelcli would build, as the tests and the demo do with package `fake` |
@@ -243,6 +244,7 @@ database), and the application's own. A command's flags may follow its arguments
 | `reset [-admin dsn]` | recreate the database from the current template, building it first, keeping the environment mark (confirms; never on production) |
 | `template` / `template build` / `template prune` | list, build (migrations and reference seeds), or drop the application's stale templates (prune confirms); each takes `-admin` |
 | `doctor` | connection, server, `plan_cache_mode`, extensions, migrations, templates, environment, lock holders and long queries; exits 3 when a check fails |
+| `verify` | compare the models (`App.Tables`) with the database through `keel.Verify`: missing tables and columns, primary keys, nullability, generated columns, types, join tables and relation keys, each with a fix; exits 3 on drift |
 | `version` | the binary's name and version |
 | `help [command]` | help for a command |
 

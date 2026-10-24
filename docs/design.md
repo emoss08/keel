@@ -178,7 +178,7 @@ columns they share, and keel joins it to the target on them too, so a join table
 its own tenant. `schema.SharedTenant(parent, child)` names those columns, and
 `Table.JoinTableOf(rel)` describes the join table as a tenant table (its two keys and the shared
 tenant columns, flagged `tenant`) for code that reads it directly: the analytics fan-out reads it in a
-CTE under the scope's tenant predicate.
+CTE under the scope's tenant predicate, and `keel.Verify` checks its columns.
 
 ### Pick relations
 
@@ -619,6 +619,20 @@ ran on, duration, rows and error; statements sent in one round trip share a star
 observers chain their `BeforeQuery` contexts from the terminal's context; `AfterQuery` gets the
 statement's final context, and a round trip that carries one statement runs under it. Statements
 of one round trip get sibling contexts and the round trip runs under the terminal's context.
+
+## Schema verification
+
+`keel.Verify(ctx, db, tables) ([]Drift, error)` checks that the database can serve the models: the
+migrations own the schema and the models describe it, so nothing else keeps them in step. It reads
+every table, view, join table and relation target the tables name in one catalog statement
+(`to_regclass` of each quoted name, columns with domains resolved to their base type, array element
+types, `attnotnull` and the domain's `NOT NULL`, `attgenerated`, `attidentity`, the primary key's
+columns) on a pool connection, outside transactions and scopes, and compares in Go. A drift names
+the table, column and field and carries a fix; drifts come per table in the order given. The check
+rules are the decoding rules: a kind holds the types pgx scans it from (`int16` only `smallint`,
+`int64` any integer, `string` text types, enums, `uuid` and `json`), a field holds NULL when it is
+nullable, nullzero, jsonb, `[]byte`, an array or a custom type, and a join table carries
+`Table.JoinTableOf`'s columns. `keelcli`'s `verify` runs it for `App.Tables`.
 
 ## Errors
 

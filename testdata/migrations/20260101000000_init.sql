@@ -31,7 +31,7 @@ CREATE TABLE shipments (
     search_vector tsvector GENERATED ALWAYS AS (to_tsvector('simple', pro_number)) STORED,
     stage_rank smallint GENERATED ALWAYS AS (
         CASE status WHEN 'New' THEN 1 WHEN 'Assigned' THEN 2 WHEN 'InTransit' THEN 3 ELSE 4 END
-    ) STORED,
+    ) STORED NOT NULL,
     canceled_at bigint,
     version bigint NOT NULL DEFAULT 0,
     created_at bigint NOT NULL,
@@ -102,7 +102,7 @@ CREATE TABLE workers (
     manager_id text,
     first_name text NOT NULL,
     last_name text NOT NULL,
-    whole_name text GENERATED ALWAYS AS (first_name || ' ' || last_name) STORED,
+    whole_name text GENERATED ALWAYS AS (first_name || ' ' || last_name) STORED NOT NULL,
     hired_at timestamptz NOT NULL,
     CONSTRAINT pk_workers PRIMARY KEY (id, organization_id, business_unit_id)
 );

@@ -873,7 +873,9 @@ go run github.com/emoss08/keel/cmd/keel gen -check -kinds internal/dbq/keelkinds
 ```
 
 `-check` exits non-zero and prints the files to regenerate. Run it with the same flags as the
-command that writes the files.
+command that writes the files. It keeps the generated code in step with the models; to keep the
+models in step with the migrations, run `keel.Verify` in an integration test (see
+[Verifying the schema](#verifying-the-schema)).
 
 ### What a generated package contains
 
@@ -3605,6 +3607,60 @@ The same pattern works for an application:
 - Assert SQL with `ToSQL` on a `DB` that never connects, and assert round trips with a recording
   observer.
 - To exercise `Retry`, return `&pgconn.PgError{Code: "40001"}` from the transaction function.
+
+### Verifying the schema
+
+Models and migrations are written separately, so they can drift: a column renamed in a migration,
+a field added without one, a column made nullable under a non-pointer field. `keel.Verify` compares
+generated tables with the live catalog and returns every difference as a `keel.Drift`:
+
+```go
+func Verify(ctx context.Context, db *keel.DB, tables []*schema.Table) ([]keel.Drift, error)
+
+type Drift struct {
+    Kind   keel.DriftKind // what was found
+    Table  string         // the model's table, a join table or a relation's target
+    Column string         // empty for a whole table
+    Field  string         // Shipment.Weight, Shipment.Tags; the model alone for a whole table
+    Detail string         // what differs
+    Fix    string         // how to make them agree
+}
+```
+
+| Kind | Reported when |
+|---|---|
+| `missing_table` | the model's table or view does not exist |
+| `missing_column` | a stored field's column does not exist (the fix carries an `ALTER TABLE … ADD COLUMN`) |
+| `primary_key` | the model's `pk` columns are not the table's primary key |
+| `nullable` | a nullable column is read into a field that cannot hold NULL: not a pointer, a `Null…` scanner, `nullzero`, `jsonb`, `[]byte`, an array or a custom type |
+| `generated` | a generated (or `GENERATED ALWAYS` identity) column's field is not `readonly` |
+| `json` | a `jsonb` field's column is neither `json` nor `jsonb` |
+| `type` | the field's Go kind cannot hold the column's type (`int16` on `bigint`, `string` on `integer`, `tsvector` on `text`), domains resolved to their base type |
+| `join_table` | a many-to-many join table is missing, or lacks its key columns or the tenant columns its two tables share |
+| `relation_key` | a relation's key column or target table does not exist, or its target was never linked |
+
+Computed fields are skipped; `noselect` columns are not checked for NULL; views are checked for
+their columns and types only, since Postgres records no primary key or nullability for them; a
+custom (`sql.Scanner`) type is not type-checked. `Verify` reads the catalog in one statement on a
+pool connection of its own, outside any transaction or scope.
+
+The primary use is an integration test on the database the other tests use, built from the
+migrations, so CI fails when models and migrations disagree:
+
+```go
+func TestSchemaMatchesModels(t *testing.T) {
+    drifts, err := keel.Verify(context.Background(), testDB, keeltables.All())
+    if err != nil {
+        t.Fatal(err)
+    }
+    for _, d := range drifts {
+        t.Error(d) // shipments.weight (Shipment.Weight): the column is nullable but …; fix
+    }
+}
+```
+
+`keelcli` exposes the same check as `verify` for an `App` that sets `Tables: keeltables.All`, with
+plain or `-json` output and exit code 3 on drift, to run against a deployed database.
 
 ## Coming from Bun
 
