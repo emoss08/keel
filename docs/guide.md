@@ -3991,14 +3991,17 @@ the check and the read share a snapshot.
 ```go
 keelcli.Main(keelcli.App{
     Name:       "fleet-db",
-    Migrations: migrations,
+    Config:     dbConfig,
+    Migrations: migrate.Sources(migrate.Source{Name: "app", FS: migrations}),
     Commands: []keelcli.Command{analyticscli.Command(analyticscli.Config{
         Tables:  []*schema.Table{fleetdb.ShipmentsSchema(), fleetdb.CustomersSchema()},
         Rollups: []*rollup.Rollup{ShipmentsDaily},
-        Open:    func(ctx context.Context) (*keel.DB, error) { return keel.Open(ctx, cfg) },
     })},
 })
 ```
+
+`rollups refresh` and `rollups pending` use the App's database; run without keelcli they open one
+with `Config.Open`.
 
 | Command | Does |
 |---|---|

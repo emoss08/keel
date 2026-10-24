@@ -36,7 +36,8 @@ type Config struct {
 	Rollups []*rollup.Rollup
 	// Keys name the schema the way the catalog does; zero fields default to rollup.DefaultKeys.
 	Keys rollup.Keys
-	// Open opens a database for rollups refresh and rollups pending, which close it when done.
+	// Open opens a database for rollups refresh and rollups pending when they run through Run,
+	// which closes it when done. Under keelcli they use the App's database instead.
 	Open func(ctx context.Context) (*keel.DB, error)
 	// Refresh are the defaults of rollups refresh; its flags override the batch sizes.
 	Refresh rollup.RefreshOptions
@@ -63,6 +64,10 @@ func Command(cfg Config) keelcli.Command {
 		Summary: "generate the analytics TypeScript, messages and rollup migrations; refresh rollups",
 		Run: func(ctx context.Context, e *keelcli.Env, args []string) error {
 			en := &env{cfg: cfg, out: e.Stdout, flags: e.FlagSet, parse: e.Parse, json: e.JSON}
+			en.db = func(ctx context.Context) (*keel.DB, func(), error) {
+				db, err := e.DB(ctx)
+				return db, func() {}, err
+			}
 			return en.run(ctx, args)
 		},
 	}
@@ -88,6 +93,16 @@ func Run(ctx context.Context, cfg Config, args []string, out io.Writer) error {
 		return nil
 	}
 	en.json = func() bool { return asJSON }
+	en.db = func(ctx context.Context) (*keel.DB, func(), error) {
+		if cfg.Open == nil {
+			return nil, nil, errors.New("analyticscli: rollups: Config.Open is not set")
+		}
+		db, err := cfg.Open(ctx)
+		if err != nil {
+			return nil, nil, err
+		}
+		return db, db.Close, nil
+	}
 	return en.run(ctx, args)
 }
 
@@ -105,14 +120,16 @@ func Main(cfg Config) {
 	os.Exit(keelcli.ExitFailure)
 }
 
-// env is one run of an analytics command: its configuration, output and flag handling, which
-// keelcli supplies when it runs the command and Run supplies otherwise.
+// env is one run of an analytics command: its configuration, output, flag handling and database,
+// which keelcli supplies when it runs the command and Run supplies otherwise. db returns the
+// database with the function that releases it.
 type env struct {
 	cfg   Config
 	out   io.Writer
 	flags func(name string) *flag.FlagSet
 	parse func(fs *flag.FlagSet, args []string) error
 	json  func() bool
+	db    func(ctx context.Context) (*keel.DB, func(), error)
 }
 
 // run dispatches args to a command.

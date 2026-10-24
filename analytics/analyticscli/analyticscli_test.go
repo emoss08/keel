@@ -106,7 +106,8 @@ func TestDescribe(t *testing.T) {
 
 // app is a keelcli binary with the analytics command.
 func app(cfg analyticscli.Config) keelcli.App {
-	return keelcli.App{Name: "fleet-db", Migrations: fake.New(fake.Options{}).Migrations(), Commands: []keelcli.Command{analyticscli.Command(cfg)}}
+	return keelcli.App{Name: "fleet-db", Engines: keelcli.Engines{Migrations: fake.New(fake.Options{}).Migrations()},
+		Commands: []keelcli.Command{analyticscli.Command(cfg)}}
 }
 
 // run runs args through the binary and returns its exit code and output.
@@ -179,9 +180,8 @@ func TestRefreshAndPendingCommands(t *testing.T) {
 	for _, st := range []fleet.Status{fleet.StatusNew, fleet.StatusNew, fleet.StatusDelivered} {
 		ok(t, fleetdb.Shipments.Create(ctx, d, &fleet.Shipment{CustomerID: c.ID, ProNumber: "P" + randHex(), Status: st, Labels: []string{}, Attributes: map[string]any{}}))
 	}
-	a := app(analyticscli.Config{Tables: tables(), Rollups: []*rollup.Rollup{byStatus}, Open: func(ctx context.Context) (*keel.DB, error) {
-		return keel.Open(ctx, config())
-	}})
+	a := app(analyticscli.Config{Tables: tables(), Rollups: []*rollup.Rollup{byStatus}})
+	a.Config = func() (keel.Config, error) { return config(), nil }
 	code, out, errOut := run(t, a, "analytics", "rollups", "pending", "-json")
 	var pending map[string]int64
 	if code != keelcli.ExitOK || json.Unmarshal([]byte(out), &pending) != nil || pending["cli_shipments_by_status"] == 0 {
@@ -191,9 +191,13 @@ func TestRefreshAndPendingCommands(t *testing.T) {
 	if code != keelcli.ExitOK || !strings.Contains(out, "refreshed") {
 		t.Fatalf("refresh: exit %d, %s %s", code, out, errOut)
 	}
-	code, out, _ = run(t, a, "analytics", "rollups", "pending")
-	if code != keelcli.ExitOK || out != "cli_shipments_by_status\t0\n" {
-		t.Fatalf("pending after the refresh: exit %d, %q", code, out)
+	var plain bytes.Buffer
+	cfg := analyticscli.Config{Rollups: []*rollup.Rollup{byStatus}, Open: func(ctx context.Context) (*keel.DB, error) {
+		return keel.Open(ctx, config())
+	}}
+	ok(t, analyticscli.Run(context.Background(), cfg, []string{"rollups", "pending"}, &plain))
+	if plain.String() != "cli_shipments_by_status\t0\n" {
+		t.Fatalf("pending after the refresh: %q", plain.String())
 	}
 	var n int64
 	ok(t, d.Pool().QueryRow(context.Background(), "SELECT sum(row_count) FROM cli_shipments_by_status WHERE organization_id = $1",

@@ -3,7 +3,6 @@ package analyticscli
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -75,11 +74,11 @@ func (e *env) rollupRefresh(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	db, err := e.open(ctx)
+	db, release, err := e.open(ctx)
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+	defer release()
 	if *rebuild {
 		if _, err := rollup.MarkAll(ctx, db, selected...); err != nil {
 			return err
@@ -110,11 +109,11 @@ func (e *env) rollupPending(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	db, err := e.open(ctx)
+	db, release, err := e.open(ctx)
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+	defer release()
 	pending, err := rollup.Pending(ctx, db, selected...)
 	if err != nil {
 		return err
@@ -150,14 +149,11 @@ func (e *env) pick(list string) ([]*rollup.Rollup, error) {
 	return out, nil
 }
 
-// open opens the database through Config.Open.
-func (e *env) open(ctx context.Context) (*keel.DB, error) {
-	if e.cfg.Open == nil {
-		return nil, errors.New("analyticscli: rollups: Config.Open is not set")
-	}
-	db, err := e.cfg.Open(ctx)
+// open returns the database and the function that releases it.
+func (e *env) open(ctx context.Context) (*keel.DB, func(), error) {
+	db, release, err := e.db(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("analyticscli: rollups: open the database: %w", err)
+		return nil, nil, fmt.Errorf("analyticscli: rollups: open the database: %w", err)
 	}
-	return db, nil
+	return db, release, nil
 }
