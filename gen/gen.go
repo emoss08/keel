@@ -27,6 +27,10 @@ type Options struct {
 	// Kinds is the directory, relative to the module root, of the package that holds column types
 	// for named types declared outside model packages. Defaults to "keelkinds".
 	Kinds string
+	// Tables is the directory, relative to the module root, of the package that lists every
+	// generated table, for code that works over all of them (dynamic queries, the analytics
+	// catalog). Defaults to "keeltables".
+	Tables string
 	// Tags are build tags used to load the packages.
 	Tags []string
 	// Acronyms are the words labels write in capitals (PRO, BOL, SCAC). Defaults to ID, URL, API,
@@ -47,6 +51,9 @@ func Generate(o Options) ([]File, error) {
 	}
 	if o.Kinds == "" {
 		o.Kinds = "keelkinds"
+	}
+	if o.Tables == "" {
+		o.Tables = "keeltables"
 	}
 	labels, err := newLabeler(o.Acronyms)
 	if err != nil {
@@ -168,6 +175,12 @@ func Generate(o Options) ([]File, error) {
 	if kinds != nil {
 		files = append(files, File{Path: filepath.Join(e.kinds.outDir, "keel_gen.go"), Content: kinds})
 	}
+	tablesRel := filepath.ToSlash(filepath.Clean(o.Tables))
+	tables, err := e.emitTables(modPath+"/"+tablesRel, filepath.Base(tablesRel))
+	if err != nil {
+		return nil, err
+	}
+	files = append(files, File{Path: filepath.Join(modRoot, tablesRel, "keel_gen.go"), Content: tables})
 	return files, nil
 }
 

@@ -28,7 +28,7 @@ import (
 )
 
 // genUsage is keel gen's arguments, for keel help gen.
-const genUsage = "[-out {dir}/{name}db] [-kinds keelkinds] [-tags a,b] [-acronyms PRO,BOL] [-check] packages..."
+const genUsage = "[-out {dir}/{name}db] [-kinds keelkinds] [-tables keeltables] [-tags a,b] [-acronyms PRO,BOL] [-check] packages..."
 
 // main runs the command line until it ends or is interrupted; a second signal kills the process.
 func main() {
@@ -90,6 +90,7 @@ func runGen(args []string, stdout, stderr io.Writer) error {
 	fs.SetOutput(stderr)
 	out := fs.String("out", "{dir}/{name}db", "generated package directory, relative to the module root")
 	kinds := fs.String("kinds", "keelkinds", "shared column kinds package directory, relative to the module root")
+	tables := fs.String("tables", "keeltables", "package directory listing every generated table, relative to the module root")
 	tags := fs.String("tags", "", "comma-separated build tags")
 	check := fs.Bool("check", false, "fail when generated files are out of date instead of writing them")
 	acronyms := fs.String("acronyms", "", "comma-separated words labels write in capitals (default ID,URL,API,JSON,UUID)")
@@ -100,7 +101,7 @@ func runGen(args []string, stdout, stderr io.Writer) error {
 	if len(patterns) == 0 {
 		patterns = []string{"./..."}
 	}
-	o := gen.Options{Patterns: patterns, Out: *out, Kinds: *kinds}
+	o := gen.Options{Patterns: patterns, Out: *out, Kinds: *kinds, Tables: *tables}
 	if *tags != "" {
 		o.Tags = strings.Split(*tags, ",")
 	}

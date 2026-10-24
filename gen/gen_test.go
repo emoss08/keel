@@ -241,12 +241,17 @@ func (n *Note) AfterLoad(ctx context.Context) error { return nil }
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(files) != 1 {
+	if len(files) != 2 {
 		t.Fatalf("%d files", len(files))
 	}
 	src := string(files[0].Content)
 	if !strings.HasSuffix(files[0].Path, filepath.Join("models", "modelsdb", "keel_gen.go")) {
 		t.Fatalf("path %s", files[0].Path)
+	}
+	tables := string(files[1].Content)
+	if !strings.HasSuffix(files[1].Path, filepath.Join("keeltables", "keel_gen.go")) ||
+		!strings.Contains(tables, "modelsdb.AccountsSchema(),\n\t\tmodelsdb.NotesSchema(),") {
+		t.Errorf("table list %s:\n%s", files[1].Path, tables)
 	}
 	for _, want := range []string{
 		"package modelsdb",
