@@ -1246,3 +1246,141 @@ func Example_migrations() {
 		fmt.Println(s.ID(), s.Applied, s.NoTx)
 	}
 }
+
+func ExampleOpen_replicas() {
+	ctx := context.Background()
+	cfg := appConfig(os.Getenv("DATABASE_URL"))
+	cfg.Replicas = []keel.ReplicaConfig{
+		{DSN: os.Getenv("REPLICA_A_URL")},
+		{DSN: os.Getenv("REPLICA_B_URL"), Weight: 2},
+	}
+	cfg.MaxReplicaLag = 2 * time.Second
+	db, err := keel.Open(ctx, cfg)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer db.Close()
+
+	for _, r := range db.Replicas() {
+		fmt.Println(r.Name, r.Healthy, r.Lag, r.Position, r.InFlight, r.Reads, r.Err)
+	}
+	fmt.Println("replica reads that ran on the primary:", db.ReplicaFallbacks())
+}
+
+func ExampleOnReplica() {
+	ctx, db := keel.OnReplica(requestContext()), appDB
+	s := fleetdb.Shipments
+
+	page, err := s.Where(s.Status.Eq(fleet.StatusNew)).
+		Order(s.CreatedAt.Desc()).
+		Page(ctx, db, keel.After("", 50))
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(len(page.Items))
+
+	sh := &fleet.Shipment{CustomerID: "cus_01", ProNumber: "PRO-3001", Status: fleet.StatusNew}
+	if err := s.Create(ctx, db, sh); err != nil {
+		log.Fatal(err)
+	}
+	got, err := s.Get(ctx, db, sh.ID)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(got.ProNumber)
+}
+
+func ExampleCommitPosition() {
+	ctx, db := keel.OnReplica(requestContext()), appDB
+	s := fleetdb.Shipments
+
+	sh := &fleet.Shipment{CustomerID: "cus_01", ProNumber: "PRO-3002", Status: fleet.StatusNew}
+	if err := s.Create(ctx, db, sh); err != nil {
+		log.Fatal(err)
+	}
+	cookie := keel.CommitPosition(ctx, db).String()
+
+	pos, err := keel.ParsePosition(cookie)
+	if err != nil {
+		log.Fatal(err)
+	}
+	next := keel.OnReplicaAfter(requestContext(), db, pos)
+	n, err := s.Where(s.Status.Eq(fleet.StatusNew)).Count(next, db)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(n)
+}
+
+func ExampleReplicaTx() {
+	ctx, db := requestContext(), appDB
+	s := fleetdb.Shipments
+
+	err := keel.Read(ctx, db, func(ctx context.Context) error {
+		return s.Where(s.Status.Eq(fleet.StatusDelivered)).Each(ctx, db, 1000,
+			func(ctx context.Context, batch []*fleet.Shipment) error {
+				for _, sh := range batch {
+					fmt.Println(sh.ProNumber, sh.Total)
+				}
+				return nil
+			})
+	}, keel.ReplicaTx(), keel.RepeatableRead())
+	if err != nil {
+		log.Fatal(err)
+	}
+}
+
+func ExampleOpen_dataVersions() {
+	ctx := context.Background()
+	cfg := appConfig(os.Getenv("DATABASE_URL"))
+	cfg.DataVersions = keel.DataVersionsConfig{
+		Enabled:  true,
+		Interval: time.Second,
+		OnError:  func(err error) { log.Printf("data versions: %v", err) },
+	}
+	db, err := keel.Open(ctx, cfg)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer db.Close()
+}
+
+func ExampleDB_DataVersions() {
+	ctx, db := requestContext(), appDB
+	tenant := db.TenantKey(ctx)
+
+	versions, err := db.DataVersions(ctx, tenant, "shipments", "customers")
+	if err != nil {
+		log.Fatal(err)
+	}
+	cacheKey := fmt.Sprintf("open-shipments:%s:%d:%d", tenant, versions["shipments"], versions["customers"])
+	fmt.Println(cacheKey)
+}
+
+func ExampleTenantKeyOf() {
+	ctx, db := withSystem(context.Background(), "warm report caches"), appDB
+
+	tenant := keel.TenantKeyOf(ids.ID("org_acme"), ids.ID("bu_dallas"))
+	versions, err := db.DataVersions(ctx, tenant, "shipments")
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(tenant, versions["shipments"])
+}
+
+func ExampleMarkChanged() {
+	ctx, db := requestContext(), appDB
+
+	err := keel.Write(ctx, db, func(ctx context.Context) error {
+		_, err := keel.Exec(ctx, db, `UPDATE shipments SET priority = priority + 1
+		 WHERE organization_id = $1 AND business_unit_id = $2 AND status = 'New'`, "org_acme", "bu_dallas")
+		if err != nil {
+			return err
+		}
+		keel.MarkChanged(ctx, db, "shipments")
+		return nil
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+}

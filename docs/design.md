@@ -310,6 +310,67 @@ v, err := keel.ReadValue(ctx, db, func(ctx context.Context) (T, error) { ... })
 `Query.CustomPlan()` plans one query for its values: keel wraps it in transaction-local
 `set_config('plan_cache_mode', …)` calls inside the same round trip.
 
+## Replicas
+
+```go
+cfg.Replicas = []keel.ReplicaConfig{{DSN: replicaA}, {DSN: replicaB, Weight: 2}}
+cfg.MaxReplicaLag = 2 * time.Second
+
+ctx = keel.OnReplica(ctx)                           // reads on ctx go to a replica
+err = keel.Read(ctx, db, report, keel.ReplicaTx())  // one replica snapshot for long read-only work
+pos := keel.CommitPosition(ctx, db)                 // for keel.OnReplicaAfter in a later request
+```
+
+- Every replica pool gets the primary's setup through one function (`Config.configure`): query
+  mode, statement cache, `plan_cache_mode`, the `AfterConnect` that registers enums, arrays, JSON
+  and `LoadTypes`.
+- Routing is opt-in per context. Read terminals on a marked context, outside a transaction, run on
+  a replica; writes, `Exec` and explicit transactions use the primary, unless a `Read` asks for
+  `ReplicaTx`. The read terminals share one runner, so every read, present and future, routes the
+  same way.
+- A replica qualifies when its last check (at most 3 seconds old) found it in recovery and within
+  `MaxReplicaLag`. keel picks the qualifying replica with the fewest reads in flight per unit of
+  weight, then the fewest reads so far per unit of weight, and falls back to the primary, counting
+  the fallback.
+- One goroutine per `DB` checks the replicas every second; `Close` stops it. Lag is the age, on
+  keel's clock, of the newest primary WAL insert position (sampled before the replicas are read,
+  normalised past page headers) that the replica has replayed: no clock agreement between servers
+  is needed and an idle primary shows no lag. Without a primary sample it falls back to
+  `now() - pg_last_xact_replay_timestamp()`.
+- Read-your-writes is on for every marked context. A write's commit position is read by a
+  `SELECT pg_current_wal_insert_lsn()` queued after `COMMIT` in the commit's round trip; the
+  position read before `COMMIT` would precede the commit record and is not enough. Writes outside
+  `Write` on a marked context therefore run in an implicit transaction. The position lives on the
+  context (per `DB`); replica reads on it use a replica the tracker saw replay it, or one it has not
+  seen yet when the write is older than that replica's lag, with a guard statement
+  (`SELECT 1 / (replay_lsn >= $1)::int`) first in the read's pipeline. A failing guard aborts the
+  pipeline on the replica, so it does no work, and the read reruns on the primary under the same
+  observer events. A position that could not be read pins the context to the primary.
+
+## Data versions
+
+- Off by default (`Config.DataVersions.Enabled`): each changed (tenant, table) pair costs a row
+  upsert per `Interval` (default 1s).
+- Every write terminal records its pairs on the runner: in the transaction state, delivered when
+  `COMMIT` is sent (also when it fails, since it may have committed) and dropped on rollback; or,
+  outside a transaction, delivered when the runner closes, even after an error.
+- A per-`DB` goroutine writes the pending set every interval in one statement per 5,000 pairs
+  (`INSERT … SELECT FROM unnest($1, $2) ORDER BY … ON CONFLICT DO UPDATE SET version = version + 1`),
+  on its own connection and never inside a write's transaction, so writes never contend on version
+  rows. Key order prevents deadlocks between processes. Failed pairs return to the set. `Close` and
+  `FlushDataVersions` write the set at once.
+- Tenant keys are the tenant values of the longest prefix of `TenantColumns` the table has,
+  escaped and joined with `/`. A system-scope write records each row's tenant (entity writes read
+  the rows; bulk writes and `InsertFrom` wrap the statement in
+  `WITH w AS (… RETURNING tenant columns) SELECT tenant columns, count(*) FROM w GROUP BY …`).
+  Tables without tenant columns and unattributable changes record `""`. `DataVersions` sums the
+  key, its prefixes and `""`, so over-invalidation is possible and staleness is not.
+- `keel_data_versions` is created on first use under a transaction-scoped advisory lock when
+  `to_regclass` does not find it; a migration can create it instead with the definition in the
+  guide. keel/migrate is not used, so the feature works whichever migration tool an application
+  runs.
+- `Exec` cannot see its tables: `MarkChanged` records them.
+
 ## Hooks
 
 | Kind | Registration | Use |
@@ -334,8 +395,8 @@ deletes) the previous values of the columns hooks declared with `Needs` are read
 statement through `RETURNING old.…` (PostgreSQL 18) into `Mutation.Old`. Hooks are resolved per
 table when registered; a table without hooks pays nothing.
 
-Observers receive the statement text (never values), the number of bound arguments, duration, rows
-and error; statements sent in one round trip share a start time and a duration. Each statement's
+Observers receive the statement text (never values), the number of bound arguments, the replica it
+ran on, duration, rows and error; statements sent in one round trip share a start time and a duration. Each statement's
 observers chain their `BeforeQuery` contexts from the terminal's context; `AfterQuery` gets the
 statement's final context, and a round trip that carries one statement runs under it. Statements
 of one round trip get sibling contexts and the round trip runs under the terminal's context.
