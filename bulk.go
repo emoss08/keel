@@ -87,11 +87,11 @@ func (q *query) update(ctx context.Context, db *DB, sets []Assignment) (int64, e
 	}
 	s := &stmt{sql: string(r.buf), args: r.argsCopy(), op: "update", table: t.Name}
 	bh := bulkHooks(r, s, th, OpUpdate, t, alias)
-	err = run.one(ctx, s, !th.has(OpUpdate, AfterWrite))
+	n, err := run.bulk(ctx, s, t, alias, bh, !th.has(OpUpdate, AfterWrite))
 	if err == nil && bh != nil {
 		err = db.afterWrite(ctx, run, th, OpUpdate, bh.rows, bh.olds, changed)
 	}
-	return s.tag.RowsAffected(), run.close(ctx, err)
+	return n, run.close(ctx, err)
 }
 
 // delete writes DELETE … WHERE for the query's filter.
@@ -134,11 +134,47 @@ func (q *query) delete(ctx context.Context, db *DB) (int64, error) {
 	}
 	s := &stmt{sql: string(r.buf), args: r.argsCopy(), op: "delete", table: t.Name}
 	bh := bulkHooks(r, s, th, OpDelete, t, alias)
-	err = run.one(ctx, s, !th.has(OpDelete, AfterWrite))
+	n, err := run.bulk(ctx, s, t, alias, bh, !th.has(OpDelete, AfterWrite))
 	if err == nil && bh != nil {
 		err = db.afterWrite(ctx, run, th, OpDelete, bh.rows, bh.olds, nil)
 	}
-	return s.tag.RowsAffected(), run.close(ctx, err)
+	return n, run.close(ctx, err)
+}
+
+// bulk sends a bulk UPDATE, DELETE or INSERT … SELECT on t, written under alias (empty for an
+// INSERT), and returns the rows it wrote. It records the data versions the statement changes: the
+// scope's tenant, or, for a system-scope write to a tenant table, the tenants of the rows bh
+// returned for hooks, else the tenants the statement returns when returnTenants wraps it. A
+// failed system-scope write records the table for every tenant, since it may have committed.
+func (r *runner) bulk(ctx context.Context, s *stmt, t *schema.Table, alias string, bh *bulkRows,
+	last bool,
+) (int64, error) {
+	if !r.tenantsReturned(t) {
+		r.touchTable(t)
+		err := r.one(ctx, s, last)
+		return s.tag.RowsAffected(), err
+	}
+	if bh != nil {
+		err := r.one(ctx, s, last)
+		if err != nil {
+			r.touchTable(t)
+		} else {
+			r.touchRows(t, bh.rows)
+		}
+		return s.tag.RowsAffected(), err
+	}
+	var n int64
+	r.returnTenants(s, t, func(col string) string {
+		if alias == "" {
+			return col
+		}
+		return alias + "." + col
+	}, &n)
+	err := r.one(ctx, s, last)
+	if err != nil {
+		r.touchTable(t)
+	}
+	return n, err
 }
 
 // bulkRows holds the rows a bulk write returned for its hooks.

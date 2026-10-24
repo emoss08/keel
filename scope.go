@@ -2,12 +2,14 @@ package keel
 
 import "context"
 
-// scopeState is the scope of one terminal call, resolved once from the context.
+// scopeState is the scope of one terminal call, resolved once from the context. changes collects
+// the data-version pairs the call's write changed outside a transaction, until its runner closes.
 type scopeState struct {
 	tenant  []any
 	system  bool
 	reason  string
 	columns []string
+	changes versionSet
 }
 
 func (db *DB) resolveScope(ctx context.Context) *scopeState {

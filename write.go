@@ -372,6 +372,7 @@ func (db *DB) insert(ctx context.Context, t *schema.Table, rows []unsafe.Pointer
 	if err != nil {
 		return run.close(ctx, err)
 	}
+	run.touchRows(t, rows)
 	err = run.batch(ctx, stmts, !th.has(OpCreate, AfterWrite))
 	if err == nil {
 		err = db.afterWrite(ctx, run, th, OpCreate, rows, nil, nil)
@@ -629,6 +630,7 @@ func (db *DB) upsert(ctx context.Context, ref *Ref, rows []unsafe.Pointer, c Con
 	if err != nil {
 		return nil, run.close(ctx, err)
 	}
+	run.touchRows(t, rows)
 	err = run.batch(ctx, stmts, !afterHooks)
 	if err == nil && c.nothing {
 		for i, row := range rows {
@@ -783,6 +785,7 @@ func (db *DB) save(ctx context.Context, ref *Ref, row unsafe.Pointer, cols []int
 			return scanInto(rows, t, row, ret, old, needs)
 		}
 	}
+	run.touchRow(t, row)
 	err = run.one(ctx, s, !th.has(OpUpdate, AfterWrite))
 	if err == nil {
 		if s.scan == nil {
@@ -980,6 +983,7 @@ func (db *DB) deleteRow(ctx context.Context, ref *Ref, row unsafe.Pointer) error
 			return scanInto(rows, t, row, nil, old, th.needs)
 		}
 	}
+	run.touchRow(t, row)
 	err = run.one(ctx, s, !th.has(OpDelete, AfterWrite))
 	if err == nil && s.tag.RowsAffected() == 0 {
 		err = ErrNotFound
@@ -1054,8 +1058,8 @@ func (db *DB) insertFrom(ctx context.Context, ref *Ref, src subquery,
 		return 0, run.close(ctx, r.err)
 	}
 	s := &stmt{sql: string(r.buf), args: r.argsCopy(), op: "insert", table: t.Name}
-	err = run.one(ctx, s, true)
-	return s.tag.RowsAffected(), run.close(ctx, err)
+	n, err := run.bulk(ctx, s, t, "", nil, true)
+	return n, run.close(ctx, err)
 }
 
 // afterWrite runs the After hooks now and queues the Committed hooks.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -57,6 +58,18 @@ type Config struct {
 	// descriptions) each connection keeps. Defaults to 512; the least recently used is
 	// deallocated beyond it.
 	StatementCacheCapacity int
+
+	// Replicas are streaming replicas of the primary. Reads run on one only when their context is
+	// marked with OnReplica, or inside a Read started with ReplicaTx. Every replica pool gets the
+	// same connection setup as the primary's.
+	Replicas []ReplicaConfig
+	// MaxReplicaLag is how far behind the primary a replica may be and still serve reads.
+	// Defaults to 2s.
+	MaxReplicaLag time.Duration
+
+	// DataVersions turns on the per-tenant, per-table change counters keel maintains from its own
+	// write path.
+	DataVersions DataVersionsConfig
 }
 
 // PlanCache chooses how keel prepares statements.
@@ -98,25 +111,24 @@ type Statement struct {
 
 // DB is a pool of connections and the configuration keel applies to them.
 type DB struct {
-	pool  *pgxpool.Pool
-	cfg   Config
-	hooks hooks
-	icpt  interceptors
-	types columnTypes
+	pool     *pgxpool.Pool
+	cfg      Config
+	hooks    hooks
+	icpt     interceptors
+	types    columnTypes
+	replicas *replicaSet
+	versions *versioner
+
+	closeOnce sync.Once
 }
 
-// Open connects to Postgres.
+// Open connects to Postgres. With Config.Replicas it also opens a pool per replica and starts a
+// goroutine that tracks their lag; with Config.DataVersions.Enabled it starts the goroutine that
+// writes data versions. Close stops both.
 func Open(ctx context.Context, cfg Config) (*DB, error) {
-	pc := cfg.Pool
-	if pc == nil {
-		if cfg.DSN == "" {
-			return nil, errors.New("keel: Config needs a DSN or a Pool")
-		}
-		var err error
-		pc, err = pgxpool.ParseConfig(cfg.DSN)
-		if err != nil {
-			return nil, fmt.Errorf("keel: parse dsn: %w", err)
-		}
+	pc, err := poolConfig("", cfg.DSN, cfg.Pool)
+	if err != nil {
+		return nil, err
 	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
@@ -124,6 +136,56 @@ func Open(ctx context.Context, cfg Config) (*DB, error) {
 	if cfg.StatementCacheCapacity == 0 {
 		cfg.StatementCacheCapacity = 512
 	}
+	if cfg.MaxReplicaLag <= 0 {
+		cfg.MaxReplicaLag = defaultMaxReplicaLag
+	}
+	if cfg.DataVersions.Interval <= 0 {
+		cfg.DataVersions.Interval = defaultVersionInterval
+	}
+	cfg.configure(pc)
+	pool, err := pgxpool.NewWithConfig(ctx, pc)
+	if err != nil {
+		return nil, fmt.Errorf("keel: open pool: %w", err)
+	}
+	db := &DB{pool: pool, cfg: cfg}
+	if len(cfg.Replicas) > 0 {
+		if db.replicas, err = openReplicas(ctx, &db.cfg); err != nil {
+			pool.Close()
+			return nil, err
+		}
+		db.replicas.start(db)
+	}
+	if cfg.DataVersions.Enabled {
+		db.versions = startVersioner(db)
+	}
+	return db, nil
+}
+
+// poolConfig returns pc, or the configuration parsed from dsn when pc is nil. what names the
+// connection in errors: empty for the primary, "replica N" for a replica.
+func poolConfig(what, dsn string, pc *pgxpool.Config) (*pgxpool.Config, error) {
+	if pc != nil {
+		return pc, nil
+	}
+	prefix := "keel: "
+	if what != "" {
+		prefix += what + ": "
+	}
+	if dsn == "" {
+		return nil, errors.New(prefix + "Config needs a DSN or a Pool")
+	}
+	pc, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return nil, fmt.Errorf("%sparse dsn: %w", prefix, err)
+	}
+	return pc, nil
+}
+
+// configure applies the setup every pool of the DB shares, the primary's and each replica's: the
+// query mode and statement cache, plan_cache_mode, and an AfterConnect that registers the JSON
+// codec, the enums, LoadTypes and the array codecs before the pool's own AfterConnect and
+// Config.AfterConnect run.
+func (cfg *Config) configure(pc *pgxpool.Config) {
 	switch cfg.PlanCache {
 	case PlanCacheOff:
 		pc.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeCacheDescribe
@@ -139,13 +201,14 @@ func Open(ctx context.Context, cfg Config) (*DB, error) {
 		}
 		pc.ConnConfig.RuntimeParams["plan_cache_mode"] = mode
 	}
-	userAfterConnect := pc.AfterConnect
+	poolAfterConnect := pc.AfterConnect
+	codec, loadTypes, skipEnums, afterConnect := cfg.JSON, cfg.LoadTypes, cfg.SkipEnums, cfg.AfterConnect
 	pc.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
-		if cfg.JSON != nil {
-			registerJSON(conn.TypeMap(), cfg.JSON)
+		if codec != nil {
+			registerJSON(conn.TypeMap(), codec)
 		}
-		names := append([]string(nil), cfg.LoadTypes...)
-		if !cfg.SkipEnums {
+		names := append([]string(nil), loadTypes...)
+		if !skipEnums {
 			enums, err := enumTypes(ctx, conn)
 			if err != nil {
 				return err
@@ -162,25 +225,34 @@ func Open(ctx context.Context, cfg Config) (*DB, error) {
 			loaded = types
 		}
 		registerArrays(conn.TypeMap(), loaded)
-		if userAfterConnect != nil {
-			if err := userAfterConnect(ctx, conn); err != nil {
+		if poolAfterConnect != nil {
+			if err := poolAfterConnect(ctx, conn); err != nil {
 				return err
 			}
 		}
-		if cfg.AfterConnect != nil {
-			return cfg.AfterConnect(ctx, conn)
+		if afterConnect != nil {
+			return afterConnect(ctx, conn)
 		}
 		return nil
 	}
-	pool, err := pgxpool.NewWithConfig(ctx, pc)
-	if err != nil {
-		return nil, fmt.Errorf("keel: open pool: %w", err)
-	}
-	return &DB{pool: pool, cfg: cfg}, nil
 }
 
-// Close closes every connection.
-func (db *DB) Close() { db.pool.Close() }
+// Close stops the replica lag tracker, writes the pending data versions and closes every
+// connection, the replicas' included. Calls after the first do nothing.
+func (db *DB) Close() {
+	db.closeOnce.Do(func() {
+		if db.replicas != nil {
+			db.replicas.stop()
+		}
+		if db.versions != nil {
+			db.versions.close()
+		}
+		if db.replicas != nil {
+			db.replicas.close()
+		}
+		db.pool.Close()
+	})
+}
 
 // Pool returns the underlying pgx pool, for work keel does not cover (LISTEN, COPY of foreign
 // data). Statements sent through it bypass scope checks and hooks.

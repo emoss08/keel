@@ -112,6 +112,9 @@ the request context.
 | `JSON` | `*keel.JSONCodec` | the JSON implementation for `json` and `jsonb` values; defaults to `encoding/json` |
 | `PlanCache` | `keel.PlanCache` | how statements are prepared: `PlanCacheAuto` (default), `PlanCacheCustom`, `PlanCacheOff` |
 | `StatementCacheCapacity` | `int` | prepared statements (or, with `PlanCacheOff`, statement descriptions) kept per connection; defaults to 512 |
+| `Replicas` | `[]keel.ReplicaConfig` | streaming replicas (`DSN` or `Pool`, and a `Weight`) that reads marked with `keel.OnReplica` run on; see [Read replicas](#read-replicas) |
+| `MaxReplicaLag` | `time.Duration` | how far behind the primary a replica may be and still serve reads; defaults to 2s |
+| `DataVersions` | `keel.DataVersionsConfig` | `Enabled`, `Interval` (default 1s) and `OnError` of the per-tenant, per-table change counters; off by default; see [Data versions](#data-versions) |
 
 `keel.TxInfo` tells `OnBegin` whether the transaction is `ReadOnly` and whether it is `Implicit`
 (opened by keel for a single terminal). A `keel.Statement` is `SQL` plus `Args`.
@@ -214,6 +217,162 @@ AfterConnect: func(ctx context.Context, conn *pgx.Conn) error {
     return nil
 },
 ```
+
+### Read replicas
+
+`Config.Replicas` lists streaming replicas of the primary. keel opens a pool per replica with the
+same setup as the primary's (query mode, statement cache, `plan_cache_mode`, enum and array
+registration, the JSON codec, `LoadTypes` and `AfterConnect`), so every query that works on the
+primary works on a replica.
+
+```go
+cfg := appConfig(os.Getenv("DATABASE_URL"))
+cfg.Replicas = []keel.ReplicaConfig{
+    {DSN: os.Getenv("REPLICA_A_URL")},
+    {DSN: os.Getenv("REPLICA_B_URL"), Weight: 2},
+}
+cfg.MaxReplicaLag = 2 * time.Second
+db, err := keel.Open(ctx, cfg)
+```
+
+Reads opt in. `keel.OnReplica(ctx)` marks a context, and every read terminal called with it outside
+a transaction (`One`, `First`, `List`, `All`, `Page`, `Count`, `CountUpTo`, `Exists`, `Each`,
+`keel.Into`, `keel.IntoOne`, `keel.Batch`) runs on a replica, its relation loads included. Writes,
+`keel.Exec` and explicit transactions use the primary.
+
+```go
+ctx := keel.OnReplica(r.Context())
+page, err := s.Where(s.Status.Eq(fleet.StatusNew)).
+    Order(s.CreatedAt.Desc()).
+    Page(ctx, db, keel.After("", 50))
+
+sh := &fleet.Shipment{CustomerID: "cus_01", ProNumber: "PRO-3001", Status: fleet.StatusNew}
+err = s.Create(ctx, db, sh)       // the primary
+got, err := s.Get(ctx, db, sh.ID) // sees the shipment it just created
+```
+
+**Routing.** A replica serves a read when its last check found it healthy and in recovery, no more
+than `MaxReplicaLag` behind and checked within the last 3 seconds. Among those keel takes the one
+with the fewest reads in flight for its `Weight`, then the fewest reads so far for its weight, so
+weights split sequential traffic and in-flight counts balance concurrent traffic. When no replica
+qualifies the read runs on the primary and `db.ReplicaFallbacks()` counts it.
+
+**Lag tracking.** One goroutine per `DB` checks every replica once a second, stopped by `Close`.
+Each check reads the primary's WAL insert position, then each replica's `pg_is_in_recovery()` and
+`pg_last_wal_replay_lsn()`, concurrently. A replica's lag is the age, on keel's clock, of the newest
+primary position it has replayed: it needs no clock agreement between servers and stays near zero
+on an idle primary, where `now() - pg_last_xact_replay_timestamp()` would grow without bound. When
+the primary cannot be reached, keel falls back to that timestamp (zero when the replica has replayed
+all it received). A server that is not in recovery, such as a promoted replica, is never used.
+
+**Read-your-writes.** A write made with a marked context records the primary's WAL position after
+its commit, read by a `SELECT pg_current_wal_insert_lsn()` sent after `COMMIT` in the commit's own
+round trip, and later replica reads on that context only run where that position has been
+replayed. Reading the position before `COMMIT` would not do: the commit record comes after it, so a
+replica could reach the position without the commit. Outside `Write`, a write on a marked context
+runs in an implicit transaction (`BEGIN`, the statement, `COMMIT` and the position in one round
+trip), as it does with `OnBegin`.
+
+- A replica the lag tracker has seen replay the position serves the read as usual.
+- A replica it has not seen yet (the tracker polls once a second) serves it when the write is
+  older than the replica's lag: the read's round trip starts with a check of the replica's replay
+  position, which aborts the rest of the pipeline when the replica is behind, and the read then
+  runs on the primary. A read right after its write goes to the primary.
+- When the position after a commit cannot be read, the context's reads stay on the primary.
+
+To carry read-your-writes across requests, send `keel.CommitPosition(ctx, db)` to the client (a
+cookie, a header) and start the next request with `keel.OnReplicaAfter`:
+
+```go
+cookie := keel.CommitPosition(ctx, db).String()
+
+pos, err := keel.ParsePosition(cookie)
+next := keel.OnReplicaAfter(r.Context(), db, pos)
+n, err := s.Where(s.Status.Eq(fleet.StatusNew)).Count(next, db)
+```
+
+**Long read-only work.** `keel.ReplicaTx()` runs a `Read` on a replica: one replica connection and
+snapshot for every terminal in it, for reports and exports. It takes a replica the tracker has seen
+past the context's position, falls back to the primary, and is refused on a `Write` and with
+`Serializable`, which a hot standby does not run.
+
+```go
+err := keel.Read(ctx, db, func(ctx context.Context) error {
+    return s.Where(s.Status.Eq(fleet.StatusDelivered)).Each(ctx, db, 1000, exportBatch)
+}, keel.ReplicaTx(), keel.RepeatableRead())
+```
+
+**Watching replicas.** `db.Replicas()` returns, per replica, its `Name` (`host:port/database`),
+`Weight`, `Healthy`, `Lag`, replayed `Position`, `CheckedAt`, reads `InFlight`, `Reads` routed so
+far and the last check's `Err`. Observers see where each statement ran in `QueryEvent.Replica`.
+
+A long query on a replica can be cancelled by replay conflicts; set `hot_standby_feedback = on` on
+the replicas, or a `max_standby_streaming_delay` long enough for the reports they serve.
+
+### Data versions
+
+With `Config.DataVersions.Enabled`, keel keeps a version counter per tenant and table in
+`keel_data_versions`, bumped after a write to the table commits. A cache keyed on the versions of
+the tables it read is fresh exactly until one of them changes for the tenant.
+
+```go
+cfg.DataVersions = keel.DataVersionsConfig{
+    Enabled:  true,
+    Interval: time.Second,
+    OnError:  func(err error) { log.Printf("data versions: %v", err) },
+}
+```
+
+```go
+tenant := db.TenantKey(ctx)
+versions, err := db.DataVersions(ctx, tenant, "shipments", "customers")
+cacheKey := fmt.Sprintf("open-shipments:%s:%d:%d", tenant, versions["shipments"], versions["customers"])
+```
+
+How versions move:
+
+- Every write terminal records the (tenant, table) pairs it changed: `Create`, `CreateMany`,
+  `Copy`, `Save`, `DeleteRow`, `Upsert`, `CreateOrSkip`, `InsertFrom`, bulk `Update` and `Delete`.
+  Inside a transaction the pairs wait for the commit, and a rollback drops them; outside one they
+  are handed over after the statement.
+- A goroutine per `DB` writes the pairs every `Interval`, at most once per pair, in one
+  `INSERT … SELECT FROM unnest(…) ON CONFLICT DO UPDATE SET version = version + 1` per 5,000
+  pairs, rows locked in key order. It runs outside every write's transaction on its own
+  connection, so writes never wait on a version row, and a pair written a thousand times in a
+  second costs one row update. `db.FlushDataVersions(ctx)` writes the pending pairs now; `Close`
+  writes them too. A failed write is retried at the next interval and reported to `OnError`.
+- The tenant key is the tenant's values joined with `/` (`keel.TenantKeyOf`, `db.TenantKey(ctx)`),
+  taken from the scope. Under a system scope keel records each written row's own tenant, read from
+  the rows (a system bulk write returns its distinct tenants through `RETURNING` for this). A table
+  without tenant columns, and a change keel cannot attribute to one tenant, is recorded for no
+  tenant (`""`). A table that has only the first tenant columns is keyed by those.
+- `DataVersions` returns, per table, the sum of the versions for the key, its shorter prefixes and
+  `""`, so a change to a shared table, or one recorded for every tenant, moves every tenant's
+  version. Each pair is bumped at most `Interval` after its commit: cache entries may outlive a
+  change by that long.
+- `keel.Exec`, statements sent through `db.Pool()` and triggers are invisible: call
+  `keel.MarkChanged(ctx, db, tables...)` next to them. Under a tenant scope it records the tenant,
+  else `""`.
+- A version can move without a change (a write that matched no row, a statement that failed after
+  it may have committed, a rolled-back savepoint); it never stays put across a committed change.
+- On a context marked with `OnReplica`, `DataVersions` also raises the context's position to the
+  primary's current one, so data read from a replica afterwards is at least as new as the versions
+  and a cache never stores old rows under a new version.
+
+keel creates `keel_data_versions` on first use, under an advisory lock, when it does not exist. To
+create it in a migration instead (a role without `CREATE`), use the same definition:
+
+```sql
+CREATE TABLE keel_data_versions (
+    tenant_key text COLLATE "C" NOT NULL,
+    table_name text COLLATE "C" NOT NULL,
+    version bigint NOT NULL,
+    changed_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant_key, table_name)
+) WITH (fillfactor = 70);
+```
+
+The fill factor keeps a bump, which changes no indexed column, a heap-only update.
 
 ## Models
 
@@ -1542,9 +1701,11 @@ How transactions run:
 
 ### Implicit transactions
 
-Outside `Read` and `Write`, a terminal runs on a pooled connection. It runs in an implicit
-transaction when `Config.OnBegin` is set, when the table has `AfterWrite` hooks for the write, or
-for `CustomPlan`. A terminal with one statement then sends `BEGIN`, the `OnBegin` statements, the
+Outside `Read` and `Write`, a terminal runs on a pooled connection, a replica's for a read on a
+context marked with [`OnReplica`](#read-replicas). It runs in an implicit transaction when
+`Config.OnBegin` is set, when the table has `AfterWrite` hooks for the write, for `CustomPlan`, or
+for a write on a marked context of a `DB` with replicas, which reads its commit position after
+`COMMIT`. A terminal with one statement then sends `BEGIN`, the `OnBegin` statements, the
 statement and `COMMIT` in one round trip; with relation loads, `BEGIN` goes with the first batch and
 `COMMIT` with the last.
 
@@ -1851,6 +2012,7 @@ func (l slowQueryLog) AfterQuery(_ context.Context, e *keel.QueryEvent) {
 | `Table` | the statement's table |
 | `SQL` | the statement text, which never contains values |
 | `Args` | the number of bound arguments |
+| `Replica` | the replica the statement ran on (`ReplicaStats.Name`); empty for the primary |
 | `Start`, `Duration` | when the round trip started and how long it took; statements sent in one round trip share both |
 | `Rows` | rows affected or returned |
 | `Err` | the error of the round trip |
@@ -2488,6 +2650,26 @@ key, `TenantsDone`, rows, duration and error), `SeedEnd` (rows, duration, error)
 - Bulk `Update` and `Delete` are one statement whatever the row count, unless hooks need the rows
   (see [Table hooks](#table-hooks)).
 
+### Replicas and data versions
+
+- Both are free when off: no goroutine, no extra statement, no allocation on a terminal.
+- A read on a marked context costs a context lookup and a scan of the replicas' atomics. It is
+  still one round trip; a read checked against its context's commit position carries the check in
+  the same round trip, and costs a second one, on the primary, only when the replica is behind.
+- A write on a marked context reads its commit position in the `COMMIT` round trip, so a lone
+  write sends `BEGIN` and `COMMIT` with its statement. `Copy` begins its implicit transaction in a
+  round trip of its own.
+- Mark the contexts of whole requests and reports with `OnReplica`, not single queries: the commit
+  positions live on the context, so one mark covers every read after every write of the request.
+- The lag tracker costs one query per replica and one on the primary per second per `DB`, which
+  keeps a connection of each pool open.
+- Data versions cost one upsert per changed (tenant, table) pair per `Interval`, whatever the number
+  of writes, in statements of at most 5,000 pairs. With thousands of tenants writing every second,
+  that is thousands of row updates per second on a small table: raise `Interval` if the caches
+  that read the versions can be that stale.
+- Recording a pair costs a map insert per write terminal under a tenant scope; under a system
+  scope, a key per written row (or a `RETURNING` of the distinct tenants, for bulk writes).
+
 ### Indexes
 
 - Lead every index on a tenant table with its tenant columns: every statement compares them with
@@ -2537,6 +2719,13 @@ KEEL_TEST_REQUIRE=1 go test ./...  # fail instead of skipping
   on: pgxpool connects lazily, so `ToSQL` renders statements without a server.
 - Round-trip tests count statements and round trips with an observer: statements of one round trip
   share a `Start`.
+- Replica tests need a streaming replica of the test server and skip unless
+  `KEEL_TEST_REPLICA_DSN` names it. `make replica` (`testdata/replica/replica.sh up`) creates one
+  in Docker, `keelpg-replica` on port 55433, from a `pg_basebackup` of `keelpg` streaming from a
+  replication slot, and prints its DSN; `make test-replica` starts it and runs the replica tests;
+  `make replica-down` removes it and its slot. The tests open the replica on the test database
+  (created on the primary, so it replicates) and pause replay with `pg_wal_replay_pause()` to
+  test lag.
 
 ### Testing an application
 

@@ -342,6 +342,21 @@ table (never inserts), so a soft-delete or ownership filter holds for single-row
 Observers (`Config.Observers`) see every statement; a span started in `BeforeQuery` travels on the
 statement's context to its execution and to `AfterQuery`.
 
+### Replicas and data versions
+
+Reads on a context marked with `keel.OnReplica` run on the least-loaded replica within
+`Config.MaxReplicaLag`, tracked once a second, and still see the context's own writes: a write
+reads its commit position in the `COMMIT` round trip. With `Config.DataVersions` on, keel keeps a
+version per tenant and table, bumped after commit by a debounced background writer, for caches
+keyed on the data they read.
+
+```go
+ctx = keel.OnReplica(ctx)
+page, err := s.Where(s.Status.Eq(fleet.StatusNew)).Order(s.CreatedAt.Desc()).Page(ctx, db, keel.After("", 50))
+
+versions, err := db.DataVersions(ctx, db.TenantKey(ctx), "shipments", "customers")
+```
+
 ### Migrations
 
 `<version>_<name>.sql` files and Go functions, applied in order under an advisory lock, each in its
@@ -405,4 +420,5 @@ go test ./...                      # integration tests skip when Postgres is unr
 KEEL_TEST_REQUIRE=1 go test ./...  # fail instead of skipping
 make gen                           # regenerate the test models' packages
 make check                         # gofmt, vet, and generated code up to date
+make test-replica                  # start a streaming replica of keelpg and run the replica tests
 ```
