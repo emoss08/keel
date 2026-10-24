@@ -1,6 +1,12 @@
 # Analytics
 
-Status: design, ready to build. This document describes `keel/analytics`, a semantic layer that lets an
+Status: the engine is built (the `analytics` package: catalog, policy, compiler, runner and guards),
+on top of the IR, formula, format, table, export and diff packages. "As built" at the end lists where
+it departs from this design; the guide's "Analytics: the engine" documents the API. The cache
+implementations and rollup maintenance are built separately, against the `Cache` and `RollupRouter`
+ports the engine defines.
+
+This document describes `keel/analytics`, a semantic layer that lets an
 application's users build their own reports — choose an entity, pick fields across relations, filter,
 group, aggregate, pivot, calculate, chart — and have keel turn that into safe, fast, tenant-scoped SQL. It
 is written for Trenova's report builder first and for any keel application second.
@@ -244,7 +250,7 @@ when the IR does.
 | **Window columns**: running total, percent of total, rank, dense rank, moving average, change and percent change against an offset period, first/last in partition | `OVER (PARTITION BY … ORDER BY … ROWS …)` over the grouped result |
 | **Top-N per group** | a ranked subquery filtered on rank |
 | **Subtotals and total** | `GROUPING SETS` in the same statement, with `GROUPING()` marking each row's level: one scan, consistent with the rows, and compatible with HAVING |
-| **Dynamic pivots**: values discovered at run time (top K by a measure, plus "Other") as well as listed ones | a first statement that picks the values, then the pivot; both in one round trip with `keel.Batch` |
+| **Dynamic pivots**: values discovered at run time (top K by a measure, plus "Other") as well as listed ones | a first statement that picks the values, then the pivot with the values bound as parameters; both in one repeatable-read transaction |
 | **Parameters everywhere**: filter values, limits, top-N, bucket, pivot values | bound values; never identifiers |
 | **Count distinct across to-many paths** | a distinct count over the joined path, which a fan-out cannot inflate |
 | **Paging** | keyset paging over the sorted output, so a preview can scroll a large result without re-running it from the start |
@@ -264,7 +270,7 @@ by hand.
 type Policy interface {
     Entity(ctx context.Context, e *analytics.Entity) analytics.Access
     Field(ctx context.Context, f *analytics.Field, via analytics.Path) analytics.Access
-    Edge(ctx context.Context, e *analytics.EdgeInfo, via analytics.Path) analytics.Access
+    Edge(ctx context.Context, e *analytics.Edge, via analytics.Path) analytics.Access
     Rows(ctx context.Context, e *analytics.Entity) []keel.Pred
 }
 ```
@@ -281,7 +287,7 @@ type Policy interface {
   other keel query.
 - **Sensitivity propagates.** Each output column carries the highest sensitivity of the fields it reads,
   through calculations and windows.
-- **Re-checking a definition.** `catalog.Check(def, policy)` re-validates a stored definition and returns
+- **Re-checking a definition.** `catalog.Check(ctx, def, policy)` re-validates a stored definition and returns
   diagnostics. Trenova's "needs attention" status, which nothing sets today, becomes a sweep over
   definitions whose `CatalogVersion` differs.
 
@@ -322,7 +328,7 @@ The compiler is built on keel's renderer and a new dynamic layer in keel core (b
 - **Totals and subtotals as grouping sets**, in the same statement and snapshot as the rows.
 - **Preview limits in SQL.** A preview asks for `LIMIT n+1` and reports truncation, instead of letting
   the database produce 100,000 rows to keep 100.
-- **Drill-through** is `analytics.Drill(def, row, column)`. It inverts buckets and bands into half-open
+- **Drill-through** is `analytics.Drill(ctx, cat, def, row, column, opts)`. It inverts buckets and bands into half-open
   ranges in the report's time zone, carries the clicked measure's filter and pivot scope, and returns a
   record-list definition.
 - **Dashboard filters** are `analytics.ApplyFilters(def, filters, params)`, the one implementation of
@@ -343,8 +349,10 @@ The compiler is built on keel's renderer and a new dynamic layer in keel core (b
 - **Typed columnar results.** `Result` holds one typed vector per column (`[]int64`, `[]decimal`, `[]bool`,
   `[]string` with shared values, …) and a null bitmap, decoded with pgx scan plans in binary format. That
   is fewer allocations than `[]any` rows, and it maps directly to the JSON, CSV, XLSX and Arrow writers.
-- **Streaming.** `Stream(ctx, …)` yields row batches for exports of any size, with the same guards.
-- **One round trip** for a report and its dynamic pivot values or its row count, through `keel.Batch`.
+- **Streaming.** `Runner.Run` returns a `Stream` that yields row batches for exports of any size, with
+  the same guards.
+- **Dynamic pivots** send two statements, the values and then the pivot, in one repeatable-read
+  transaction, so both see the same snapshot.
 
 ## Guards, on every path
 
@@ -356,7 +364,7 @@ Every entry point (preview, run, drill, dashboard tile, export, stream, agent to
 | Complexity | joins, to-many paths, dimensions, pivot columns, path depth, formula depth, window count; configured limits with a score |
 | Cost | `EXPLAIN (FORMAT JSON)` total cost and rows against limits, cached per statement shape for a short time so a busy dashboard pays it once |
 | Rows and bytes | limits pushed into SQL; byte caps on writers |
-| Per-tenant concurrency | a distributed semaphore built on Postgres advisory locks (N slots per tenant, `pg_try_advisory_lock(tenant_hash, slot)`), shared by every process with no extra infrastructure |
+| Per-tenant concurrency | a distributed semaphore built on Postgres advisory locks (N slots per tenant, `pg_try_advisory_xact_lock(tenant_hash, slot)`, held for the run's transaction), shared by every process with no extra infrastructure |
 | Supersede | a statement can be tagged with a key (a user's preview); starting another with the same key cancels the first across processes, by finding it through `application_name` in `pg_stat_activity` and calling `pg_cancel_backend` |
 | Timeouts | per entry point (preview seconds, run minutes) |
 
@@ -500,6 +508,41 @@ Fix these regardless of this design:
 | 12 | In-app delivery notifies recipients about a run they cannot open; the email links to a generic page | `runs.go:207-217`, `delivery.go:78-81` |
 | 13 | Parameters print in map order on the XLSX info sheet and in PDFs | `xlsx.go:291`, `pdf.go:134` |
 | 14 | Preview SQL carries `LIMIT 100000` while the reader keeps 100 rows | `preview.go:128`, `emit.go:107-112` |
+
+## As built
+
+The engine follows the design above, with these differences and decisions made while building it:
+
+- **Decimals are `keel.Decimal` end to end.** `value.Vector.Numeric` is `[]keel.Decimal`, the exact text
+  Postgres writes, and a `keel.DynColumn` has the layout of a `value.Vector`, so a result's batches
+  reach the formatter and the writers without a copy or a per-value allocation. Arithmetic (`AddDecimal`,
+  `CompareDecimal`) takes an int64 fast path and falls back to `big.Int`. `pgtype.Numeric` is gone from the
+  analytics packages; formatting money and wide quotients got faster (about 80 and 100 ns a value, with
+  no allocations).
+- **keel core gained three hooks**: `keel.WithReadFilter` (row rules applied to every table reference a
+  read makes, which is how `Policy.Rows` reaches joins, picks and pre-aggregations), `keel.ExecAll` (one
+  statement on the primary and every replica, for supersede's `pg_cancel_backend`) and
+  `DynPreAgg.AllParents` (a pre-aggregation over every parent, without the semi-join).
+- **Pre-aggregations are chosen by cost.** Restricting a to-many pre-aggregation to the selected parents
+  is cheaper when the filters keep few parents and dearer when they keep most. Under `StrategyAuto` the
+  runner EXPLAINs both forms and remembers the cheaper one per tenant and statement shape; a report pinned
+  to a few keys reads laterally.
+- **Count distinct across a to-many path** runs as a second grouped statement over the chain of child
+  rows, joined back to the report on its groups and level, so the fan-out cannot inflate the other
+  measures.
+- **The concurrency slots are per server.** The advisory locks live on the server that runs the statement,
+  so with replicas a tenant runs up to N statements on each server. Supersede reaches every server through
+  `ExecAll`; a cancel that lands between a run's statements is lost, and that run finishes normally.
+- **Relative dates are whole days in the report's zone**, so the statement of "last 7 days" is stable for
+  a day and caches. `ne` and `not_in` keep NULLs, and `between` is half-open.
+- **Subtotal and total rows ignore HAVING** (they cover every group), and top-N keeps them.
+- **`Catalog.Check` takes a context** (the policy needs one) and `Drill` takes `DrillOptions` (policy, time
+  zone, parameters, columns, discovered pivot values, limit).
+- **`ToSQL` of a report with a pending dynamic pivot** returns the discovery statement; the dynamic pivot's
+  cache key is its discovery statement.
+- **Averages of instants are refused.** The formula registry's `avg` takes numbers, so three of Trenova's
+  43 canned reports (facility activity, factoring days to fund, stop dwell and detention), which average
+  epoch columns, fail validation with a clear error; the other 40 run unchanged.
 
 ## Decisions and trade-offs
 
