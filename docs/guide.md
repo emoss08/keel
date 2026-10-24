@@ -3604,7 +3604,7 @@ A vector keeps one typed slice per column, chosen by the type, and a null bitmap
 | `value.String`, `value.Enum`, `value.Ref` | `String []string` | text, enums, keys |
 | `value.Int` | `Int64 []int64` | smallint, integer, bigint |
 | `value.Epoch` | `Int64 []int64` (seconds) | bigint columns named `*_at`, `*_date`, `*_time` |
-| `value.Decimal` | `Numeric []pgtype.Numeric` | numeric |
+| `value.Decimal` | `Numeric []keel.Decimal` (exact text, as Postgres writes it) | numeric |
 | `value.Float` | `Float64 []float64` | real, double precision |
 | `value.Bool` | `Bool []bool` | boolean |
 | `value.Time` | `Time []time.Time` | timestamptz, and a date bucket's start |
@@ -3621,7 +3621,7 @@ b := table.NewBuilder([]table.Column{
     {ID: "revenue", Label: "Revenue", Type: value.Decimal,
         Display: format.Resolve(value.Decimal, format.Hint{Kind: format.Money}, nil)},
 })
-_ = b.Append("ACME", "2840.125")                   // decimals as exact text, pgtype.Numeric or numbers
+_ = b.Append("ACME", "2840.125")                   // decimals as exact text, keel.Decimal or numbers
 _ = b.AppendLevel(table.Total, nil, "2840.125")    // a grand total
 r := b.Table().Reader()
 ```
@@ -3769,8 +3769,8 @@ On a 4-core cloud VM (`go test -bench . ./analytics/format ./analytics/export`):
 
 | Work | Time |
 |---|---|
-| Format 100,000 values of one column (text, counts, dates in Chicago, money in German, 20-digit quotients) | 1.6–23.5 ms (16–235 ns a value); no allocations once warm except for the quotients, which do not fit an int64 |
-| Write 100,000 rows of six columns: CSV / raw CSV / JSON / XLSX / Arrow | 80 / 51 / 26 / 202 / 7.5 ms |
+| Format 100,000 values of one column (text, counts, dates in Chicago, money in German, 20-digit quotients) | 1.4–14.6 ms (14–146 ns a value); no allocations once warm, quotients included |
+| Write 100,000 rows of six columns: CSV / raw CSV / JSON / XLSX / Arrow | 73 / 38 / 20 / 181 / 6.0 ms |
 | Write 2,000,000 rows as XLSX | 4.5 s, live heap flat |
 
 ## Analytics: caching and rollups
@@ -4048,3 +4048,362 @@ On a 4-core cloud VM with Postgres in Docker (`go test -bench . ./analytics/cach
 | `Loader.Load` hit, 4 goroutines | 120 ns |
 | Postgres store `Get` of 2 KiB | 0.23 ms (a round trip) |
 | One-row create with two rollups marking slices / without triggers | 1.24 / 1.06 ms |
+
+## Analytics: the engine
+
+The [`analytics`](../analytics) package turns a definition into tenant-scoped SQL and runs it. It has
+four parts: the **catalog** of what can be reported on, derived from the generated schema; the
+**policy** that decides what one caller may see; the **compiler**, which turns a definition into keel
+dynamic queries; and the **runner**, which runs them behind one set of guards and returns
+`table.Reader`s that the formatter and the exporters read directly.
+
+```go
+cat, err := analytics.Build([]*schema.Table{
+    shipmentdb.ShipmentsSchema(), customerdb.CustomersSchema(), movedb.MovesSchema(), // …
+}, analytics.Options{Translate: translator.Text})
+runner, err := analytics.NewRunner(db, cat, analytics.RunnerOptions{
+    Slots: 4, SlotWait: 2 * time.Second, MaxCost: 5e6, Cache: resultCache,
+})
+
+res, err := runner.Preview(ctx, analytics.Request{
+    Definition: def, Params: params, Policy: policy,
+    Location: userZone, Key: "preview:" + userID,
+})
+_, err = export.CSV(ctx, w, res, export.CSVOptions{})
+```
+
+### The catalog
+
+`analytics.Build(tables, opts)` takes generated tables, keeps those marked reportable (so an
+application can pass every table it has) and checks the graph: every edge leads to a reportable entity,
+every pick walks real relations and orders by a total order, and joined tables share their tenant
+columns. A problem is an error with code `catalog`.
+
+- **Labels.** Each entity, field, edge, enum value and category has a derived label and a translation
+  key (`shipment`, `shipment.proNumber`, `shipment.status.InTransit`, `category.Operations`).
+  `Options.Translate(ctx, key, fallback)` returns the text in the request's language; `nil` keeps the
+  derived labels.
+- **`Version()`** hashes everything a stored definition depends on (keys, types, aggregations, edges).
+  Store it with a definition; a sweep over the definitions whose version differs, calling
+  `cat.Check(ctx, def, policy)`, lists their problems as `Diagnostic`s (definition errors with
+  suggestions, and denials with the policy's reason).
+- **`For(ctx, policy)`** returns the caller's `View`: every entity, field and edge with an `Access`
+  (allowed, or denied with a reason code) and translated labels. `View.Field(entity, path)` resolves a
+  dotted path with the access the compiler checks for it. `View.Describe()` is a compact text form of
+  what the caller may use, for a language model's context.
+- **`Rules()`** is one JSON value with the operators per type, the transforms, buckets, bands, windows,
+  output naming and limits, so a builder offers exactly what the compiler accepts.
+- The catalog implements `ir.Catalog`, so `ir.Resolve` and `ir.Drill` validate against it.
+
+### Policies
+
+```go
+type Policy interface {
+    Entity(ctx context.Context, e *analytics.Entity) analytics.Access
+    Field(ctx context.Context, f *analytics.Field, via analytics.Path) analytics.Access
+    Edge(ctx context.Context, e *analytics.Edge, via analytics.Path) analytics.Access
+    Rows(ctx context.Context, e *analytics.Entity) []keel.Pred
+}
+```
+
+- `Field` and `Edge` receive the path that reaches them, so "a customer's name, but not through
+  `billTo`" is expressible. A denial returns `analytics.Denied("needs_billing")`; an allowed field can
+  carry a sensitivity, `analytics.Allowed().WithSensitivity(table.Confidential)`, which every output
+  column reading it inherits, through calculations and windows.
+- Each question is asked once per request, whatever the number of columns, filters and pivot cells that
+  ask it, so an implementation can load the caller's permissions once.
+- `Rows` returns row rules over the entity's own columns
+  (`shipmentdb.Shipments.OwnerID.Eq(user)`, or `keel.DynFrom(e.Table).Path("region").Eq(r)` for a
+  dynamic table). They apply to every reference a statement makes to the table, through
+  `keel.WithReadFilter`: the base table, the join `ON` clauses (a customer the rule excludes reads as
+  absent), picks and each table a pick walks, EXISTS filters and pre-aggregations. A report reading a
+  table with row rules is never answered from a rollup.
+- A nil policy allows everything. Tenancy applies whatever the policy says.
+
+### Compiling
+
+`analytics.Compile(ctx, cat, policy, def, params, opts)` validates the definition, checks the policy,
+binds the parameters and returns a `Compiled`: the main `Query` (a `*keel.DynQuery`), the `Discovery`
+query of a dynamic pivot, the output `Columns`, the `Tables` read and a `Complexity` count.
+`compiled.ToSQL(ctx, db)` renders the statement as it runs. Every value is a bound parameter and
+every identifier comes from the schema; equal values share a `$n`, so an expression in SELECT, GROUP
+BY and ORDER BY renders identically.
+
+| Definition | Compiles to |
+|---|---|
+| Bucket (`day` … `year`, `hour_of_day`, `day_of_week`, …) | `date_trunc` or `extract` in the report's time zone (`CompileOptions.Location`), returned as the instant the bucket starts |
+| Band | a `CASE` over the band edges, half-open, with a band for values past the last edge |
+| Transform | the expression inside the aggregate (`round`, `lower`, `abs`, …) |
+| Measure filter | `agg(x) FILTER (WHERE …)` |
+| Measure over a to-many path | a pre-aggregated CTE per parent, left-joined on the parent key (see below) |
+| Count distinct over a to-many path | a second grouped statement over the chain of child rows, joined back on the groups |
+| Calculation | the formula registry's SQL template for each function, with literals as parameters; aggregates over the grouped rows are hoisted into the grouped statement |
+| Window | `OVER (PARTITION BY … ORDER BY … ROWS …)` over the grouped result |
+| Subtotals and total | `GROUPING SETS` with `GROUPING()` as a hidden level column; each subtotal row sorts after the rows it covers and the total last |
+| Top N | `row_number()` over the grouped result, filtered on the rank, per group and per level |
+| HAVING | on the grouped statement, or as a WHERE over the grouped result when it reads a window or a calculation over it; subtotal and total rows are kept |
+| Static pivot | one `FILTER (WHERE field = $n)` aggregate per value and per pivoted column, plus `Other` |
+| Dynamic pivot | a discovery statement (top K values by a measure, or a parameter), then the pivot with the values bound |
+| Limit | `LIMIT n+1` for a preview, so truncation is known without counting |
+| Page | keyset paging over the sort columns and a tiebreak; the cursor carries the last row's sort values |
+| Pick | a lateral join that picks one row (the first stop of a shipment, its last move) |
+
+**To-many measures.** A measure over `moves.stops.id` cannot be joined directly without multiplying the
+shipment's own measures. The compiler pre-aggregates the child rows per parent in a CTE and left-joins
+it on the parent key. `CompileOptions.Strategy` chooses how:
+
+- `StrategyCTE` restricts the CTE to the parents the report's filters select (a semi-join);
+- `StrategyCTEAll` aggregates every parent in one pass, cheaper when the filters keep most parents;
+- `StrategyLateral` reads each parent's rows in a lateral subquery, best for a handful of parents;
+- `StrategyAuto` (the default) reads laterally when the filters pin at most `LateralParents` keys, and
+  otherwise lets the runner EXPLAIN the restricted and unrestricted forms and remember the cheaper
+  one per tenant and statement shape.
+
+**Drill-through.** `analytics.Drill(ctx, cat, def, row, column, opts)` returns the record-list
+definition behind one cell: the report's filters, each grouping value of the row (buckets and bands
+inverted into half-open ranges in the report's zone) and the clicked measure's filter and pivot scope.
+`runner.Drill(ctx, req, row, column, opts)` runs it through the guards.
+
+**Semantics to know.** Relative dates (`today`, `last_n_days`, `this_month`) are whole days in the
+report's zone, so a statement is stable for a day and caches. `ne` and `not_in` keep rows whose value
+is NULL. `between` is half-open: `[from, to)`.
+
+### Running
+
+`analytics.NewRunner(db, cat, opts)` returns a `Runner`, safe for concurrent use. Every entry point takes
+a `Request` (definition, parameters, policy, time zone, `Now`, supersede key, output format):
+
+| Entry point | Returns | Default timeout |
+|---|---|---|
+| `Preview(ctx, req)` | `*Result`: `PreviewRows` rows (100) and whether there were more | 30 s |
+| `Run(ctx, req)` | `*Stream`: every row up to `MaxRows`, one batch at a time; close it, or read to `io.EOF` | 10 min |
+| `Count(ctx, req)` | the report's row count | 30 s |
+| `Page(ctx, req, cursor, size)` | `*Result` with the next page's cursor | 30 s |
+| `Drill(ctx, req, row, column, opts)` | `*Result` with the records behind a cell | 30 s |
+| `Compile(ctx, req)` | `*Compiled` with the runner's options, for `ToSQL` | |
+
+`Result` and `Stream` implement `table.Reader`. A `Result` reads the batches the dynamic query layer
+decoded without copying them. A `Stream` decodes each batch on the run's connection as it is read, so
+an export of any size holds one batch.
+
+Errors are `*analytics.Error` values with a `Code` the application translates: `invalid_definition`
+(with the definition errors in `Details`), `parameter`, `denied` (with the policy's `Reason`),
+`not_allowed`, `too_complex`, `too_costly`, `busy`, `superseded`, `timeout`, `cursor` and `catalog`.
+`analytics.ErrorCode(err)` reads the code through wrapping, and `errors.Is` matches two errors with
+the same code.
+
+### Guards
+
+Every entry point passes the same guards, in this order:
+
+| Guard | How |
+|---|---|
+| Definition limits | `ir.Limits` (columns, dimensions, pivot values, windows, path depth, …) |
+| Complexity | `ComplexityLimits` on the joins, to-many paths, pre-aggregations and windows, and a weighted `Score` |
+| Supersede | a request with a `Key` cancels the previous run with the same tenant and key: in this process through its context, in others with `pg_cancel_backend` on every server (`keel.ExecAll`), found by an `application_name` that hashes the tenant and key |
+| Statement timeout | `set_config('statement_timeout', …, true)` in the run's transaction, per entry point, with the context deadline to match |
+| Replica | a read-only transaction on a replica (`keel.OnReplica`), or the primary when every replica lags or `Primary` is set |
+| Concurrency | `Slots` statements per tenant at once, shared by every process: a transaction-scoped advisory lock taken from a random slot (`pg_try_advisory_xact_lock(tenant, slot)`), retried until `SlotWait`, then `busy`. The lock is released with the transaction whatever happens to the process |
+| Cost | `EXPLAIN (FORMAT JSON)` total cost and rows against `MaxCost` and `MaxPlanRows`, in the run's transaction; the estimates are cached per tenant and statement shape for `ExplainTTL` (30 s), so a busy dashboard pays for EXPLAIN once |
+| Rows and bytes | the limit in SQL, `MaxRows` for runs, and `MaxBytes` on the values a result holds; a cut result says it is truncated |
+
+The slots and supersede work on hot standbys too. The advisory locks live on the server that runs the
+statement, so with replicas a tenant can run `Slots` statements on each server.
+
+### Caching
+
+`RunnerOptions.Cache` is a port:
+
+```go
+type Cache interface {
+    Get(ctx context.Context, key string) ([]byte, bool, error)
+    Set(ctx context.Context, key string, value []byte, ttl time.Duration) error
+}
+```
+
+The key (`CacheKey`) covers the statement and its arguments (which carry the tenant's values and the
+policy's row rules), the entry point, the output format and schema, and the data version of every
+table the statement reads for the tenant. A write through keel to any of those tables moves its version,
+so the next run misses; `CacheTTL` (15 min) is the backstop for writes keel cannot see. The cache needs
+data versions on the DB. A streamed run is cached when it has at most `MaxCachedRows` rows (50,000).
+Cache failures go to `OnError` and count as misses.
+
+### Rollups
+
+`RunnerOptions.Rollups` (or `CompileOptions.Rollups`) is a `RollupRouter`:
+
+```go
+type RollupRouter interface {
+    Route(ctx context.Context, resolved *ir.Resolved) (analytics.RollupPlan, bool)
+}
+```
+
+For an aggregated report that reads no table with row rules and has no fan-out distinct count, the
+compiler asks the router. A `RollupPlan` names the rollup table, the column holding each field the
+report reads, and how each measure re-aggregates (`ReSum`, `ReMin`, `ReMax`, `ReAvg` over a partial sum
+and count). When the plan lacks something the report needs, the compiler falls back to the base tables.
+`Compiled.Rollup` and `Result.Rollup()` name the rollup that answered.
+
+### Decimals
+
+A numeric column is `keel.Decimal` from the database to the writer: the exact text Postgres sends, held
+in the batch's arena. A `keel.DynColumn` has the layout of a `value.Vector`, so the runner hands batches
+to readers without converting them. The formatter and the writers read the digits directly (money and
+wide quotients format at about 80 and 100 ns a value, with no allocations), and the diff and total
+arithmetic (`value.AddDecimal`, `value.CompareDecimal`) takes an int64 fast path with a `big.Int` fallback.
+
+### What the compiler writes
+
+A grouped report with a monthly bucket in Chicago, a filter, a running total per customer, subtotals per
+customer and a total, previewed (`Probe` asks for the 101st row):
+
+```json
+{"entity": "shipment", "columns": [
+  {"id": "customer", "dimension": {"field": "customer.name"}},
+  {"id": "month", "dimension": {"field": "createdAt", "bucket": "month"}},
+  {"id": "revenue", "measure": {"field": "total", "agg": "sum"}},
+  {"id": "running", "window": {"of": "revenue", "fn": "running_total", "over": "month", "partition": ["customer"]}}
+], "filters": {"field": "status", "op": "ne", "value": "Canceled"},
+"groupings": {"subtotals": ["customer"], "total": true}, "sort": [{"column": "customer"}, {"column": "month"}]}
+```
+
+```sql
+WITH "keel_sub" ("c1", "c2", "c3", "c4") AS (
+  SELECT c."name" AS c1,
+         CAST(extract(epoch from date_trunc($5::text, to_timestamp(s."created_at"), $6::text)) AS bigint) AS c2,
+         sum(s."total") AS c3,
+         GROUPING(c."name", CAST(extract(epoch from date_trunc($5::text, to_timestamp(s."created_at"), $6::text)) AS bigint)) AS c4
+    FROM "shipments" s
+    LEFT JOIN "customers" c ON c."id" = s."customer_id"
+         AND c."organization_id" = $2 AND c."business_unit_id" = $3
+   WHERE s."organization_id" = $2 AND s."business_unit_id" = $3
+     AND ((s."status" IS NULL) OR (s."status" <> $4))
+   GROUP BY GROUPING SETS (
+         (c."name", CAST(extract(epoch from date_trunc($5::text, to_timestamp(s."created_at"), $6::text)) AS bigint)),
+         (c."name"), ()))
+SELECT ks."c1" AS c1, ks."c2" AS c2, ks."c3" AS c3,
+       sum(ks."c3") OVER (PARTITION BY ks."c4", ks."c1" ORDER BY ks."c2" ASC
+                          ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS c4,
+       ks."c4" AS c5
+  FROM "keel_sub" ks
+ ORDER BY ((ks."c4" >> $1::integer) & 1) ASC, ks."c1" ASC, ks."c4" ASC, ks."c2" ASC
+ LIMIT 101
+-- $1 = 1, $2 $3 = the tenant, $4 = 'Canceled', $5 = 'month', $6 = 'America/Chicago'
+```
+
+The window partitions by the level too, so subtotal rows never mix with detail rows. The first ORDER BY
+term puts each customer's subtotal after its months and the total last.
+
+A sum across a to-many path and a distinct count across a deeper one, under a policy whose row rules
+hide shipment `P01` and customers with code `G`:
+
+```json
+{"entity": "shipment", "columns": [
+  {"id": "customer", "dimension": {"field": "customer.name"}},
+  {"id": "revenue", "measure": {"field": "total", "agg": "sum"}},
+  {"id": "stops", "measure": {"field": "moves.stops.id", "agg": "count"}},
+  {"id": "cities", "measure": {"field": "moves.stops.location.city", "agg": "count_distinct"}}
+], "sort": [{"column": "revenue", "desc": true}]}
+```
+
+```sql
+WITH "keel_sub" ("c1", "c2", "c3") AS (
+  WITH "keel_moves_stops" ("k1", "k2", "k3", "c1") AS (
+    SELECT m."shipment_id", m."organization_id", m."business_unit_id", count(s2."id")
+      FROM "moves" m
+      JOIN "stops" s2 ON s2."organization_id" = $2 AND s2."business_unit_id" = $3 AND s2."move_id" = m."id"
+     WHERE m."organization_id" = $2 AND m."business_unit_id" = $3
+     GROUP BY m."shipment_id", m."organization_id", m."business_unit_id")
+  SELECT c."name" AS c1, sum(s."total") AS c2, coalesce(CAST(sum(kms."c1") AS bigint), $1::bigint) AS c3
+    FROM "shipments" s
+    LEFT JOIN "customers" c ON c."id" = s."customer_id"
+         AND c."organization_id" = $2 AND c."business_unit_id" = $3 AND (c."code" <> $5)
+    LEFT JOIN "keel_moves_stops" kms ON kms."k1" = s."id"
+         AND kms."k2" = s."organization_id" AND kms."k3" = s."business_unit_id"
+   WHERE s."organization_id" = $2 AND s."business_unit_id" = $3 AND s."pro_number" <> $4
+   GROUP BY c."name"),
+"keel_cte_1" ("c1", "c2") AS (
+  WITH "keel_cte_1" ("c1", "c2") AS (
+         SELECT m2."shipment_id" AS c1, m2."id" AS c2 FROM "moves" m2
+          WHERE m2."organization_id" = $2 AND m2."business_unit_id" = $3),
+       "keel_cte_2" ("c1", "c2") AS (
+         SELECT s4."move_id" AS c1, l."city" AS c2 FROM "stops" s4
+           LEFT JOIN "locations" l ON l."id" = s4."location_id"
+                AND l."organization_id" = $2 AND l."business_unit_id" = $3
+          WHERE s4."organization_id" = $2 AND s4."business_unit_id" = $3)
+  SELECT c2."name" AS c1, count(DISTINCT kc2."c2") AS c2
+    FROM "shipments" s3
+    LEFT JOIN "customers" c2 ON c2."id" = s3."customer_id"
+         AND c2."organization_id" = $2 AND c2."business_unit_id" = $3 AND (c2."code" <> $5)
+    JOIN "keel_cte_1" kc12 ON (kc12."c1" = s3."id")
+    JOIN "keel_cte_2" kc2 ON (kc2."c1" = kc12."c2")
+   WHERE s3."organization_id" = $2 AND s3."business_unit_id" = $3 AND s3."pro_number" <> $4
+   GROUP BY c2."name")
+SELECT ks."c1" AS c1, ks."c2" AS c2, ks."c3" AS c3, coalesce(kc1."c2", $1::bigint) AS c4
+  FROM "keel_sub" ks
+  LEFT JOIN "keel_cte_1" kc1 ON (NOT (ks."c1" IS DISTINCT FROM kc1."c1"))
+ ORDER BY ks."c2" DESC NULLS LAST, ks."c1" ASC
+ LIMIT 101
+-- $1 = 0, $2 $3 = the tenant, $4 = 'P01', $5 = 'G'
+```
+
+The row rules appear on every reference to their tables, the join `ON` clauses included. The count of
+stops is pre-aggregated per shipment over every parent (no filter selects parents here), and the
+distinct count runs over the chain of child rows and is joined back on the customer, so neither can
+inflate the revenue. Each statement numbers its own CTEs, which is why the inner `keel_cte_1` shadows the
+outer name inside its definition.
+
+A pivot of revenue by the two statuses with the most revenue, plus `Other`: the discovery statement
+runs first, then the pivot with the values it found bound as parameters, in one repeatable-read
+transaction:
+
+```sql
+SELECT CAST(s."status" AS text) AS c1, sum(s."total") AS c2
+  FROM "shipments" s
+ WHERE s."organization_id" = $1 AND s."business_unit_id" = $2 AND (s."status" IS NOT NULL)
+ GROUP BY s."status"
+ ORDER BY sum(s."total") DESC NULLS LAST, CAST(s."status" AS text) ASC
+ LIMIT 2
+
+SELECT c."name" AS c1,
+       sum(s."total") FILTER (WHERE (s."status" = $3)) AS c2,
+       sum(s."total") FILTER (WHERE (s."status" = $4)) AS c3,
+       sum(s."total") FILTER (WHERE ((s."status" IS NULL) OR (s."status" <> ALL($5)))) AS c4
+  FROM "shipments" s
+  LEFT JOIN "customers" c ON c."id" = s."customer_id"
+       AND c."organization_id" = $1 AND c."business_unit_id" = $2
+ WHERE s."organization_id" = $1 AND s."business_unit_id" = $2
+ GROUP BY c."name"
+ ORDER BY c."name" ASC
+ LIMIT 100
+-- $3 = 'New', $4 = 'Delivered', $5 = {New,Delivered}
+```
+
+Two statements are needed because the second one's columns depend on the first one's values. Binding
+the values, instead of writing them into the SQL, lets Postgres reuse the pivot's plan whichever values
+come back.
+
+### keel core hooks the engine added
+
+- **`keel.WithReadFilter(ctx, f)`** applies `f`'s predicates to every table reference a read statement
+  makes: the base table's WHERE, each joined relation's `ON` clause, picks and each table they walk,
+  EXISTS, subqueries, CTE bodies and pre-aggregations. Interceptors only cover a statement's base table.
+  Any keel application can use it for row-level rules.
+- **`keel.ExecAll(ctx, db, sql, args...)`** runs one statement on the primary and every replica, for
+  statements about the servers rather than the data, such as cancelling tagged backends.
+- **`DynPreAgg.AllParents()`** makes a CTE pre-aggregation read every parent in scope instead of only
+  the parents the query's filters select.
+
+### Performance
+
+On a 4-core cloud VM (`go test -bench . ./analytics`, local PostgreSQL 18):
+
+| Work | Time |
+|---|---|
+| Compile a typical report (two dimensions, four measures including a filtered count and a to-many count, a calculation, a window, a total) | 76 µs, 677 allocations; 96 µs with rendering the SQL |
+| Preview a grouped report over 100,000 shipments and 200,000 moves (customer × month, sum, count, to-many count) | 221 ms through the runner, against 230 ms for the hand-written statement through pgx (within noise of each other across runs) |
+| The typical report above over the same data, with the cost guard and its estimates cached | 302 ms |
+| The typical report answered from the cache | 2.0 ms |
+
+Trenova's 43 canned reports, ported to an equivalent catalog, compile and run unchanged, except three
+that average instants (`avg` takes numbers), which are refused with a clear error.

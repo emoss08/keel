@@ -38,7 +38,7 @@ func ExampleBuilder() {
 		}
 		revenue := &batch.Columns[1]
 		for i := range batch.Len {
-			fmt.Printf("level %d, null %v, %q\n", batch.Level(i), revenue.Null(i), value.AppendNumeric(nil, revenue.Numeric[i]))
+			fmt.Printf("level %d, null %v, %q\n", batch.Level(i), revenue.Null(i), revenue.Numeric[i])
 		}
 	}
 	// Output:

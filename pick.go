@@ -32,6 +32,7 @@ func (r *render) writePick(parent *schema.Table, rel *schema.Relation, allTenant
 		r.tenantPred(hops[0].rel.Target, hops[0].alias, allTenants)
 		for _, h := range hops {
 			r.preds(r.intercepted(h.rel.Target, OpRead, true), true)
+			r.pinnedPreds(h.rel.Target, h.alias, r.readFiltered(h.rel.Target))
 		}
 	})
 	order := r.section(func() { r.pickOrder(hops, rel) })

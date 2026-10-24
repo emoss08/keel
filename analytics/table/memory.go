@@ -6,12 +6,10 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"math/big"
 	"slices"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgtype"
-
+	"github.com/emoss08/keel"
 	"github.com/emoss08/keel/analytics/value"
 )
 
@@ -106,13 +104,7 @@ func cloneVector(v *value.Vector, n int) value.Vector {
 	case v.Time != nil:
 		out.Time = slices.Clone(v.Time[:n])
 	case v.Numeric != nil:
-		out.Numeric = make([]pgtype.Numeric, n)
-		for i, x := range v.Numeric[:n] {
-			out.Numeric[i] = x
-			if x.Int != nil {
-				out.Numeric[i].Int = new(big.Int).Set(x.Int)
-			}
-		}
+		out.Numeric = slices.Clone(v.Numeric[:n])
 	case v.JSON != nil:
 		out.JSON = make([][]byte, n)
 		for i, x := range v.JSON[:n] {
@@ -145,7 +137,7 @@ func (b *Builder) Append(values ...any) error { return b.AppendLevel(Detail, val
 //	String, Enum, Ref  string
 //	Int                any integer type
 //	Epoch              any integer type, or a time.Time
-//	Decimal            pgtype.Numeric, a decimal string, any integer type or a float
+//	Decimal            keel.Decimal, a decimal string, any integer type or a float
 //	Float              float64, float32 or any integer type
 //	Bool               bool
 //	Time               time.Time
@@ -286,7 +278,7 @@ func appendZero(v *value.Vector, t value.Type) error {
 	case value.Int, value.Epoch:
 		v.Int64 = append(v.Int64, 0)
 	case value.Decimal:
-		v.Numeric = append(v.Numeric, pgtype.Numeric{})
+		v.Numeric = append(v.Numeric, "")
 	case value.Float:
 		v.Float64 = append(v.Float64, 0)
 	case value.Bool:
@@ -333,23 +325,23 @@ func intOf(x any, epoch bool) (int64, error) {
 	return 0, fmt.Errorf("%w: %T", errType, x)
 }
 
-// numericOf reads a decimal from a numeric, a decimal string, a float or an integer.
-func numericOf(x any) (pgtype.Numeric, error) {
+// numericOf reads a decimal from a keel.Decimal, a decimal string, a float or an integer.
+func numericOf(x any) (keel.Decimal, error) {
 	switch x := x.(type) {
-	case pgtype.Numeric:
-		return x, nil
+	case keel.Decimal:
+		return value.ParseDecimal(string(x))
 	case string:
-		return value.ParseNumeric(x)
+		return value.ParseDecimal(x)
 	case float64:
-		return value.NumericFromFloat(x), nil
+		return value.DecimalFromFloat(x), nil
 	case float32:
-		return value.NumericFromFloat(float64(x)), nil
+		return value.DecimalFromFloat(float64(x)), nil
 	}
 	i, err := intOf(x, false)
 	if err != nil {
-		return pgtype.Numeric{}, err
+		return "", err
 	}
-	return value.NumericFromInt(i), nil
+	return value.DecimalFromInt(i), nil
 }
 
 // floatOf reads a float or an integer.

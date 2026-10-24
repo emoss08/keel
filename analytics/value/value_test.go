@@ -6,8 +6,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/jackc/pgx/v5/pgtype"
-
+	"github.com/emoss08/keel"
 	"github.com/emoss08/keel/analytics/value"
 )
 
@@ -48,77 +47,92 @@ func TestBitmap(t *testing.T) {
 	if none.Has(3) {
 		t.Error("a nil bitmap is empty")
 	}
-	v := value.Vector{Numeric: []pgtype.Numeric{{Valid: false}, value.NumericFromInt(1)}}
+	v := value.Vector{Numeric: []keel.Decimal{"", value.DecimalFromInt(1)}}
 	if !v.Null(0) || v.Null(1) {
-		t.Error("an invalid numeric is null")
+		t.Error("an empty decimal is null")
 	}
 }
 
-func TestNumericText(t *testing.T) {
+func TestDecimalText(t *testing.T) {
 	cases := map[string]string{
 		"1.50": "1.50", "-0.001": "-0.001", "1.2e3": "1200", "12e-4": "0.0012", " 3.115 ": "3.115",
-		"0": "0", "-0": "0", ".5": "0.5", "-.5": "-0.5", "1e-1": "0.1",
+		"0": "0", "-0": "0", ".5": "0.5", "-.5": "-0.5", "1e-1": "0.1", "+7": "7", "007.10": "7.10",
 		"NaN": "NaN", "Infinity": "Infinity", "-Infinity": "-Infinity",
 		"123456789012345678901234567890.123": "123456789012345678901234567890.123",
 	}
 	for in, want := range cases {
-		n, err := value.ParseNumeric(in)
+		d, err := value.ParseDecimal(in)
 		if err != nil {
 			t.Errorf("%q: %v", in, err)
 			continue
 		}
-		if got := string(value.AppendNumeric(nil, n)); got != want {
-			t.Errorf("%q: got %q, want %q", in, got, want)
+		if string(d) != want {
+			t.Errorf("%q: got %q, want %q", in, d, want)
 		}
 	}
 	for _, bad := range []string{"", "-", "1,000", "1.2.3", "abc", "1e", "--1", "1-2"} {
-		if _, err := value.ParseNumeric(bad); err == nil {
+		if _, err := value.ParseDecimal(bad); err == nil {
 			t.Errorf("%q accepted", bad)
 		}
 	}
-	if got := string(value.AppendNumeric(nil, pgtype.Numeric{})); got != "" {
-		t.Errorf("null appends %q", got)
+	if value.DecimalFinite("") || value.DecimalFinite("NaN") || !value.DecimalFinite("-1.5") {
+		t.Error("finiteness")
+	}
+	neg, whole, frac, ok := value.SplitDecimal("-12.340")
+	if !neg || whole != "12" || frac != "340" || !ok {
+		t.Errorf("split: %v %q %q %v", neg, whole, frac, ok)
 	}
 }
 
-func TestNumericFromFloat(t *testing.T) {
-	for f, want := range map[float64]string{0.1: "0.1", 1.005: "1.005", -2.5e-7: "-0.00000025", 1e21: "1000000000000000000000"} {
-		if got := string(value.AppendNumeric(nil, value.NumericFromFloat(f))); got != want {
+func TestDecimalFromFloat(t *testing.T) {
+	for f, want := range map[float64]keel.Decimal{0.1: "0.1", 1.005: "1.005", -2.5e-7: "-0.00000025", 1e21: "1000000000000000000000"} {
+		if got := value.DecimalFromFloat(f); got != want {
 			t.Errorf("%v: got %q, want %q", f, got, want)
 		}
 	}
-	if !value.NumericFromFloat(math.NaN()).NaN || value.NumericFinite(value.NumericFromFloat(math.Inf(-1))) {
+	if value.DecimalFromFloat(math.NaN()) != "NaN" || value.DecimalFinite(value.DecimalFromFloat(math.Inf(-1))) {
 		t.Error("non-finite floats")
+	}
+	if value.DecimalFromInt(-42) != "-42" {
+		t.Error("from int")
 	}
 }
 
-func TestNumericArithmetic(t *testing.T) {
-	n := func(s string) pgtype.Numeric {
-		x, err := value.ParseNumeric(s)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return x
+func TestDecimalArithmetic(t *testing.T) {
+	sum, _ := value.AddDecimal("0.1", "0.2")
+	diff, _ := value.SubDecimal("0.30", "0.10")
+	if value.NormalizeDecimal(sum) != "0.3" || value.NormalizeDecimal(diff) != "0.2" {
+		t.Errorf("sum %s, diff %s", sum, diff)
 	}
-	text := func(x pgtype.Numeric) string { return string(value.AppendNumeric(nil, value.NormalizeNumeric(x))) }
-	sum, _ := value.AddNumeric(n("0.1"), n("0.2"))
-	diff, _ := value.SubNumeric(n("0.30"), n("0.10"))
-	if text(sum) != "0.3" || text(diff) != "0.2" {
-		t.Errorf("sum %s, diff %s", text(sum), text(diff))
-	}
-	if c, _ := value.CompareNumeric(n("1.50"), n("1.5")); c != 0 {
+	if c, _ := value.CompareDecimal("1.50", "1.5"); c != 0 {
 		t.Error("1.50 equals 1.5")
 	}
-	if c, _ := value.CompareNumeric(n("-2"), n("1e-9")); c != -1 {
+	if c, _ := value.CompareDecimal("-2", "0.000000001"); c != -1 {
 		t.Error("ordering")
 	}
-	if _, err := value.AddNumeric(n("NaN"), n("1")); !errors.Is(err, value.ErrNotFinite) {
+	if _, err := value.AddDecimal("NaN", "1"); !errors.Is(err, value.ErrNotFinite) {
 		t.Errorf("NaN arithmetic: %v", err)
 	}
-	if got := text(n("1200")); got != "1200" || n("1200").Exp != 0 {
+	if got := value.NormalizeDecimal("1200"); got != "1200" {
 		t.Errorf("normalized 1200: %s", got)
 	}
-	if norm := value.NormalizeNumeric(n("1200")); norm.Exp != 2 {
-		t.Errorf("1200 normalizes to exponent %d", norm.Exp)
+	if got := value.NormalizeDecimal("-0.000"); got != "0" {
+		t.Errorf("normalized -0.000: %s", got)
+	}
+	big := keel.Decimal("9223372036854775807.5")
+	twice, _ := value.AddDecimal(big, big)
+	if twice != "18446744073709551615.0" {
+		t.Errorf("overflowing sum: %s", twice)
+	}
+	back, _ := value.SubDecimal(twice, big)
+	if c, _ := value.CompareDecimal(back, big); c != 0 {
+		t.Errorf("big difference: %s", back)
+	}
+	if c, _ := value.CompareDecimal("123456789012345678901234567890", "123456789012345678901234567891"); c != -1 {
+		t.Error("big comparison")
+	}
+	neg, _ := value.SubDecimal("1", "-2.25")
+	if neg != "3.25" {
+		t.Errorf("1 - -2.25 = %s", neg)
 	}
 }

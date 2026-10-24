@@ -599,6 +599,7 @@ const (
 type DynPreAgg struct {
 	rel      *DynRel
 	strategy PreAggStrategy
+	all      bool
 	base     string
 	pivot    int
 	where    []Pred
@@ -681,6 +682,15 @@ func (d *DynRel) PreAggregate(s PreAggStrategy) *DynPreAgg {
 
 // Err returns the error of the pre-aggregation or of its path.
 func (p *DynPreAgg) Err() error { return p.err }
+
+// AllParents makes a PreAggCTE aggregate the related rows of every parent in scope instead of
+// only the parents the query's filters select: one pass without the semi-join that restricts the
+// rows, cheaper when the filters keep most parents, dearer when they keep few. It does nothing to
+// a PreAggLateral, which reads each selected parent's rows.
+func (p *DynPreAgg) AllParents() *DynPreAgg {
+	p.all = true
+	return p
+}
 
 // Where filters the related rows before they are aggregated.
 func (p *DynPreAgg) Where(ps ...Pred) *DynPreAgg {
@@ -839,7 +849,7 @@ func (b preAggCTE) writeSubquery(r *render, _ bool) {
 	body.exprs = append(slices.Clip(keys), p.measures...)
 	body.group = keys
 	body.where = slices.Clip(p.where)
-	if len(b.outer.q.where) > 0 {
+	if len(b.outer.q.where) > 0 && !p.all {
 		body.where = append(body.where, b.inParents(keys))
 	}
 	body.renderSelect(r, newRoot(&body), o)

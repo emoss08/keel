@@ -3,12 +3,12 @@ package export_test
 import (
 	"context"
 	"io"
-	"math/big"
+	"strconv"
+	"sync"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgtype"
-
+	"github.com/emoss08/keel"
 	"github.com/emoss08/keel/analytics/format"
 	"github.com/emoss08/keel/analytics/table"
 	"github.com/emoss08/keel/analytics/value"
@@ -75,8 +75,26 @@ type genReader struct {
 	n, next, size int
 	cols          []table.Column
 	batch         table.Batch
-	ints          []big.Int
 }
+
+// genAmounts holds the amount of each synthetic row, as the decimal text Postgres would send,
+// made once so the benchmarks time the writers rather than the generator.
+var genAmounts = sync.OnceValue(func() []keel.Decimal {
+	out := make([]keel.Decimal, 100_000)
+	for id := range out {
+		cents := int64(id)*137 - 50000
+		sign := ""
+		if cents < 0 {
+			sign, cents = "-", -cents
+		}
+		frac := strconv.FormatInt(cents%100, 10)
+		if len(frac) == 1 {
+			frac = "0" + frac
+		}
+		out[id] = keel.Decimal(sign + strconv.FormatInt(cents/100, 10) + "." + frac)
+	}
+	return out
+})
 
 func newGenReader(n, size int) *genReader {
 	g := &genReader{n: n, size: size, cols: []table.Column{
@@ -91,12 +109,11 @@ func newGenReader(n, size int) *genReader {
 	g.batch.Columns = []value.Vector{
 		{Int64: make([]int64, size)},
 		{String: make([]string, size)},
-		{Numeric: make([]pgtype.Numeric, size)},
+		{Numeric: make([]keel.Decimal, size)},
 		{Time: make([]time.Time, size)},
 		{Bool: make([]bool, size)},
 		{Float64: make([]float64, size), Nulls: value.NewBitmap(size)},
 	}
-	g.ints = make([]big.Int, size)
 	return g
 }
 
@@ -112,13 +129,13 @@ func (g *genReader) Next(context.Context) (*table.Batch, error) {
 	}
 	n := min(g.size, g.n-g.next)
 	cols := g.batch.Columns
+	amounts := genAmounts()
 	clear(cols[5].Nulls)
 	for i := range n {
 		id := int64(g.next + i)
 		cols[0].Int64[i] = id
 		cols[1].String[i] = customers[id%int64(len(customers))]
-		g.ints[i].SetInt64(id*137 - 50000)
-		cols[2].Numeric[i] = pgtype.Numeric{Int: &g.ints[i], Exp: -2, Valid: true}
+		cols[2].Numeric[i] = amounts[id%int64(len(amounts))]
 		cols[3].Time[i] = delivered.Add(time.Duration(id) * time.Minute)
 		cols[4].Bool[i] = id%3 == 0
 		cols[5].Float64[i] = float64(id) / 7

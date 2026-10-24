@@ -7,9 +7,9 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgtype"
 	"golang.org/x/text/language"
 
+	"github.com/emoss08/keel"
 	"github.com/emoss08/keel/analytics/value"
 )
 
@@ -102,7 +102,7 @@ func (f *Formatter) Tone(v *value.Vector, i int) Tone {
 	case value.Int, value.Epoch:
 		return f.tone(f.intNum(v.Int64[i]))
 	case value.Decimal:
-		if value.NumericFinite(v.Numeric[i]) {
+		if value.DecimalFinite(v.Numeric[i]) {
 			return f.tone(f.numericNum(v.Numeric[i]))
 		}
 	case value.Float:
@@ -123,7 +123,7 @@ func (f *Formatter) Column(c *Cells, v *value.Vector, n int) {
 	}
 }
 
-// Format renders one Go value: nil, an integer, a pgtype.Numeric, a float, a bool, a string, a
+// Format renders one Go value: nil, an integer, a keel.Decimal, a float, a bool, a string, a
 // time.Time or raw JSON bytes. In a numeric or epoch column a string holding a decimal is read
 // as that number, so decimals can travel as exact text, and in a bool column "true" and "false"
 // are booleans.
@@ -143,8 +143,8 @@ func (f *Formatter) appendAny(dst []byte, x any) ([]byte, Tone) {
 		return f.appendNumber(dst, f.intNum(int64(x)))
 	case int64:
 		return f.appendNumber(dst, f.intNum(x))
-	case pgtype.Numeric:
-		if !x.Valid {
+	case keel.Decimal:
+		if x == "" {
 			return append(dst, f.d.NullText...), ToneNone
 		}
 		return f.appendNumeric(dst, x)
@@ -167,7 +167,7 @@ func (f *Formatter) appendAny(dst []byte, x any) ([]byte, Tone) {
 // appendString renders a string, read as a number in a numeric column when it holds one.
 func (f *Formatter) appendString(dst []byte, s string) ([]byte, Tone) {
 	if f.t.Numeric() || f.t == value.Epoch {
-		if n, err := value.ParseNumeric(s); err == nil && s != "" {
+		if n, err := value.ParseDecimal(s); err == nil && s != "" {
 			return f.appendNumeric(dst, n)
 		}
 	}
@@ -178,7 +178,7 @@ func (f *Formatter) appendString(dst []byte, s string) ([]byte, Tone) {
 }
 
 // appendNumeric renders a numeric; NaN and the infinities are shown as words.
-func (f *Formatter) appendNumeric(dst []byte, n pgtype.Numeric) ([]byte, Tone) {
+func (f *Formatter) appendNumeric(dst []byte, n keel.Decimal) ([]byte, Tone) {
 	if special, ok := nonFinite(n); ok {
 		return append(dst, special...), ToneNone
 	}
@@ -186,11 +186,11 @@ func (f *Formatter) appendNumeric(dst []byte, n pgtype.Numeric) ([]byte, Tone) {
 }
 
 // nonFinite returns the text of a numeric that is not finite.
-func nonFinite(n pgtype.Numeric) (string, bool) {
-	if value.NumericFinite(n) {
+func nonFinite(n keel.Decimal) (string, bool) {
+	if value.DecimalFinite(n) {
 		return "", false
 	}
-	return string(value.AppendNumeric(nil, n)), true
+	return string(n), true
 }
 
 // appendFloat renders a float; NaN and the infinities are shown as words.
@@ -478,7 +478,7 @@ func (f *Formatter) intNum(i int64) num {
 }
 
 // numericNum reads a finite numeric into the formatter's digit buffer.
-func (f *Formatter) numericNum(x pgtype.Numeric) num {
+func (f *Formatter) numericNum(x keel.Decimal) num {
 	n := numFromNumeric(f.dig, x)
 	f.dig = n.digits[:0]
 	return n

@@ -269,5 +269,5 @@ func decodeDecimal(raw json.RawMessage) (any, error) {
 			return nil, err
 		}
 	}
-	return value.ParseNumeric(s)
+	return value.ParseDecimal(s)
 }
