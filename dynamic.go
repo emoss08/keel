@@ -700,11 +700,9 @@ func (d *DynRel) PreAggregate(s PreAggStrategy) *DynPreAgg {
 			p.keys = append(p.keys, preAggKey{child: rel.Remote[i], parent: rel.Local[i]})
 		}
 	}
-	for _, ci := range child.Tenant {
-		pi := parent.Column(child.Columns[ci].Name)
-		if pi >= 0 && parent.Columns[pi].Flags.Has(schema.FlagTenant) {
-			p.keys = append(p.keys, preAggKey{child: ci, parent: pi})
-		}
+	local, remote := tenantPairs(parent, child)
+	for i, ci := range remote {
+		p.keys = append(p.keys, preAggKey{child: ci, parent: local[i]})
 	}
 	name := "keel"
 	for _, h := range d.hops {
@@ -820,7 +818,8 @@ func (p *DynPreAgg) innerJoins() []joinClause {
 }
 
 // hopCond writes the condition that joins relation path h to its parent: the key equality of a
-// belongs-to, has-one or has-many relation, an EXISTS over the join table of a many-to-many one.
+// belongs-to, has-one or has-many relation, an EXISTS over the join table of a many-to-many one,
+// with the tenant columns the two tables share under a system scope.
 func hopCond(h *Ref) Pred {
 	return predExpr{e: func(r *render) {
 		rel := h.relation()
@@ -850,7 +849,11 @@ func hopCond(h *Ref) Pred {
 		r.s(pa)
 		r.b('.')
 		r.s(h.parent.Table.Columns[rel.Local[0]].Quoted)
+		r.joinTenantEq(h.parent.Table, rel, ja, ca)
 		r.b(')')
+		if r.scope.system {
+			r.tenantEq(h.parent.Table, h.Table, pa, ca)
+		}
 	}}
 }
 
@@ -884,6 +887,7 @@ func (b preAggCTE) writeSubquery(r *render, _ bool) {
 			r.s(alias)
 			r.b('.')
 			r.s(target.Columns[rel.Remote[0]].Quoted)
+			r.joinTenantEq(pivot.parent.Table, rel, ja, alias)
 		}
 		for i, k := range p.keys {
 			if k.child < 0 {

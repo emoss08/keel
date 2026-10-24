@@ -123,8 +123,9 @@ func (n *lnode) manyChildren() []*lnode {
 }
 
 // selectedColumns picks the columns a node reads: the narrowed set or the defaults, plus what keel
-// needs to attach rows and load the next level.
-func (n *lnode) selectedColumns(extra []int32) []int32 {
+// needs to attach rows and load the next level, which under a system scope includes the tenant
+// columns its loads match on.
+func (n *lnode) selectedColumns(extra []int32, system bool) []int32 {
 	var cols []int32
 	if n.spec != nil && len(n.spec.exprs) > 0 {
 		for _, e := range n.spec.exprs {
@@ -152,8 +153,15 @@ func (n *lnode) selectedColumns(extra []int32) []int32 {
 		}
 	}
 	for _, c := range n.children {
-		for _, lc := range n.table.Relations[c.rel].Local {
+		rel := &n.table.Relations[c.rel]
+		for _, lc := range rel.Local {
 			need(lc)
+		}
+		if system && !c.joined {
+			local, _ := tenantPairs(n.table, firstTarget(n.table, rel))
+			for _, lc := range local {
+				need(lc)
+			}
 		}
 	}
 	for _, c := range extra {
@@ -181,7 +189,7 @@ type selectOpts struct {
 	countCap   int64
 	selectOne  bool
 	exact      bool
-	keyColumn  func(r *render)
+	keyColumn  func(r *render, alias string)
 	extraJoin  func(r *render, alias string)
 
 	from        func(r *render, alias string)
@@ -294,7 +302,7 @@ func (q *query) renderSelect(r *render, sn *lnode, o selectOpts) *selectPlan {
 		}
 		first := true
 		if o.keyColumn != nil {
-			o.keyColumn(r)
+			o.keyColumn(r, alias)
 			plan.keyed = true
 			first = false
 		}
@@ -304,7 +312,7 @@ func (q *query) renderSelect(r *render, sn *lnode, o selectOpts) *selectPlan {
 				extra = o.extraCols
 			}
 			r.checkOmit(n)
-			n.cols = n.selectedColumns(extra)
+			n.cols = n.selectedColumns(extra, r.scope.system)
 			na := r.alias(n.ref)
 			for _, c := range n.cols {
 				if !first {
@@ -554,6 +562,7 @@ func (q *query) writeSubquery(r *render, existsOnly bool) {
 			r.s(alias)
 			r.b('.')
 			r.s(target.Columns[rel.Remote[0]].Quoted)
+			r.joinTenantEq(parentTable, rel, jalias, alias)
 		}
 		o.extraWhere = func(r *render, alias string) {
 			r.s(jalias)
@@ -563,6 +572,9 @@ func (q *query) writeSubquery(r *render, existsOnly bool) {
 			r.s(parentAlias)
 			r.b('.')
 			r.s(parentTable.Columns[rel.Local[0]].Quoted)
+			if r.scope.system {
+				r.tenantEq(parentTable, target, parentAlias, alias)
+			}
 		}
 	case rel != nil:
 		o.extraWhere = func(r *render, alias string) {
@@ -591,19 +603,42 @@ func (r *render) relCondNoTenant(parent *schema.Table, rel *schema.Relation, par
 		r.s(parent.Columns[rel.Local[i]].Quoted)
 	}
 	if r.scope.system {
-		for _, ci := range target.Tenant {
-			pi := parent.Column(target.Columns[ci].Name)
-			if pi < 0 || !parent.Columns[pi].Flags.Has(schema.FlagTenant) {
-				continue
-			}
-			r.s(" AND ")
-			r.s(childAlias)
-			r.b('.')
-			r.s(target.Columns[ci].Quoted)
-			r.s(" = ")
-			r.s(parentAlias)
-			r.b('.')
-			r.s(parent.Columns[pi].Quoted)
-		}
+		r.tenantEq(parent, target, parentAlias, childAlias)
+	}
+}
+
+// joinTenantEq writes the equalities of the tenant columns of a many-to-many relation's join table
+// under jalias with the same columns of the table under alias, the relation's parent or target,
+// each after " AND ". A join table between two tenant tables carries the tenant columns they share,
+// under the same names, so a row of it links a parent and a target of its own tenant even where
+// keys repeat across tenants.
+func (r *render) joinTenantEq(parent *schema.Table, rel *schema.Relation, jalias, alias string) {
+	_, remote := tenantPairs(parent, rel.Target)
+	for _, ci := range remote {
+		q := rel.Target.Columns[ci].Quoted
+		r.s(" AND ")
+		r.s(jalias)
+		r.b('.')
+		r.s(q)
+		r.s(" = ")
+		r.s(alias)
+		r.b('.')
+		r.s(q)
+	}
+}
+
+// tenantEq writes the equalities of the tenant columns child shares with parent (tenantPairs),
+// each after " AND ".
+func (r *render) tenantEq(parent, child *schema.Table, parentAlias, childAlias string) {
+	local, remote := tenantPairs(parent, child)
+	for i, ci := range remote {
+		r.s(" AND ")
+		r.s(childAlias)
+		r.b('.')
+		r.s(child.Columns[ci].Quoted)
+		r.s(" = ")
+		r.s(parentAlias)
+		r.b('.')
+		r.s(parent.Columns[local[i]].Quoted)
 	}
 }

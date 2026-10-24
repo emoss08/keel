@@ -3,6 +3,7 @@ package keel
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strconv"
 	"unsafe"
 
@@ -288,30 +289,74 @@ func (ix *parentIndex) writeKeyEq(r *render, t *schema.Table, alias string, cols
 	}
 }
 
-// writeIn writes the filter of a to-many load: col = ANY($1) for one key column, (cols) IN (SELECT
-// * FROM unnest(…)) for several.
+// writeIn writes the filter of a to-many load on columns cols of the table under alias: col =
+// ANY($1) for one key column, (cols) IN (SELECT * FROM unnest(…)) for several.
 func (ix *parentIndex) writeIn(r *render, t *schema.Table, alias string, cols []int32) {
-	if ix.cols() == 1 {
+	ix.writeTupleIn(r, func(r *render, i int) {
 		r.s(alias)
 		r.b('.')
-		r.s(t.Columns[cols[0]].Quoted)
+		r.s(t.Columns[cols[i]].Quoted)
+	})
+}
+
+// writeTupleIn writes the filter of a load on the expressions col writes, one per key column:
+// col = ANY($1) for one key column, (cols) IN (SELECT * FROM unnest(…)) for several.
+func (ix *parentIndex) writeTupleIn(r *render, col func(r *render, i int)) {
+	if ix.cols() == 1 {
+		col(r, 0)
 		r.s(" = ANY(")
 		r.arg(ix.arg(0))
 		r.b(')')
 		return
 	}
 	r.b('(')
-	for i, c := range cols {
+	for i := range ix.cols() {
 		if i > 0 {
 			r.s(", ")
 		}
-		r.s(alias)
-		r.b('.')
-		r.s(t.Columns[c].Quoted)
+		col(r, i)
 	}
 	r.s(") IN (SELECT * FROM ")
 	ix.writeUnnest(r, r.newAlias("k"))
 	r.b(')')
+}
+
+// crossTenant returns the tenant columns a load from parent to child matches on before the
+// relation's keys when its statement crosses tenants, under a system scope: the tenant columns the
+// two tables share (tenantPairs), as parent's and child's column indexes. Parents of several
+// tenants may hold the same key, so the load fetches and groups children by (tenant columns, keys).
+// Under a tenant scope every parent and child row is pinned to the scope's tenant, so the keys
+// alone match and there are none.
+func crossTenant(sc *scopeState, parent, child *schema.Table) (local, remote []int32) {
+	if !sc.system {
+		return nil, nil
+	}
+	return tenantPairs(parent, child)
+}
+
+// tenantPairs returns the tenant columns child shares with parent: each tenant column of child
+// that parent carries as a tenant column too, as parent's and child's column indexes.
+func tenantPairs(parent, child *schema.Table) (local, remote []int32) {
+	if !parent.HasTenant() {
+		return nil, nil
+	}
+	for _, ci := range child.Tenant {
+		pi := parent.Column(child.Columns[ci].Name)
+		if pi >= 0 && parent.Columns[pi].Flags.Has(schema.FlagTenant) {
+			local = append(local, pi)
+			remote = append(remote, ci)
+		}
+	}
+	return local, remote
+}
+
+// firstTarget is the table a load of rel starts from: the target of the first relation of a
+// pick's path, the relation's target otherwise.
+func firstTarget(parent *schema.Table, rel *schema.Relation) *schema.Table {
+	if rel.Kind == schema.Pick {
+		return parent.Relations[rel.Path[0]].Target
+	}
+	return rel.Target
 }
 
 // pending is one to-many load: the node and the parent rows it attaches to.
@@ -367,7 +412,9 @@ func loadPending(ctx context.Context, run *runner, work []pending) error {
 // loadStmt builds the statement that loads a to-many or pick node for its parents: a filter over
 // the parents' keys (= ANY($1) for one key column, (cols) IN (SELECT * FROM unnest(…)) for several),
 // through the join table for many-to-many, LATERAL per parent key when the load has a limit or picks
-// a row. It returns a nil statement when no parent has a key.
+// a row. Under a system scope the keys start with the tenant columns parent and child share
+// (crossTenant), in the statement and in the grouping of children under their parents. It returns
+// a nil statement when no parent has a key.
 func loadStmt(ctx context.Context, run *runner, w pending) (*stmt, *selectPlan, error) {
 	n := w.node
 	parent := n.parent.table
@@ -375,11 +422,14 @@ func loadStmt(ctx context.Context, run *runner, w pending) (*stmt, *selectPlan, 
 	if rel.Kind == schema.ManyToMany && len(rel.Local) != 1 {
 		return nil, nil, errf("relation %s.%s: many-to-many loads need a single-column key", parent.Name, rel.Name)
 	}
-	kinds, err := keyKindsOf(parent, rel.Local)
+	tenantLocal, tenantRemote := crossTenant(run.sc, parent, firstTarget(parent, rel))
+	local := slices.Concat(tenantLocal, rel.Local)
+	remote := slices.Concat(tenantRemote, rel.Remote)
+	kinds, err := keyKindsOf(parent, local)
 	if err != nil {
 		return nil, nil, err
 	}
-	ix := indexParents(parent, w.parents, rel.Local, kinds)
+	ix := indexParents(parent, w.parents, local, kinds)
 	if ix.len() == 0 {
 		return nil, nil, nil
 	}
@@ -400,18 +450,19 @@ func loadStmt(ctx context.Context, run *runner, w pending) (*stmt, *selectPlan, 
 		if q.limit > 0 {
 			return nil, nil, errf("relation %s.%s: pick loads do not take a Limit", parent.Name, rel.Name)
 		}
-		plan = pickSelect(r, &q, n, ix)
+		plan = pickSelect(r, &q, n, ix, tenantRemote)
 	case rel.Kind == schema.ManyToMany:
-		plan = q.renderSelect(r, n, m2mOpts(r, rel, n.table, rel.Remote[0], ix))
+		plan = q.renderSelect(r, n, m2mOpts(r, parent, rel, ix, tenantRemote))
 		if q.limit > 0 {
 			return nil, nil, errf("relation %s.%s: many-to-many loads do not take a Limit", parent.Name, rel.Name)
 		}
 	case q.limit > 0:
-		plan = lateralSelect(r, &q, n, ix, rel.Remote)
+		plan = lateralSelect(r, &q, n, ix, remote, tenantRemote)
 	default:
-		plan = q.renderSelect(r, n, selectOpts{extraWhere: func(r *render, alias string) {
-			ix.writeIn(r, n.table, alias, rel.Remote)
-		}})
+		plan = q.renderSelect(r, n, selectOpts{
+			extraCols:  tenantRemote,
+			extraWhere: func(r *render, alias string) { ix.writeIn(r, n.table, alias, remote) },
+		})
 	}
 	if r.err != nil {
 		return nil, nil, r.err
@@ -426,7 +477,7 @@ func loadStmt(ctx context.Context, run *runner, w pending) (*stmt, *selectPlan, 
 		return plan.scan(run.sc, s.sql, rows, func(row unsafe.Pointer, key relKey) {
 			if !keyed {
 				var ok bool
-				if key, ok = readKeys(child, row, rel.Remote, kinds); !ok {
+				if key, ok = readKeys(child, row, remote, kinds); !ok {
 					return
 				}
 			}
@@ -438,14 +489,36 @@ func loadStmt(ctx context.Context, run *runner, w pending) (*stmt, *selectPlan, 
 	return s, plan, nil
 }
 
-// m2mOpts reads a many-to-many relation through its join table, returning the parent key first.
-func m2mOpts(r *render, rel *schema.Relation, target *schema.Table, remote int32, ix *parentIndex) selectOpts {
+// m2mOpts reads a many-to-many relation through its join table, joined to the target on its key
+// and the tenant columns they share, returning the parent key first: the join table's key to the
+// parent, after the target's tenant columns tenant when the load crosses tenants, since a parent's
+// targets belong to its tenant.
+func m2mOpts(r *render, parent *schema.Table, rel *schema.Relation, ix *parentIndex, tenant []int32,
+) selectOpts {
+	target, remote := rel.Target, rel.Remote[0]
 	jalias := r.newAlias(rel.JoinAlias)
-	return selectOpts{
-		keyColumn: func(r *render) {
+	key := func(alias string) func(r *render, i int) {
+		return func(r *render, i int) {
+			if i < len(tenant) {
+				r.s(alias)
+				r.b('.')
+				r.s(target.Columns[tenant[i]].Quoted)
+				return
+			}
 			r.s(jalias)
 			r.b('.')
 			r.s(rel.JoinLocalQ[0])
+		}
+	}
+	return selectOpts{
+		keyColumn: func(r *render, alias string) {
+			col := key(alias)
+			for i := range ix.cols() {
+				if i > 0 {
+					r.s(", ")
+				}
+				col(r, i)
+			}
 		},
 		extraJoin: func(r *render, alias string) {
 			r.s(" JOIN ")
@@ -460,27 +533,25 @@ func m2mOpts(r *render, rel *schema.Relation, target *schema.Table, remote int32
 			r.s(alias)
 			r.b('.')
 			r.s(target.Columns[remote].Quoted)
+			r.joinTenantEq(parent, rel, jalias, alias)
 		},
-		extraWhere: func(r *render, _ string) {
-			r.s(jalias)
-			r.b('.')
-			r.s(rel.JoinLocalQ[0])
-			r.s(" = ANY(")
-			r.arg(ix.arg(0))
-			r.b(')')
+		extraWhere: func(r *render, alias string) {
+			ix.writeTupleIn(r, key(alias))
 		},
 	}
 }
 
 // lateralSelect loads at most q.limit rows per parent key:
-// SELECT … FROM unnest($1, …) k CROSS JOIN LATERAL (SELECT … WHERE fk = k.k … LIMIT n).
-func lateralSelect(r *render, q *query, n *lnode, ix *parentIndex, remote []int32) *selectPlan {
+// SELECT … FROM unnest($1, …) k CROSS JOIN LATERAL (SELECT … WHERE fk = k.k … LIMIT n). extra are
+// columns the rows must carry besides the query's.
+func lateralSelect(r *render, q *query, n *lnode, ix *parentIndex, remote, extra []int32) *selectPlan {
 	keyAlias := r.newAlias("k")
 	var plan *selectPlan
 	body := r.section(func() {
-		plan = q.renderSelect(r, n, selectOpts{extraWhere: func(r *render, alias string) {
-			ix.writeKeyEq(r, n.table, alias, remote, keyAlias)
-		}})
+		plan = q.renderSelect(r, n, selectOpts{
+			extraCols:  extra,
+			extraWhere: func(r *render, alias string) { ix.writeKeyEq(r, n.table, alias, remote, keyAlias) },
+		})
 	})
 	outer := r.newAlias("lat")
 	r.s("SELECT ")

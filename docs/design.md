@@ -166,7 +166,9 @@ named `id` when there are several; the keys of to-many and pick relations must b
 columns; many-to-many relations take one column per side; a tenant column both sides carry is
 refused in a key. When both sides have tenant columns,
 keel adds them to the join: as constants from the scope under a tenant scope, as column equalities
-under a system scope.
+under a system scope. A many-to-many join table between two tenant tables carries the tenant
+columns they share, and keel joins it to the target on them too, so a join table row links rows of
+its own tenant.
 
 ### Pick relations
 
@@ -351,7 +353,10 @@ Belongs-to and has-one segments are joined into the parent's statement, and so a
 statement reads at most two rows without an order; other picks load with the level's to-many
 relations, one keyed lateral statement per pick. Has-many and many-to-many segments run one
 statement per relation per level, filtered by `= ANY($1)` over the parent keys plus the scope's
-tenant columns; statements of one level share a round trip. A to-many load with a
+tenant columns; statements of one level share a round trip. Under a system scope parents of several
+tenants can share a key, so a load between two tenant tables keys on (shared tenant columns,
+relation keys) in its statement, its unnested key lists and the grouping of children under parents
+(`crossTenant`); under a tenant scope the tenant columns are constants and the keys alone match. A to-many load with a
 `Limit` loads at most that many rows per parent through `unnest … CROSS JOIN LATERAL`; many-to-many
 loads take no `Limit`. On a to-one load, `Where` becomes part of the join condition, so a row that
 does not match leaves the relation nil without filtering the parent.

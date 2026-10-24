@@ -554,21 +554,7 @@ func (r *render) relTenant(parent, target *schema.Table, parentAlias, childAlias
 		r.fail(fmt.Errorf("%w: %s", ErrAllTenantsRequired, target.Name))
 		return
 	}
-	for _, ci := range target.Tenant {
-		name := target.Columns[ci].Name
-		pi := parent.Column(name)
-		if pi < 0 || !parent.Columns[pi].Flags.Has(schema.FlagTenant) {
-			continue
-		}
-		r.s(" AND ")
-		r.s(childAlias)
-		r.b('.')
-		r.s(target.Columns[ci].Quoted)
-		r.s(" = ")
-		r.s(parentAlias)
-		r.b('.')
-		r.s(parent.Columns[pi].Quoted)
-	}
+	r.tenantEq(parent, target, parentAlias, childAlias)
 }
 
 // writeFromJoins writes the joins of sc as FROM/USING items for UPDATE and DELETE, and returns

@@ -542,7 +542,7 @@ array field is written as an empty array, unless the column is `nullzero`.
 | `one:<fk>` | the target's `<fk>` references this table's primary key; at most one row | `Profile *DriverProfile \`keel:"one:worker_id"\`` |
 | `many:<fk>` | the target's `<fk>` references this table's primary key | `Moves []*Move \`keel:"many:shipment_id"\`` |
 | `belongs:<fk>\|<fk>[=<key>]…` (and `one:`, `many:`) | a key of several columns: every pair joins; see [Relations](#relations) | `Source *Leave \`keel:"belongs:source_leave_id\|worker_id"\`` |
-| `m2m:<join_table>.<local_fk>.<remote_fk>` | rows linked through a join table: `<local_fk>` references this table, `<remote_fk>` the target | `Tags []*Tag \`keel:"m2m:shipment_tags.shipment_id.tag_id"\`` |
+| `m2m:<join_table>.<local_fk>.<remote_fk>` | rows linked through a join table: `<local_fk>` references this table, `<remote_fk>` the target; between two tenant tables the join table also carries the tenant columns they share (see [Relations](#relations)) | `Tags []*Tag \`keel:"m2m:shipment_tags.shipment_id.tag_id"\`` |
 | `pick:<relation>.<relation>…` | one row picked along a path that crosses a to-many relation (see [Pick relations](#pick-relations)) | `OriginStop *Stop \`keel:"pick:moves.stops,first=moves.sequence\|stops.sequence"\`` |
 | `first=<segment>.<column>\|…` / `last=…` | a pick's order: the first or the last row by these columns; exactly one is required on `pick` and allowed nowhere else | see `pick` |
 | `label=<text>` | the relation's label instead of the derived one | `keel:"belongs:bill_to_id,label=Bill-to Customer"` |
@@ -629,6 +629,12 @@ so is `nullzero` on a `pk`, `tenant`, `version`, `autoid`, `autocreate` or `auto
 A relation field is a pointer (to-one: `belongs`, `one`, `pick`) or a slice (to-many: `many`,
 `m2m`) of another model. A model may relate to itself (`Worker.Manager *Worker
 \`keel:"belongs:manager_id"\``) and to the same target twice (`Customer` and `BillTo`).
+
+A many-to-many relation between two tenant tables reads its join table as a table of the same
+tenants: the join table must carry the tenant columns the two tables share, under the same names
+(`shipment_tags (shipment_id, tag_id, organization_id, business_unit_id)`), and keel joins it to
+the target on them as well as on `<remote_fk>`. A join table row then links a parent and a target
+of its own tenant even when keys repeat across tenants.
 
 A relation can join on several columns: list them with `|`. Each item names a foreign-key column
 (this table's for `belongs`, the target's for `one` and `many`) and, after `=`, the column it
@@ -1641,7 +1647,8 @@ How loads run:
 - **Belongs-to and has-one** relations are joined into the parent's statement with `LEFT JOIN`.
   A nested to-one path (`m.Shipment().Customer()`) joins each level.
 - **Has-many and many-to-many** relations run one statement per relation per level, filtered by
-  `= ANY($1)` over the parents' keys plus the scope's tenant columns. The statements of one level
+  `= ANY($1)` over the parents' keys plus the scope's tenant columns (by the tenant columns and keys
+  together when the load crosses tenants; see [Rules](#rules)). The statements of one level
   share a round trip, so `Load(s.Customer(), s.Moves().Stops())` costs three round trips: the
   shipments with their customers, the moves, the stops.
 - **Pick** relations join into a statement that reads at most two rows without an order and
@@ -1687,6 +1694,13 @@ Many-to-many loads do not take a `Limit`.
 - `AfterLoad` hooks run for every loaded row of every table, once all levels are loaded.
 - Under a system scope, to-many loads cross tenants when the query they load into says
   `AllTenants`, or when the load itself does (`Load(m.AllTenants())`); see [Tenancy](#tenancy).
+  Parents of different tenants may then hold the same key (keys repeat across tenants when a
+  table's primary key includes its tenant columns), so a load between two tenant tables matches on
+  the tenant columns they share as well as the relation's keys, in its statement
+  (`(c.organization_id, c.business_unit_id, c.shipment_id) IN (SELECT * FROM unnest($1, $2, $3))`)
+  and when it attaches rows to parents. `Limit` loads and picks unnest the same columns; a
+  many-to-many load matches the target's tenant columns. Under a tenant scope every row is pinned
+  to the scope's tenant, so the keys alone match and the statement stays `= ANY($1)`.
 
 ## Pagination
 
@@ -3505,7 +3519,9 @@ CREATE INDEX idx_shipments_created ON shipments (organization_id, business_unit_
   Keep page orders on non-nullable columns sorted one way, or the keyset expands to an `OR` chain.
 - **To-many loads** filter on the foreign key: index `(tenant columns, fk)`, and add the load's
   order column when it has one: `(organization_id, business_unit_id, shipment_id, sequence)` for
-  `m.Order(m.Sequence.Asc())`. Many-to-many loads filter the join table on its local key.
+  `m.Order(m.Sequence.Asc())`. Many-to-many loads filter the join table on its local key and join
+  it to the target on the remote key and the tenant columns: index the join table
+  `(local_fk, tenant columns)`.
 - `CountUpTo` and `Total(limit)` stop counting at the limit; prefer them to an exact `Count` on
   large tables.
 
