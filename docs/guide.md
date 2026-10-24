@@ -2093,9 +2093,12 @@ expressions, and the result's columns take the first part's labels. A query used
 
 ### Reading results
 
-`Run` returns every row; `Count` counts them; `Page` reads a keyset page; `Stream` yields batches;
-`DynInto`, `DynCountInto` and `DynPageInto` are `Batch` items, so a report, its row count and the
-values of a dynamic pivot share one round trip.
+`Run` returns every row; `Count` counts them; `Exists` reports whether there is any
+(`SELECT EXISTS (query)`, which stops at the first row: the check behind a "does this filter match
+anything" answer, without reading a row or counting); `Page` reads a keyset page; `Stream` yields
+batches; `DynInto`, `DynCountInto`, `DynExistsInto` and `DynPageInto` are `Batch` items, so a
+report, its row count and the values of a dynamic pivot share one round trip. Every terminal
+applies the query's scope, tenant predicates and interceptors.
 
 A `DynResult` has one `DynColumn` per selected expression and `Rows`. A column has its `Name`
 (label), its `Type`, its Postgres `OID`, a null bitmap (`IsNull(i)`) and one typed vector, the one

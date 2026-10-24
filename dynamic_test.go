@@ -915,3 +915,55 @@ func TestDynamicCTENamesArePerStatement(t *testing.T) {
 	}
 	eq(t, must(derived.Run(w.ctx, d))(t).Column("revenue").Numeric[0], keel.Decimal("2190.0000"))
 }
+
+func TestDynamicExists(t *testing.T) {
+	rec := &recorder{}
+	d := openDB(t, func(cfg *keel.Config) { cfg.Observers = []keel.Observer{rec} })
+	w := seed(t, 6)
+	other := seed(t, 6)
+	reg := registry(t)
+	q := func() *keel.DynQuery { return reg.Query("shipments") }
+
+	hazmat := q()
+	eq(t, must(hazmat.Where(hazmat.Path("hazmat").IsTrue()).Exists(w.ctx, d))(t), true)
+	missing := q()
+	eq(t, must(missing.Where(missing.Path("pro_number").Eq("nope")).Exists(w.ctx, d))(t), false)
+	rel := q()
+	eq(t, must(rel.Where(rel.Path("customer", "code").Eq("C2")).Exists(w.ctx, d))(t), true)
+	moves := q()
+	mv := moves.Rel("moves")
+	eq(t, must(moves.Where(mv.Any(mv.Col("sequence").Eq(1))).Exists(w.ctx, d))(t), true)
+	eq(t, must(q().Offset(5).Exists(w.ctx, d))(t), true)
+	eq(t, must(q().Offset(6).Exists(w.ctx, d))(t), false)
+
+	mine := q()
+	eq(t, must(mine.Where(mine.Path("id").Eq(other.shipments[0].ID)).Exists(w.ctx, d))(t), false)
+
+	rec.mu.Lock()
+	last := rec.events[len(rec.events)-1].SQL
+	rec.mu.Unlock()
+	if !strings.HasPrefix(last, "SELECT EXISTS (SELECT ") || !strings.Contains(last, `"organization_id" = $`) {
+		t.Fatalf("exists statement: %s", last)
+	}
+
+	d.Intercept(fleetdb.Shipments, func(_ context.Context, ic *keel.Intercepted) error {
+		ic.Where(fleetdb.Shipments.Hazmat.IsFalse())
+		return nil
+	})
+	intercepted := q()
+	eq(t, must(intercepted.Where(intercepted.Path("hazmat").IsTrue()).Exists(w.ctx, d))(t), false)
+
+	var a, b bool
+	ok(t, keel.Batch(w.ctx, d, keel.DynExistsInto(q(), &a), keel.DynExistsInto(reg.Query("tags"), &b)))
+	eq(t, a && b, true)
+
+	if _, err := q().Exists(systemCtx("exists"), d); !errors.Is(err, keel.ErrAllTenantsRequired) {
+		t.Fatalf("system scope without AllTenants: %v", err)
+	}
+	if _, err := q().Exists(context.Background(), d); !errors.Is(err, keel.ErrNoScope) {
+		t.Fatalf("no scope: %v", err)
+	}
+	if _, err := reg.Query("nope").Exists(w.ctx, d); err == nil {
+		t.Fatal("unknown table")
+	}
+}

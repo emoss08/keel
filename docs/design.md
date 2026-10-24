@@ -427,6 +427,9 @@ generated tables and is not generic.
   Variable-length values are slices of arenas that are never reused. numeric is `keel.Decimal`, its
   exact text, formatted by keel from the binary format. Types without a vector decode through
   their pgx codec into JSON.
+- **Scalars.** `Count` is `SELECT count(*) FROM (query) c`; `Exists` is `SELECT EXISTS (query)`, one
+  statement that stops at the first row. Both render the query through `writeSelect`, so scope,
+  tenancy and interceptors are the query's.
 - **Pages and streams.** `Page` wraps the query and applies the keyset to its output columns, adding
   hidden order columns and, on an ungrouped table query, the primary key. `Stream` decodes batches
   while the rows arrive and cancels the query when the consumer stops outside a transaction.

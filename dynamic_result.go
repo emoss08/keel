@@ -790,6 +790,42 @@ func DynCountInto(q *DynQuery, dst *int64) BatchItem {
 	}}
 }
 
+// DynExistsInto stores whether the dynamic query returns any row in dst: SELECT EXISTS (query),
+// which stops at the first row. The query's scope, tenancy and interceptors apply as they do to
+// its other terminals.
+func DynExistsInto(q *DynQuery, dst *bool) BatchItem {
+	if dst == nil {
+		return noDestination("DynExistsInto")
+	}
+	return BatchItem{prepare: func(ctx context.Context, run *runner) (*read, error) {
+		if q == nil {
+			return nil, errf("DynExistsInto: nil dynamic query")
+		}
+		r := newRender(run.sc, ctx, run.db)
+		defer r.recycle()
+		r.s("SELECT EXISTS (")
+		q.writeSelect(r, nil)
+		r.b(')')
+		if r.err != nil {
+			return nil, r.err
+		}
+		table := "dynamic"
+		if t := q.Table(); t != nil {
+			table = t.Name
+		}
+		s := &stmt{sql: string(r.buf), args: r.argsCopy(), op: "count", table: table,
+			customPlan: q.q.customPlan}
+		var found bool
+		s.scan = func(rows pgx.Rows) error {
+			if rows.Next() {
+				return rows.Scan(&found)
+			}
+			return nil
+		}
+		return &read{stmts: []*stmt{s}, timeout: q.q.timeout, finish: func() { *dst = found }}, nil
+	}}
+}
+
 // DynPageInto reads one keyset page of the dynamic query into dst, as Page does.
 func DynPageInto(q *DynQuery, p PageRequest, dst **DynResult) BatchItem {
 	if dst == nil {
@@ -840,6 +876,14 @@ func (q *DynQuery) Count(ctx context.Context, db *DB) (int64, error) {
 	var n int64
 	err := Batch(ctx, db, DynCountInto(q, &n))
 	return n, err
+}
+
+// Exists reports whether the query returns any row, in one statement that stops at the first
+// row.
+func (q *DynQuery) Exists(ctx context.Context, db *DB) (bool, error) {
+	var ok bool
+	err := Batch(ctx, db, DynExistsInto(q, &ok))
+	return ok, err
 }
 
 // Page reads the page of rows after the request's cursor, in the query's order. Every order term
