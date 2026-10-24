@@ -2406,6 +2406,21 @@ rows, err := s.
 - `Limit`, `Offset`, `Lock`, `Group` and `DistinctOn` are refused: an `UPDATE` changes every row it
   matches. A query without `Where` is refused as `Update` refuses it.
 
+### Many-to-many links
+
+`keel.SetLinks` makes a parent's rows in a many-to-many join table exactly the given targets, in
+one statement: it deletes the join rows to every other target and inserts the missing ones
+(`ON CONFLICT DO NOTHING`, so the join table needs a primary key over its columns).
+
+```go
+s := shipmentdb.Shipments
+err := keel.SetLinks(ctx, db, s.Tags(), sh.ID, tagIDs) // nil or empty unlinks every tag
+```
+
+Between two tenant tables the join rows take the scope's tenant columns and the delete is limited
+to them, so `SetLinks` needs a tenant scope. The join table has no model: no hook or interceptor
+runs, and its data version moves for the scope's tenant.
+
 ### Upsert
 
 `Upsert` inserts rows and updates the existing row on conflict. It reports, per row, whether the row
@@ -3791,6 +3806,7 @@ plain or `-json` output and exit code 3 on drift, to run against a deployed data
 | `bun:"rel:has-many,join:id=shipment_id"` | `keel:"many:shipment_id"` |
 | `bun:"rel:belongs-to,join:source_pto_id=id,join:worker_id=worker_id"` | `keel:"belongs:source_pto_id\|worker_id"`; drop the `organization_id` and `business_unit_id` pairs, the tenancy adds them |
 | `bun:"m2m:shipment_tags,join:Shipment=Tag"` | `keel:"m2m:shipment_tags.shipment_id.tag_id"` |
+| deleting and re-inserting a parent's join rows | `keel.SetLinks(ctx, db, s.Tags(), sh.ID, tagIDs)` |
 | a hand-written `LEFT JOIN LATERAL (… ORDER BY … LIMIT 1)` for a shipment's first stop | `keel:"pick:moves.stops,first=moves.sequence\|stops.sequence"` and `Load(s.OriginStop())` |
 | labels, descriptions and enum values curated in a report catalog | derived by `keel gen` from names, doc comments and constants ([Derived metadata](#derived-metadata)) |
 | `db.NewSelect().Model(&sh).WherePK().Scan(ctx)` | `s.Get(ctx, db, id)` |
