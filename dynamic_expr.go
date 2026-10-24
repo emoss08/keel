@@ -450,10 +450,18 @@ func (d DynExpr) Cast(t ValueType) DynExpr {
 }
 
 // Asc orders by d ascending.
-func (d DynExpr) Asc() Order { return Order{e: d} }
+func (d DynExpr) Asc() Order { return Order{e: d, col: d.column()} }
 
 // Desc orders by d descending.
-func (d DynExpr) Desc() Order { return Order{e: d, desc: true} }
+func (d DynExpr) Desc() Order { return Order{e: d, col: d.column(), desc: true} }
+
+// column returns the column a bare column expression reads, or nil.
+func (d DynExpr) column() *Col {
+	if d.n == nil || d.n.err != nil {
+		return nil
+	}
+	return d.n.col
+}
 
 // Sum is sum(d).
 func (d DynExpr) Sum() DynExpr { return dynAgg(Agg{fn: "sum", arg: d}, d.Label(), d.Err()) }

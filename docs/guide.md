@@ -1141,6 +1141,31 @@ started from a to-many path has `Any` and `None` too, so `m.Where(m.Loaded.IsTru
 Use a path handle (`s.Customer().Code`), not the base handle (`fleetdb.Customers.Code`), to filter
 on a relation: a base handle column must belong to a table of the statement.
 
+### Column paths from names
+
+An API that lets clients filter and sort by field names (`?sort=customer.name&status=New`) builds
+a typed query from names chosen at run time. `keel.ResolvePath(handle, segments...)` resolves them
+on a handle, a query or an alias: the last segment names a column (its SQL name or Go field name),
+the ones before it to-one relations (their Go name or its snake_case form), exactly as a dynamic
+query's `Path` reads them.
+
+```go
+name := keel.ResolvePath(s, "customer", "name") // the column s.Customer().Name
+rows, err := s.Where(name.ContainsFold(search), keel.ResolvePath(s, "status").In(statuses)).
+    Order(keel.ResolvePath(s, sortField...).Desc()).
+    Load(s.Customer()).
+    Page(ctx, db, keel.After(cursor, 50))
+```
+
+The result is a `DynExpr`, so it has the dynamic operators (`Eq`, `In`, `ContainsFold`, `IsNull`,
+`Asc`, …), and it is a column of the same relation path the generated handles build: it and
+`s.Customer().Name`, or a `Load(s.Customer())`, share one join, with its tenant condition. It works
+in `Where`, `Order` (keyset pages included), `Pick`, and inside `Any` and `None` when resolved on
+the to-many handle (`keel.ResolvePath(m, "sequence")` with `m := s.Moves()`). A name that does not
+resolve, or a path through a to-many relation, makes an expression that carries the error
+(`Err()`), which the query's terminal returns. Do not use a dynamic query's `Path` inside a typed
+query: its columns belong to the dynamic query's own table reference.
+
 ### Joins and self-joins
 
 `Join` and `LeftJoin` add a table on predicates; the joined table's tenant columns are compared
@@ -1876,7 +1901,8 @@ q := reg.Query("shipments") // an unknown name makes a query whose terminals fai
 
 ### Columns and paths
 
-`q.Path(segments...)` resolves a column: the last segment names the column (its SQL name or Go
+`q.Path(segments...)` resolves a column (`keel.ResolvePath` is its counterpart for typed queries;
+see [Column paths from names](#column-paths-from-names)): the last segment names the column (its SQL name or Go
 field name), the segments before it to-one relations followed from the base table (the relation's
 Go name or its snake_case form). The relations are LEFT JOINed with their tenant condition when the
 expression is used, exactly as typed relation paths are. A path through a to-many relation is

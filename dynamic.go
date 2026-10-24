@@ -280,6 +280,47 @@ func relationIndex(t *schema.Table, name string) int32 {
 	return -1
 }
 
+// ResolvePath resolves a column path on a typed handle, query or alias, for code that builds a
+// typed query's filters and order from names chosen at run time (an API's filter and sort fields).
+// The segments are read as Path reads them: the last names a column (its SQL name or Go field
+// name), the ones before it to-one relations (their Go name or its snake_case form) followed from
+// t's table. The result is a column of the same relation path the generated handles build, so
+// ResolvePath(s, "customer", "name") and s.Customer().Name are one join: the typed query LEFT JOINs
+// the relations with their tenant condition where the expression is used, in Where, Order (a
+// keyset page included) and Pick. A name that does not resolve, or a path through a to-many
+// relation, makes an expression that carries the error, which the query's terminal returns.
+func ResolvePath(t interface{ TableRef() *Ref }, segments ...string) DynExpr {
+	label := strings.Join(segments, ".")
+	if t == nil || t.TableRef() == nil {
+		return dynFail(errf("ResolvePath %s: nil table", label))
+	}
+	if len(segments) == 0 {
+		return dynFail(errf("empty column path"))
+	}
+	ref := t.TableRef()
+	for _, s := range segments[:len(segments)-1] {
+		ri := relationIndex(ref.Table, s)
+		if ri < 0 {
+			return dynFail(errf("table %s has no relation %q", ref.Table.Name, s))
+		}
+		rel := &ref.Table.Relations[ri]
+		if rel.Target == nil {
+			return dynFail(errf("relation %s of %s has no target table; is its generated package imported?",
+				rel.Name, ref.Table.Name))
+		}
+		if rel.Kind.ToMany() {
+			return dynFail(errf("%s crosses the to-many relation %s; filter it with Any or None", label, s))
+		}
+		ref = pathRef(ref, ri)
+	}
+	last := segments[len(segments)-1]
+	ci := columnIndex(ref.Table, last)
+	if ci < 0 {
+		return dynFail(errf("table %s has no column %q", ref.Table.Name, last))
+	}
+	return dynColumn(Col{Ref: ref, Index: ci}, label)
+}
+
 // Select sets the expressions the query returns, in order. Each becomes a column of the result
 // named by its Label. Without Select a table query returns the table's default columns.
 func (q *DynQuery) Select(es ...DynExpr) *DynQuery {

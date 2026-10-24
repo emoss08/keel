@@ -245,7 +245,10 @@ func (s *Shipment) AfterLoad(ctx context.Context) error    // every loaded row, 
 
 Relation targets are linked by a small generated `init` (pointer assignments only), because two
 tables of one package that reference each other would be an initialisation cycle as static data.
-Handles reached through relations (`s.Customer()`) are built on first use and memoised.
+Handles reached through relations (`s.Customer()`) are built on first use and memoised. The
+memo keeps a relation path's (or an alias's) `Ref` apart from the handles built over it, which are
+keyed by their Go type too: every handle type built for one path shares its `Ref`, so a column
+resolved by name (`keel.ResolvePath`) and the generated column of the same path are one join.
 `keel gen -check` fails when generated files are out of date.
 
 Packages that take columns in declarations (rollups, for one) read a handle with
@@ -381,6 +384,10 @@ generated tables and is not generic.
 - **One renderer.** A dynamic query holds the same `query` a typed one does and renders through
   `renderSelect` and the render scope. Tenancy, interceptors, aliases, parameter sharing and
   statement preparation are the typed ones; nothing is reimplemented.
+- **Typed queries resolve names too.** `keel.ResolvePath(handle, segments...)` follows relation
+  names from a typed handle through the memoised path `Ref`s (`pathRef`) and returns a `DynExpr`
+  over that path's column, so typed queries filter and sort by names chosen at run time without a
+  dynamic query's own references, which would resolve only through the same-table fallback.
 - **Identifiers from the schema only.** Columns and relations are resolved by name against the
   schema and written from its quoted names. Result columns are `c1…cN` in SQL and keep their labels
   in Go; CTEs and pre-aggregations get generated names; `DynFunc` calls an allow-list; `Cast` takes
