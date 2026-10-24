@@ -39,14 +39,14 @@ func (h Handle[T]) CreateMany(ctx context.Context, db *DB, rows []*T) error {
 // there first. cols narrows the columns written; the autoupdate column is always written.
 // Interceptors' predicates join the primary key in the WHERE clause: a row they exclude is not
 // written, and Save reports it as ErrConflict on a table with a version column, else ErrNotFound.
-func (h Handle[T]) Save(ctx context.Context, db *DB, row *T, cols ...interface{ column() Col }) error {
+func (h Handle[T]) Save(ctx context.Context, db *DB, row *T, cols ...Column) error {
 	return db.save(ctx, h.Ref, unsafe.Pointer(row), cols, false)
 }
 
 // SaveExcept is Save writing every updatable column except cols: the columns a caller must never
 // overwrite from a row it read (secrets, columns another process maintains). The autoupdate column
 // is always written.
-func (h Handle[T]) SaveExcept(ctx context.Context, db *DB, row *T, cols ...interface{ column() Col }) error {
+func (h Handle[T]) SaveExcept(ctx context.Context, db *DB, row *T, cols ...Column) error {
 	return db.save(ctx, h.Ref, unsafe.Pointer(row), cols, true)
 }
 
@@ -82,7 +82,7 @@ func (c Conflict) Where(ps ...Pred) Conflict {
 
 // Update names the columns a conflicting row takes from the proposed row: SET col = EXCLUDED.col.
 // Without Update or Set, a conflicting row takes every updatable column.
-func (c Conflict) Update(cols ...interface{ column() Col }) Conflict {
+func (c Conflict) Update(cols ...Column) Conflict {
 	c.update = slices.Clip(c.update)
 	for _, col := range cols {
 		c.update = append(c.update, col.column())
@@ -295,7 +295,7 @@ func (h Handle[T]) CreateOrSkip(ctx context.Context, db *DB, rows []*T, targets 
 // expression per column, in order. Under a tenant scope the tenant columns are filled from the
 // scope and must not be listed.
 func (h Handle[T]) InsertFrom(ctx context.Context, db *DB, src subquery,
-	cols ...interface{ column() Col },
+	cols ...Column,
 ) (int64, error) {
 	return db.insertFrom(ctx, h.Ref, src, cols)
 }
@@ -342,7 +342,7 @@ func (db *DB) prepareInsert(ctx context.Context, sc *scopeState, t *schema.Table
 	if err := fillTenant(sc, t, row); err != nil {
 		return err
 	}
-	if t.AutoCreate >= 0 {
+	if t.AutoCreate >= 0 && zeroAt(t, row, t.AutoCreate) {
 		if err := assign(t.Ptr(row, t.AutoCreate), st.created); err != nil {
 			return err
 		}
@@ -708,7 +708,7 @@ func (db *DB) upsert(ctx context.Context, ref *Ref, rows []unsafe.Pointer, c Con
 
 // save writes row by its primary key: the columns cols name, or with except every updatable
 // column but those, or every updatable column when cols is empty.
-func (db *DB) save(ctx context.Context, ref *Ref, row unsafe.Pointer, cols []interface{ column() Col },
+func (db *DB) save(ctx context.Context, ref *Ref, row unsafe.Pointer, cols []Column,
 	except bool,
 ) error {
 	t := ref.Table
@@ -852,7 +852,7 @@ func (db *DB) save(ctx context.Context, ref *Ref, row unsafe.Pointer, cols []int
 
 // saveColumns returns the columns a Save writes: every updatable column, the named ones, or with
 // except every updatable column but the named ones, with the autoupdate column always included.
-func saveColumns(t *schema.Table, cols []interface{ column() Col }, except bool) ([]int32, error) {
+func saveColumns(t *schema.Table, cols []Column, except bool) ([]int32, error) {
 	if len(cols) == 0 {
 		return t.Update, nil
 	}
@@ -1069,7 +1069,7 @@ func (db *DB) deleteRow(ctx context.Context, ref *Ref, row unsafe.Pointer) error
 }
 
 func (db *DB) insertFrom(ctx context.Context, ref *Ref, src subquery,
-	cols []interface{ column() Col },
+	cols []Column,
 ) (int64, error) {
 	t := ref.Table
 	if len(cols) == 0 {

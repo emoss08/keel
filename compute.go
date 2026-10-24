@@ -19,13 +19,13 @@ type compute struct {
 // driver when rows decode. The query can filter and order by col too: keel writes e in its place.
 //
 //	s.Compute(s.Rank, s.SearchVector.Rank(q)).Where(s.SearchVector.Match(q)).Order(s.Rank.Desc())
-func (q *Query[T]) Compute(col interface{ column() Col }, e Expr) *Query[T] {
+func (q *Query[T]) Compute(col Column, e Expr) *Query[T] {
 	q.q.computes = append(q.q.computes, newCompute(q.q.ref, col.column(), e, q.q.computes))
 	return q
 }
 
 // Compute starts a query that fills the computed field col with e.
-func (h Handle[T]) Compute(col interface{ column() Col }, e Expr) *Query[T] {
+func (h Handle[T]) Compute(col Column, e Expr) *Query[T] {
 	return h.Query().Compute(col, e)
 }
 

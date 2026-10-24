@@ -119,6 +119,32 @@ func TestSaveNarrowedColumns(t *testing.T) {
 	eq(t, got.Code, "N1")
 }
 
+func TestSaveColumnsBuiltAtRunTime(t *testing.T) {
+	d := db(t)
+	ctx := newTenant()
+	c := newCustomer(t, ctx, "R1")
+	c.Name = "Run time"
+	c.Code = "IGNORED"
+	cols := []keel.Column{fleetdb.Customers.Name}
+	ok(t, fleetdb.Customers.Save(ctx, d, c, cols...))
+	got := must(fleetdb.Customers.Get(ctx, d, c.ID))(t)
+	eq(t, got.Name, "Run time")
+	eq(t, got.Code, "R1")
+}
+
+func TestCreateKeepsAPresetAutocreateValue(t *testing.T) {
+	d := db(t)
+	ctx := newTenant()
+	c := &fleet.Customer{Name: "Imported", Code: "IMP", CreatedAt: 1_600_000_000}
+	ok(t, fleetdb.Customers.Create(ctx, d, c))
+	eq(t, c.CreatedAt, int64(1_600_000_000))
+	if c.UpdatedAt <= c.CreatedAt {
+		t.Fatalf("updated_at %d not stamped", c.UpdatedAt)
+	}
+	got := must(fleetdb.Customers.Get(ctx, d, c.ID))(t)
+	eq(t, got.CreatedAt, int64(1_600_000_000))
+}
+
 func TestDeleteRow(t *testing.T) {
 	d := db(t)
 	ctx := newTenant()

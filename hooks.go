@@ -68,7 +68,7 @@ type Mutation[T any] struct {
 
 // Changed reports whether the write set column c. Creates set every column, an Upsert's
 // conflicting rows the columns its Conflict assigns, and deletes none.
-func (m *Mutation[T]) Changed(c interface{ column() Col }) bool {
+func (m *Mutation[T]) Changed(c Column) bool {
 	if m.Op == OpCreate {
 		return true
 	}
@@ -82,7 +82,7 @@ type HookOption func(*hookEntry)
 // (RETURNING old.…, which needs PostgreSQL 18) into Mutation.Old. It costs nothing unless the table
 // has AfterWrite or Committed hooks for the write's op. A computed field has no stored value, so
 // naming one panics when the hook is registered.
-func Needs(cols ...interface{ column() Col }) HookOption {
+func Needs(cols ...Column) HookOption {
 	return func(h *hookEntry) {
 		for _, c := range cols {
 			col := c.column()

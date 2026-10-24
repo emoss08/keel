@@ -25,7 +25,7 @@ func (h Handle[T]) Pick(es ...Expr) *Query[T] { return h.Query().Pick(es...) }
 func (h Handle[T]) Load(ls ...Loader) *Query[T] { return h.Query().Load(ls...) }
 
 // Omit starts a query that leaves cols out of the columns it reads.
-func (h Handle[T]) Omit(cols ...interface{ column() Col }) *Query[T] { return h.Query().Omit(cols...) }
+func (h Handle[T]) Omit(cols ...Column) *Query[T] { return h.Query().Omit(cols...) }
 
 // Order starts an ordered query.
 func (h Handle[T]) Order(os ...Order) *Query[T] { return h.Query().Order(os...) }
@@ -157,7 +157,7 @@ func (q *Query[T]) Pick(es ...Expr) *Query[T] {
 // Omit leaves cols out of the columns the query reads, so a heavy or secret column (a transcript,
 // raw file contents, a token) is not read; the fields stay zero. The primary key and the columns
 // relation loads need are read anyway. It works on loads too: Load(r.Omit(r.Payload)).
-func (q *Query[T]) Omit(cols ...interface{ column() Col }) *Query[T] {
+func (q *Query[T]) Omit(cols ...Column) *Query[T] {
 	for _, c := range cols {
 		q.q.omit = append(q.q.omit, c.column())
 	}

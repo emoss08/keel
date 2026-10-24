@@ -533,7 +533,7 @@ Shipment.Weight: keel tag "weight,fromat=weight": unknown option "fromat"`).
 | `pk` | part of the primary key | `keel:"id,pk"` |
 | `tenant` | a tenant column: filled from the scope on insert, compared with the scope on every statement, added to every relation join | `keel:"organization_id,pk,tenant"` |
 | `autoid:<prefix>` | on insert, an empty value is replaced by `Config.NewID(prefix)`; the field must be a string type | `keel:"id,pk,autoid:shp_"` |
-| `autocreate` | stamped on insert; `int64` means Unix seconds, `time.Time` a timestamp | `keel:"created_at,autocreate"` |
+| `autocreate` | on insert, a zero value is stamped with the time and a value the caller set (an imported row's) is kept; `int64` means Unix seconds, `time.Time` a timestamp | `keel:"created_at,autocreate"` |
 | `autoupdate` | stamped on insert and on every update, bulk updates and upserts included | `keel:"updated_at,autoupdate"` |
 | `version` | optimistic locking: `Save` compares and increments it, bulk updates and upserts increment it; must be `int64` | `keel:"version,version"` |
 | `readonly` | never written (generated or trigger-maintained columns); read back after inserts and saves | `keel:"stage_rank,readonly"` |

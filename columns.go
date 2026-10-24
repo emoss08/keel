@@ -35,6 +35,13 @@ func ColumnOf(e Expr) (table *schema.Table, index int32, ok bool) {
 	return col.Ref.Table, col.Index, true
 }
 
+// Column is any generated column handle (StringCol, Int64Col, a generated enum column, ...). Save,
+// SaveExcept, Omit, Compute, Conflict.Update and Needs take columns as Column, so a caller can
+// build the list at run time: cols := []keel.Column{t.Status, t.Note}; t.Save(ctx, db, row, cols...).
+type Column interface {
+	column() Col
+}
+
 // columnar is implemented by every column kind, so Pick and Save accept any of them.
 type columnar interface {
 	Expr
