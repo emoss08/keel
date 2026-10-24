@@ -213,7 +213,13 @@ func set(c Col, v any) Assignment {
 	if c.nullZero() && isZeroValue(v) {
 		v = nil
 	}
-	return Assignment{col: c, e: func(r *render) { r.arg(v) }}
+	return Assignment{col: c, e: func(r *render) {
+		if c.Ref == nil || c.Ref.Table == nil || int(c.Index) >= len(c.Ref.Table.Columns) {
+			r.arg(v)
+			return
+		}
+		r.colArg(&c.Ref.Table.Columns[c.Index], v)
+	}}
 }
 
 func add(c Col, v any) Assignment {

@@ -103,3 +103,41 @@ func TestUnmarshalJSONNumber(t *testing.T) {
 		t.Fatal("truncated JSON was accepted")
 	}
 }
+
+// TestJSONStringValuesBindAsJSONStrings writes a Go string held in an interface to a json column
+// through every write path: it is a JSON string value, not JSON text the caller pre-encoded.
+func TestJSONStringValuesBindAsJSONStrings(t *testing.T) {
+	d := db(t)
+	ctx := newTenant()
+	a := fleetdb.AuditEntries
+	var raw any = "Active"
+	e := &fleet.AuditEntry{Tool: "string", Args: map[string]any{}, Raw: &raw, Meta: map[string]any{}}
+	ok(t, a.Create(ctx, d, e))
+	got := must(a.Where(a.ID.Eq(e.ID)).One(ctx, d))(t)
+	if got.Raw == nil || *got.Raw != "Active" {
+		t.Fatalf("created raw %#v", got.Raw)
+	}
+
+	raw = "Lapsed"
+	ok(t, a.Save(ctx, d, e, a.Raw))
+	got = must(a.Where(a.ID.Eq(e.ID)).One(ctx, d))(t)
+	if *got.Raw != "Lapsed" {
+		t.Fatalf("saved raw %#v", *got.Raw)
+	}
+
+	n := must(a.Where(a.ID.Eq(e.ID)).Update(ctx, d, a.Raw.To("Cleared")))(t)
+	eq(t, n, int64(1))
+	got = must(a.Where(a.ID.Eq(e.ID)).One(ctx, d))(t)
+	if *got.Raw != "Cleared" {
+		t.Fatalf("updated raw %#v", *got.Raw)
+	}
+
+	pre := &fleet.AuditEntry{Tool: "raw", Args: map[string]any{}, Meta: map[string]any{}}
+	var encoded any = json.RawMessage(`{"pre":"encoded"}`)
+	pre.Raw = &encoded
+	ok(t, a.Create(ctx, d, pre))
+	got = must(a.Where(a.ID.Eq(pre.ID)).One(ctx, d))(t)
+	if !reflect.DeepEqual(*got.Raw, map[string]any{"pre": "encoded"}) {
+		t.Fatalf("a json.RawMessage is written as the JSON it holds: %#v", *got.Raw)
+	}
+}

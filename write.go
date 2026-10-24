@@ -484,7 +484,7 @@ func (db *DB) insertStmts(ctx context.Context, t *schema.Table, rows []unsafe.Po
 				if i > 0 {
 					r.s(", ")
 				}
-				r.arg(t.Value(chunk[0], c))
+				r.colArg(&t.Columns[c], t.Value(chunk[0], c))
 			}
 			r.b(')')
 		} else if err := db.writeUnnestSource(r, t, types, chunk); err != nil {
@@ -745,7 +745,7 @@ func (db *DB) save(ctx context.Context, ref *Ref, row unsafe.Pointer, cols []Col
 		}
 		r.s(t.Columns[c].Quoted)
 		r.s(" = ")
-		r.arg(t.Value(row, c))
+		r.colArg(&t.Columns[c], t.Value(row, c))
 	}
 	var oldVersion int64
 	if t.Version >= 0 {

@@ -2,6 +2,7 @@ package keel
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"strconv"
@@ -237,6 +238,32 @@ func (r *render) arg(v any) {
 	r.args = append(r.args, v)
 	r.buf = append(r.buf, '$')
 	r.buf = strconv.AppendInt(r.buf, int64(len(r.args)), 10)
+}
+
+// colArg binds v as a value of column c. A json or jsonb column's value is marshaled with the
+// configured codec, as bulk writes do, so a Go string binds as a JSON string rather than as JSON
+// text; a []byte (json.RawMessage) is already JSON and binds as it is.
+func (r *render) colArg(c *schema.Column, v any) {
+	if c.Kind != schema.KindJSON || v == nil {
+		r.arg(v)
+		return
+	}
+	if b, ok := v.([]byte); ok {
+		r.arg(string(b))
+		return
+	}
+	var b []byte
+	var err error
+	if r.db != nil {
+		b, err = r.db.marshalJSON(v)
+	} else {
+		b, err = json.Marshal(v)
+	}
+	if err != nil {
+		r.fail(fmt.Errorf("keel: %s: %w", c.Name, err))
+		return
+	}
+	r.arg(string(b))
 }
 
 // argCol binds v compared with column c through op, sharing the placeholder of an equal value
