@@ -15,8 +15,9 @@ import (
 // cannot answer exactly (a distinct count of values two parents can share), declares it on the
 // outer statement and joins it by the grouping columns and level. The statement reads the
 // entity's rows with the report's filters, joins each to-many path's rows (each table read in its
-// own CTE, with its tenant predicate and row rules), groups by the same grouping sets and counts
-// distinct values over the joined rows, which a fan-out cannot inflate.
+// own CTE, with its tenant predicate and row rules, a many-to-many join table included) on their
+// keys and the tenant columns they share, groups by the same grouping sets and counts distinct
+// values over the joined rows, which a fan-out cannot inflate.
 func (c *compiler) fanout(o *keel.DynQuery) (*keel.DynCTE, error) {
 	q := c.source()
 	f := newFrame(c, q)
@@ -128,7 +129,7 @@ func (c *compiler) chainFor(f *frame) (*chain, error) {
 func depth(key string) int { return strings.Count(key, ".") + 1 }
 
 // addNeeds records what each to-many level of a path must select: the path's field at its last
-// level, and at earlier levels the key the next level joins on.
+// level, and at earlier levels the keys the next level joins on (edgeKeys).
 func addNeeds(needs map[string][]string, fp fieldPath) {
 	var many []int
 	for i, e := range fp.via {
@@ -143,8 +144,9 @@ func addNeeds(needs map[string][]string, fp fieldPath) {
 			continue
 		}
 		next := fp.via[many[j+1]]
-		for _, local := range next.relation().Local {
-			needs[key] = appendNew(needs[key], suffix(fp.via[at+1:many[j+1]], next.From.Table.Columns[local].Name))
+		local, _ := edgeKeys(next)
+		for _, lc := range local {
+			needs[key] = appendNew(needs[key], suffix(fp.via[at+1:many[j+1]], next.From.Table.Columns[lc].Name))
 		}
 	}
 }
@@ -175,17 +177,22 @@ func (ch *chain) level(key string, cols []string, paths []fieldPath) error {
 	}
 	edge := fp.via[at]
 	rel := edge.relation()
-	parent, err := ch.parentKeys(fp, at)
+	local, remote := edgeKeys(edge)
+	parent, err := ch.parentKeys(fp, at, local)
 	if err != nil {
 		return err
 	}
 	cq := keel.DynFrom(edge.Target.Table)
 	lv := &chainLevel{labels: map[string]string{}}
 	var sel []keel.DynExpr
-	for i, r := range ch.remote(rel) {
+	for i, r := range remote {
 		sel = append(sel, cq.Path(edge.Target.Table.Columns[r].Name).As("r"+strconv.Itoa(i+1)))
 	}
 	for i, col := range cols {
+		if j := slices.IndexFunc(remote, func(r int32) bool { return edge.Target.Table.Columns[r].Name == col }); j >= 0 {
+			lv.labels[col] = "r" + strconv.Itoa(j+1)
+			continue
+		}
 		l := "v" + strconv.Itoa(i+1)
 		sel = append(sel, cq.Path(strings.Split(col, ".")...).As(l))
 		lv.labels[col] = l
@@ -197,9 +204,16 @@ func (ch *chain) level(key string, cols []string, paths []fieldPath) error {
 	q := ch.f.q
 	lv.cte = q.With(cq)
 	if rel.Kind == schema.ManyToMany {
-		jt := q.With(joinTableQuery(rel))
-		q.Join(jt, jt.Col("l").Eq(parent[0]))
-		q.Join(lv.cte, lv.cte.Col("r1").Eq(jt.Col("r")))
+		jt := q.With(joinTableQuery(edge.From.Table, rel))
+		on := []keel.Pred{jt.Col("l").Eq(parent[0])}
+		to := []keel.Pred{lv.cte.Col("r1").Eq(jt.Col("r"))}
+		for i := 1; i < len(parent); i++ {
+			tc := jt.Col("t" + strconv.Itoa(i))
+			on = append(on, tc.Eq(parent[i]))
+			to = append(to, lv.cte.Col("r"+strconv.Itoa(i+1)).Eq(tc))
+		}
+		q.Join(jt, on...)
+		q.Join(lv.cte, to...)
 	} else {
 		on := make([]keel.Pred, len(parent))
 		for i, p := range parent {
@@ -211,29 +225,31 @@ func (ch *chain) level(key string, cols []string, paths []fieldPath) error {
 	return nil
 }
 
-// remote returns the columns of a to-many edge's table it joins on: the relation's remote keys,
-// or for many-to-many the target key the join table refers to.
-func (ch *chain) remote(rel *schema.Relation) []int32 {
+// edgeKeys returns the columns a to-many edge joins on, as its parent's and its table's column
+// indexes: the relation's keys (for many-to-many the parent key and the target key the join table
+// refers to), then the tenant columns the two tables share (schema.SharedTenant). Under a tenant
+// scope every table's CTE is pinned to the scope's tenant and the tenant equalities are implied;
+// across tenants they keep a row of one tenant from joining rows of another whose keys repeat.
+func edgeKeys(e *Edge) (local, remote []int32) {
+	rel := e.relation()
+	local, remote = rel.Local, rel.Remote
 	if rel.Kind == schema.ManyToMany {
-		return rel.Remote[:1]
+		local, remote = rel.Local[:1], rel.Remote[:1]
 	}
-	return rel.Remote
+	tl, tr := schema.SharedTenant(e.From.Table, rel.Target)
+	return slices.Concat(local, tl), slices.Concat(remote, tr)
 }
 
-// parentKeys returns the values the to-many edge at index at of a path joins on, on the parent
-// side: columns of the entity through to-one edges, or columns the previous level selected.
-func (ch *chain) parentKeys(fp fieldPath, at int) ([]keel.DynExpr, error) {
+// parentKeys returns the values of the parent's columns locals that the to-many edge at index at
+// of a path joins on: columns of the entity through to-one edges, or columns the previous level
+// selected.
+func (ch *chain) parentKeys(fp fieldPath, at int, locals []int32) ([]keel.DynExpr, error) {
 	prev := -1
 	for i := at - 1; i >= 0; i-- {
 		if fp.via[i].ToMany {
 			prev = i
 			break
 		}
-	}
-	rel := fp.via[at].relation()
-	locals := rel.Local
-	if rel.Kind == schema.ManyToMany {
-		locals = rel.Local[:1]
 	}
 	out := make([]keel.DynExpr, len(locals))
 	for i, local := range locals {
@@ -251,14 +267,18 @@ func (ch *chain) parentKeys(fp fieldPath, at int) ([]keel.DynExpr, error) {
 	return out, nil
 }
 
-// joinTableQuery reads a many-to-many relation's join table: its key to the parent ("l") and
-// to the target ("r").
-func joinTableQuery(rel *schema.Relation) *keel.DynQuery {
-	t := &schema.Table{Name: rel.JoinTable, Quoted: rel.JoinQuoted, Alias: rel.JoinAlias,
-		Columns: []schema.Column{{Name: rel.JoinLocal[0], Quoted: rel.JoinLocalQ[0]},
-			{Name: rel.JoinRemote[0], Quoted: rel.JoinRemoteQ[0]}}}
+// joinTableQuery reads the join table of parent's many-to-many relation rel: its key to the parent
+// ("l"), to the target ("r") and the tenant columns parent and target share ("t1"…), which the
+// join table carries (schema.Table.JoinTableOf). Those make it a tenant table, so the scope's
+// tenant predicate filters it like every other table of the statement.
+func joinTableQuery(parent *schema.Table, rel *schema.Relation) *keel.DynQuery {
+	t := parent.JoinTableOf(rel)
 	q := keel.DynFrom(t)
-	return q.Select(q.Path(rel.JoinLocal[0]).As("l"), q.Path(rel.JoinRemote[0]).As("r"))
+	sel := []keel.DynExpr{q.Path(rel.JoinLocal[0]).As("l"), q.Path(rel.JoinRemote[0]).As("r")}
+	for i, ci := range t.Tenant {
+		sel = append(sel, q.Path(t.Columns[ci].Name).As("t"+strconv.Itoa(i+1)))
+	}
+	return q.Select(sel...)
 }
 
 // value returns a field of a to-many path from its last level's CTE.

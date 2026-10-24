@@ -323,31 +323,15 @@ func (ix *parentIndex) writeTupleIn(r *render, col func(r *render, i int)) {
 
 // crossTenant returns the tenant columns a load from parent to child matches on before the
 // relation's keys when its statement crosses tenants, under a system scope: the tenant columns the
-// two tables share (tenantPairs), as parent's and child's column indexes. Parents of several
-// tenants may hold the same key, so the load fetches and groups children by (tenant columns, keys).
-// Under a tenant scope every parent and child row is pinned to the scope's tenant, so the keys
-// alone match and there are none.
+// two tables share (schema.SharedTenant), as parent's and child's column indexes. Parents of
+// several tenants may hold the same key, so the load fetches and groups children by (tenant
+// columns, keys). Under a tenant scope every parent and child row is pinned to the scope's tenant,
+// so the keys alone match and there are none.
 func crossTenant(sc *scopeState, parent, child *schema.Table) (local, remote []int32) {
 	if !sc.system {
 		return nil, nil
 	}
-	return tenantPairs(parent, child)
-}
-
-// tenantPairs returns the tenant columns child shares with parent: each tenant column of child
-// that parent carries as a tenant column too, as parent's and child's column indexes.
-func tenantPairs(parent, child *schema.Table) (local, remote []int32) {
-	if !parent.HasTenant() {
-		return nil, nil
-	}
-	for _, ci := range child.Tenant {
-		pi := parent.Column(child.Columns[ci].Name)
-		if pi >= 0 && parent.Columns[pi].Flags.Has(schema.FlagTenant) {
-			local = append(local, pi)
-			remote = append(remote, ci)
-		}
-	}
-	return local, remote
+	return schema.SharedTenant(parent, child)
 }
 
 // firstTarget is the table a load of rel starts from: the target of the first relation of a

@@ -555,7 +555,9 @@ The engine follows the design above, with these differences and decisions made w
   to a few keys reads laterally.
 - **Count distinct across a to-many path** runs as a second grouped statement over the chain of child
   rows, joined back to the report on its groups and level, so the fan-out cannot inflate the other
-  measures.
+  measures. Each level joins its parent on the relation's keys and the tenant columns they share; a
+  many-to-many join table is read as a tenant table (`schema.Table.JoinTableOf`), filtered by the
+  scope's tenant instead of scanned whole, and joined on its keys and tenant columns.
 - **The concurrency slots are per server.** The advisory locks live on the server that runs the statement,
   so with replicas a tenant runs up to N statements on each server. Supersede reaches every server through
   `ExecAll`; a cancel that lands between a run's statements is lost, and that run finishes normally.

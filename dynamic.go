@@ -700,7 +700,7 @@ func (d *DynRel) PreAggregate(s PreAggStrategy) *DynPreAgg {
 			p.keys = append(p.keys, preAggKey{child: rel.Remote[i], parent: rel.Local[i]})
 		}
 	}
-	local, remote := tenantPairs(parent, child)
+	local, remote := schema.SharedTenant(parent, child)
 	for i, ci := range remote {
 		p.keys = append(p.keys, preAggKey{child: ci, parent: local[i]})
 	}

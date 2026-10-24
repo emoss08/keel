@@ -168,7 +168,10 @@ refused in a key. When both sides have tenant columns,
 keel adds them to the join: as constants from the scope under a tenant scope, as column equalities
 under a system scope. A many-to-many join table between two tenant tables carries the tenant
 columns they share, and keel joins it to the target on them too, so a join table row links rows of
-its own tenant.
+its own tenant. `schema.SharedTenant(parent, child)` names those columns, and
+`Table.JoinTableOf(rel)` describes the join table as a tenant table (its two keys and the shared
+tenant columns, flagged `tenant`) for code that reads it directly: the analytics fan-out reads it in a
+CTE under the scope's tenant predicate.
 
 ### Pick relations
 

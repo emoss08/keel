@@ -158,7 +158,7 @@ func (n *lnode) selectedColumns(extra []int32, system bool) []int32 {
 			need(lc)
 		}
 		if system && !c.joined {
-			local, _ := tenantPairs(n.table, firstTarget(n.table, rel))
+			local, _ := schema.SharedTenant(n.table, firstTarget(n.table, rel))
 			for _, lc := range local {
 				need(lc)
 			}
@@ -613,7 +613,7 @@ func (r *render) relCondNoTenant(parent *schema.Table, rel *schema.Relation, par
 // under the same names, so a row of it links a parent and a target of its own tenant even where
 // keys repeat across tenants.
 func (r *render) joinTenantEq(parent *schema.Table, rel *schema.Relation, jalias, alias string) {
-	_, remote := tenantPairs(parent, rel.Target)
+	_, remote := schema.SharedTenant(parent, rel.Target)
 	for _, ci := range remote {
 		q := rel.Target.Columns[ci].Quoted
 		r.s(" AND ")
@@ -627,10 +627,10 @@ func (r *render) joinTenantEq(parent *schema.Table, rel *schema.Relation, jalias
 	}
 }
 
-// tenantEq writes the equalities of the tenant columns child shares with parent (tenantPairs),
-// each after " AND ".
+// tenantEq writes the equalities of the tenant columns child shares with parent
+// (schema.SharedTenant), each after " AND ".
 func (r *render) tenantEq(parent, child *schema.Table, parentAlias, childAlias string) {
-	local, remote := tenantPairs(parent, child)
+	local, remote := schema.SharedTenant(parent, child)
 	for i, ci := range remote {
 		r.s(" AND ")
 		r.s(childAlias)

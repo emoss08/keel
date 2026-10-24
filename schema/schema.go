@@ -194,6 +194,51 @@ func (t *Table) Relation(name string) int32 {
 // HasTenant reports whether the table has tenant columns.
 func (t *Table) HasTenant() bool { return len(t.Tenant) > 0 }
 
+// SharedTenant returns the tenant columns child shares with parent: each tenant column of child
+// that parent carries as a tenant column too, as parent's and child's column indexes, in child's
+// order. A join between the two tables compares these columns, and a many-to-many join table
+// between them carries them under the same names.
+func SharedTenant(parent, child *Table) (local, remote []int32) {
+	if parent == nil || child == nil || !parent.HasTenant() {
+		return nil, nil
+	}
+	for _, ci := range child.Tenant {
+		pi := parent.Column(child.Columns[ci].Name)
+		if pi >= 0 && parent.Columns[pi].Flags.Has(FlagTenant) {
+			local = append(local, pi)
+			remote = append(remote, ci)
+		}
+	}
+	return local, remote
+}
+
+// JoinTableOf describes the join table of t's many-to-many relation rel as a table: its column
+// referring to t's key, its column referring to the target's key, then the tenant columns t and the
+// target share (SharedTenant), flagged FlagTenant, which a join table between two tenant tables
+// carries under the same names. Each column takes the name and kind of the column it refers to or
+// mirrors. keel generates no model for a join table; this description lets a dynamic query read
+// one under the scope's tenant predicate, and lets a schema check verify its columns. It returns
+// nil for a relation of another kind or without a target.
+func (t *Table) JoinTableOf(rel *Relation) *Table {
+	if rel == nil || rel.Kind != ManyToMany || rel.Target == nil || len(rel.Local) == 0 ||
+		len(rel.Remote) == 0 || len(rel.JoinLocal) == 0 || len(rel.JoinRemote) == 0 {
+		return nil
+	}
+	target := rel.Target
+	j := &Table{Name: rel.JoinTable, Quoted: rel.JoinQuoted, Alias: rel.JoinAlias,
+		Columns: []Column{
+			{Name: rel.JoinLocal[0], Kind: t.Columns[rel.Local[0]].Kind},
+			{Name: rel.JoinRemote[0], Kind: target.Columns[rel.Remote[0]].Kind},
+		}}
+	_, remote := SharedTenant(t, target)
+	for _, ci := range remote {
+		c := &target.Columns[ci]
+		j.Columns = append(j.Columns, Column{Name: c.Name, Quoted: c.Quoted, Kind: c.Kind, Flags: FlagTenant})
+	}
+	Derive(j)
+	return j
+}
+
 // Derive fills the precomputed column sets and special column indexes from the columns'
 // flags. The generator writes the same values as literals; Derive exists for hand-written tables
 // and to check the generator.

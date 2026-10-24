@@ -634,7 +634,10 @@ A many-to-many relation between two tenant tables reads its join table as a tabl
 tenants: the join table must carry the tenant columns the two tables share, under the same names
 (`shipment_tags (shipment_id, tag_id, organization_id, business_unit_id)`), and keel joins it to
 the target on them as well as on `<remote_fk>`. A join table row then links a parent and a target
-of its own tenant even when keys repeat across tenants.
+of its own tenant even when keys repeat across tenants. Code that reads a join table itself gets its
+description from `parent.JoinTableOf(&parent.Relations[i])`: a `*schema.Table` with the two keys and
+the shared tenant columns (`schema.SharedTenant`) flagged `tenant`, so `keel.DynFrom` filters it by
+the scope's tenant like any tenant table.
 
 A relation can join on several columns: list them with `|`. Each item names a foreign-key column
 (this table's for `belongs`, the target's for `one` and `many`) and, after `=`, the column it
@@ -4764,26 +4767,32 @@ WITH "keel_sub" ("c1", "c2", "c3") AS (
          AND kms."k2" = s."organization_id" AND kms."k3" = s."business_unit_id"
    WHERE s."organization_id" = $2 AND s."business_unit_id" = $3 AND s."pro_number" <> $4
    GROUP BY c."name"),
-"keel_cte_1" ("c1", "c2") AS (
-  WITH "keel_cte_1" ("c1", "c2") AS (
-         SELECT m2."shipment_id" AS c1, m2."id" AS c2 FROM "moves" m2
+"keel_cte" ("c1", "c2") AS (
+  WITH "keel_cte_2" ("c1", "c2", "c3", "c4") AS (
+         SELECT m2."shipment_id" AS c1, m2."organization_id" AS c2, m2."business_unit_id" AS c3,
+                m2."id" AS c4
+           FROM "moves" m2
           WHERE m2."organization_id" = $2 AND m2."business_unit_id" = $3),
-       "keel_cte_2" ("c1", "c2") AS (
-         SELECT s4."move_id" AS c1, l."city" AS c2 FROM "stops" s4
+       "keel_cte_3" ("c1", "c2", "c3", "c4") AS (
+         SELECT s4."move_id" AS c1, s4."organization_id" AS c2, s4."business_unit_id" AS c3,
+                l."city" AS c4
+           FROM "stops" s4
            LEFT JOIN "locations" l ON l."id" = s4."location_id"
                 AND l."organization_id" = $2 AND l."business_unit_id" = $3
           WHERE s4."organization_id" = $2 AND s4."business_unit_id" = $3)
-  SELECT c2."name" AS c1, count(DISTINCT kc2."c2") AS c2
+  SELECT c2."name" AS c1, count(DISTINCT kc3."c4") AS c2
     FROM "shipments" s3
     LEFT JOIN "customers" c2 ON c2."id" = s3."customer_id"
          AND c2."organization_id" = $2 AND c2."business_unit_id" = $3 AND (c2."code" <> $5)
-    JOIN "keel_cte_1" kc12 ON (kc12."c1" = s3."id")
-    JOIN "keel_cte_2" kc2 ON (kc2."c1" = kc12."c2")
+    JOIN "keel_cte_2" kc2 ON (kc2."c1" = s3."id")
+         AND (kc2."c2" = s3."organization_id") AND (kc2."c3" = s3."business_unit_id")
+    JOIN "keel_cte_3" kc3 ON (kc3."c1" = kc2."c4")
+         AND (kc3."c2" = kc2."c2") AND (kc3."c3" = kc2."c3")
    WHERE s3."organization_id" = $2 AND s3."business_unit_id" = $3 AND s3."pro_number" <> $4
    GROUP BY c2."name")
-SELECT ks."c1" AS c1, ks."c2" AS c2, ks."c3" AS c3, coalesce(kc1."c2", $1::bigint) AS c4
+SELECT ks."c1" AS c1, ks."c2" AS c2, ks."c3" AS c3, coalesce(kc."c2", $1::bigint) AS c4
   FROM "keel_sub" ks
-  LEFT JOIN "keel_cte_1" kc1 ON (NOT (ks."c1" IS DISTINCT FROM kc1."c1"))
+  LEFT JOIN "keel_cte" kc ON (NOT (ks."c1" IS DISTINCT FROM kc."c1"))
  ORDER BY ks."c2" DESC NULLS LAST, ks."c1" ASC
  LIMIT 101
 -- $1 = 0, $2 $3 = the tenant, $4 = 'P01', $5 = 'G'
@@ -4792,8 +4801,13 @@ SELECT ks."c1" AS c1, ks."c2" AS c2, ks."c3" AS c3, coalesce(kc1."c2", $1::bigin
 The row rules appear on every reference to their tables, the join `ON` clauses included. The count of
 stops is pre-aggregated per shipment over every parent (no filter selects parents here), and the
 distinct count runs over the chain of child rows and is joined back on the customer, so neither can
-inflate the revenue. Each statement numbers its own CTEs, which is why the inner `keel_cte_1` shadows the
-outer name inside its definition.
+inflate the revenue. Each level of the chain joins its parent on the relation's keys and the tenant
+columns the two tables share; under a tenant scope those equalities are implied by the tenant
+predicates (Postgres folds them into constants), and across tenants they keep a row of one tenant from
+joining rows of another whose keys repeat. A many-to-many level reads its join table in a CTE of its
+own, as a tenant table (`schema.Table.JoinTableOf`): filtered by the scope's tenant and joined on its
+keys and tenant columns. A statement names its CTEs in the order it uses them, across every query
+nested in it, so no name shadows another.
 
 A pivot of revenue by the two statuses with the most revenue, plus `Other`: the discovery statement
 runs first, then the pivot with the values it found bound as parameters, in one repeatable-read
