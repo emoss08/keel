@@ -2,6 +2,7 @@ package keel_test
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -148,4 +149,33 @@ func TestDynamicPageCursorAt(t *testing.T) {
 	eq(t, len(all), 12)
 	run := must(build().Run(w.ctx, d))(t)
 	eq(t, run.CursorAt(0), "")
+}
+
+func TestPageFloat32Order(t *testing.T) {
+	d := db(t)
+	ctx := newTenant()
+	c := fleetdb.Contacts
+	rows := []*fleet.Contact{}
+	for i, wt := range []float32{2.5, 0, 1.25, 2.5, 0, 3.75, 1.25} {
+		rows = append(rows, &fleet.Contact{Name: fmt.Sprintf("c%d", i), Weight: wt})
+	}
+	ok(t, c.CreateMany(ctx, d, rows))
+	var got []string
+	cursor := ""
+	for {
+		p := must(c.Order(c.Weight.Desc()).Page(ctx, d, keel.After(cursor, 2)))(t)
+		for _, r := range p.Items {
+			got = append(got, r.Name)
+		}
+		if p.Next == "" {
+			break
+		}
+		cursor = p.Next
+	}
+	want := must(c.Order(c.Weight.Desc(), c.ID.Desc()).Limit(10).List(ctx, d))(t)
+	names := make([]string, len(want))
+	for i, r := range want {
+		names[i] = r.Name
+	}
+	eq(t, strings.Join(got, ","), strings.Join(names, ","))
 }
