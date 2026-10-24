@@ -100,6 +100,6 @@ func TestGeneratePickErrors(t *testing.T) {
 			field(5) + ": A.P: pick path bs starts from A.ID, which is not a string or integer column"},
 		{"target without a single key", "type A struct {\n\tkeel.Table ~keel:\"a\"~\n\tID string ~keel:\"id,pk\"~\n\tBs []*B ~keel:\"many:a_id\"~\n\tP *B ~keel:\"pick:bs,first=bs.n\"~\n}\n" +
 			"type B struct {\n\tkeel.Table ~keel:\"b\"~\n\tAID string ~keel:\"a_id\"~\n\tN int32 ~keel:\"n\"~\n}\n",
-			field(5) + ": A.P: B needs exactly one primary key column besides its tenant columns"},
+			field(5) + ": A.P: B needs one primary key column besides its tenant columns, or one named id"},
 	})
 }

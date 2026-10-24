@@ -293,6 +293,29 @@ type A struct {
 	}
 }
 
+func TestGenerateCompositeKeyDefaultsToID(t *testing.T) {
+	files, err := generate(t, `type Tag struct {
+	keel.Table ~keel:"tags"~
+
+	ID string ~keel:"id,pk"~
+}
+
+type A struct {
+	keel.Table ~keel:"a"~
+
+	ID     string ~keel:"id,pk"~
+	Parent string ~keel:"parent_id,pk"~
+	Tags   []*Tag ~keel:"m2m:a_tags.a_id.tag_id"~
+}
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if src := string(files[0].Content); !strings.Contains(src, `Kind: schema.ManyToMany, Local: []int32{0}, Remote: []int32{0}`) {
+		t.Errorf("generated code lacks the Tags relation keyed by id:\n%s", src)
+	}
+}
+
 func TestGenerateInt(t *testing.T) {
 	files, err := generate(t, `type Count int
 

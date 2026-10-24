@@ -161,9 +161,10 @@ pairs: join conditions (`relCond`, `relCondNoTenant`), relation loads (`= ANY($1
 keyed statements returning one key column per pair), picks, dynamic paths and pre-aggregation keys.
 A key of several columns indexes parents by its values joined with NUL (`joinKey`), which text
 cannot hold; single-column keys stay a string or an integer, without allocation. With one column
-and no `=`, the referenced primary key, besides its tenant columns, must be a single column; the
-keys of to-many and pick relations must be string or integer columns; many-to-many relations take
-one column per side; tenant columns are refused in a key. When both sides have tenant columns,
+and no `=`, a relation references the primary key column besides the tenant columns, or the one
+named `id` when there are several; the keys of to-many and pick relations must be string or integer
+columns; many-to-many relations take one column per side; a tenant column both sides carry is
+refused in a key. When both sides have tenant columns,
 keel adds them to the join: as constants from the scope under a tenant scope, as column equalities
 under a system scope.
 

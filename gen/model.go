@@ -552,7 +552,8 @@ func (m *model) column(name string) *column {
 	return nil
 }
 
-// singleKey returns the one primary key column besides the tenant columns.
+// singleKey returns the primary key column relations reference by default: the one primary key
+// column besides the tenant columns, or, when the key has several, the one named id.
 func (m *model) singleKey() (*column, error) {
 	var keys []*column
 	for _, c := range m.columns {
@@ -560,10 +561,15 @@ func (m *model) singleKey() (*column, error) {
 			keys = append(keys, c)
 		}
 	}
-	if len(keys) != 1 {
-		return nil, fmt.Errorf("%s needs exactly one primary key column besides its tenant columns", m.name)
+	if len(keys) == 1 {
+		return keys[0], nil
 	}
-	return keys[0], nil
+	for _, c := range keys {
+		if c.tag.Name == "id" {
+			return c, nil
+		}
+	}
+	return nil, fmt.Errorf("%s needs one primary key column besides its tenant columns, or one named id", m.name)
 }
 
 // derived computes the precomputed column sets the same way schema.Derive does.

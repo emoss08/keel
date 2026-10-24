@@ -670,9 +670,12 @@ Rules:
   same name; name it with `=` otherwise. Paired columns must hold the same kind of value (any two
   integer widths pair). The referenced columns should be unique on their table (the primary key,
   or a unique constraint as `(id, worker_id)` above).
-- With one column and no `=`, the referenced primary key, besides its tenant columns, must be a
-  single column.
-- Tenant columns are not part of the relation key and are refused in it: when both sides have
+- With one column and no `=`, the relation references the primary key besides its tenant columns:
+  its single column, or, when it has several (`(id, customer_id, organization_id, …)`), the one
+  named `id`. Many-to-many relations reference the same column on each side.
+- A tenant column both sides carry is not part of the relation key and is refused in it; one that
+  references a table without it (`belongs:organization_id` to `organizations.id`) is an ordinary
+  key. When both sides have
   them, keel adds them to every join, as constants from the scope under a tenant scope and as
   column equalities under a system scope.
 - Keys of to-many and pick relations must be string or integer columns. Many-to-many relations
