@@ -2299,3 +2299,210 @@ The same pattern works for an application:
 | `sql.ErrNoRows` | `keel.ErrNotFound` |
 | `pgdriver.Error` with `IntegrityViolation()` | `keel.IsUnique`, `IsForeignKey`, `IsCheck`, `Constraint` |
 | `bun.QueryHook` | `keel.Observer` |
+
+## Analytics: formatting and exports
+
+Four packages turn an analytics result into what people and programs read. They are designed in
+[analytics.md](analytics.md#formatting-and-exports):
+
+| Package | What it does |
+|---|---|
+| `analytics/value` | the value types a column holds (`value.Decimal`, `value.Epoch`, …), the column vector, exact decimal helpers |
+| `analytics/table` | the result every writer reads: a schema of columns and a stream of typed column batches |
+| `analytics/format` | the display spec, its resolution, a locale- and time-zone-aware formatter, Excel number formats |
+| `analytics/export` | streaming CSV, JSON envelope, XLSX and Arrow writers, and the envelope reader |
+| `analytics/diff` | run diffs: what appeared, disappeared or moved between two runs |
+
+### The result: `table.Reader`
+
+A result is a `table.Reader`: its `Columns()` and a stream of `*table.Batch` from `Next(ctx)`,
+ending with `io.EOF`, then `Truncated()` says whether a row limit cut it.
+
+```go
+type Reader interface {
+    Columns() []table.Column
+    Next(ctx context.Context) (*table.Batch, error)
+    Truncated() bool
+}
+```
+
+A `table.Column` has an `ID`, a translated `Label`, a `value.Type`, its resolved `Display` and a
+`Sensitivity` (public, internal, restricted, confidential). A `table.Batch` holds `Len` rows as one
+`value.Vector` per column and, when the result has subtotals or a grand total, a `Levels` slice:
+`table.Detail`, `table.Subtotal(n)` or `table.Total`.
+
+A vector keeps one typed slice per column, chosen by the type, and a null bitmap:
+
+| Type | Slice | Postgres |
+|---|---|---|
+| `value.String`, `value.Enum`, `value.Ref` | `String []string` | text, enums, keys |
+| `value.Int` | `Int64 []int64` | smallint, integer, bigint |
+| `value.Epoch` | `Int64 []int64` (seconds) | bigint columns named `*_at`, `*_date`, `*_time` |
+| `value.Decimal` | `Numeric []pgtype.Numeric` | numeric |
+| `value.Float` | `Float64 []float64` | real, double precision |
+| `value.Bool` | `Bool []bool` | boolean |
+| `value.Time` | `Time []time.Time` | timestamptz, and a date bucket's start |
+| `value.JSON` | `JSON [][]byte` | json, jsonb |
+
+The analytics runner decodes each column's binary values (pgx's `RawValues`) straight into these
+slices, so nothing is boxed or copied on the way to a writer; a batch is valid until the next call
+to `Next`. For tests, stored runs and application code, `table.NewBuilder` builds a `*table.Table`
+from Go values and `table.Collect` reads any reader into one:
+
+```go
+b := table.NewBuilder([]table.Column{
+    {ID: "customer", Label: "Customer", Type: value.String},
+    {ID: "revenue", Label: "Revenue", Type: value.Decimal,
+        Display: format.Resolve(value.Decimal, format.Hint{Kind: format.Money}, nil)},
+})
+_ = b.Append("ACME", "2840.125")                   // decimals as exact text, pgtype.Numeric or numbers
+_ = b.AppendLevel(table.Total, nil, "2840.125")    // a grand total
+r := b.Table().Reader()
+```
+
+### Display specs
+
+A column's display is resolved once, from its value type, a `format.Hint` and the author's
+`format.Spec`:
+
+```go
+d := format.Resolve(value.Decimal, format.Hint{Kind: format.Money}, &format.Spec{Currency: "eur"})
+// d.Style == "currency", d.Decimals == 2, d.Currency == "EUR", d.Negative == "parentheses"
+```
+
+- **The value type** sets the baseline: numbers are `number` (decimals and floats with two places),
+  epochs and times are `date` (`dateTime`), booleans `bool` (`yesNo`), everything else `text`.
+- **The hint** is what the model and the definition imply: the format `Kind` from the field type's
+  `KeelFormat()` method or the `format=` tag option (`money`, `weight`, `percent`, `duration`,
+  `distance`, `count`), the date style a date `Bucket` implies, a `Band`, and enum `Labels` from
+  the type's constants.
+- **The spec** overrides any field. Restyling resets what the new style implies first: a currency
+  takes its currency's places (2 for USD, 0 for JPY) and parentheses for negatives, a number drops
+  a derived suffix, and the spec's other fields apply after.
+
+`Spec.Validate(t)` reports the first option that cannot apply to a column of type `t` as a
+`*format.Error` with the JSON path of the field (`rules[1].upper`) and a stable code to translate
+(`format.CodeStyleNotAllowed`). `format.Rules()` returns the vocabulary as data, the styles each
+value type allows with its default, every enum and every limit, for the catalog to publish and the
+client to offer.
+
+Rules give numeric cells a tone (`positive`, `warning`, `negative`, `neutral`), first match wins;
+values and thresholds compare as exact decimals, and a percent column compares on the scale it
+shows (a threshold of 12 means 12%). A band shows a grouped lower bound as its range:
+`"$0.00 – $1,000.00"`, `"4:00+"`.
+
+### Formatting values
+
+`format.New` returns a formatter for one column in a locale and a time zone:
+
+```go
+berlin, _ := time.LoadLocation("Europe/Berlin")
+f := format.New(value.Decimal, d, format.Options{Locale: language.German, Location: berlin})
+text, tone := f.Format("-1234.5") // "(1.234,50 €)", ""
+```
+
+- **Numbers are exact.** Decimals round half away from zero on their digits (`1.005` with two
+  places is `1.01`); floats are read from their shortest decimal form; compact notation picks K, M,
+  B or T on the unrounded magnitude.
+- **Locale data comes from CLDR.** Decimal and grouping separators, group sizes (`1,23,45,678.9` in
+  `en-IN`), native digits, the minus and percent signs and currency symbols come from
+  `golang.org/x/text`; currency placement comes from CLDR's currency patterns, which `go generate
+  ./analytics/format` writes from the CLDR release x/text uses. `€1,234.50` in English is
+  `1.234,50 €` in German and `€ 1.234,50` in Dutch.
+- **Dates are written in the given time zone** with the same layouts in every locale (`date`,
+  `dateLong`, `dateTime`, `time`, `monthYear`, `quarter`, `year`, `weekday`, `iso`). A date bucket is
+  an instant, so it renders as the period it starts in the report's zone.
+- **Batches cost nothing per value.** `f.Column(&cells, vector, n)` renders a whole vector into a
+  reusable `format.Cells`; once its buffers have grown it allocates nothing (numbers too large for
+  an int64 excepted). A formatter keeps scratch buffers, so use one per goroutine.
+
+`f.Excel()` returns the number format code a spreadsheet cell carries (`"$"#,##0.00;("$"#,##0.00)`)
+and whether the column's values are native numbers or dates.
+
+Compared with Trenova's `reportfmt` and its Rust formatter, the behaviour is the same except:
+
+| Here | Trenova |
+|---|---|
+| A negative that rounds to zero shows no sign: `$0.00` | `($0.00)`, `-0.00` |
+| Currency symbols and placement follow the locale: `CA$` in `en-US`, `$` in `en-CA`; `CHF 5.00` with a no-break space | a fixed table: `C$` everywhere |
+| A currency's default places are its own: JPY 0, BHD 3 | always 2 |
+| A JSON value shows as its text | empty |
+| A raw time is RFC 3339 in UTC | RFC 3339 in the value's zone |
+| In XLSX, a raw number is a native number and a quarter is its text | text; a quarter showed only its year |
+| Decimal hours are rounded once | rounded to 16 places, then to the display's |
+
+### Exports
+
+Each writer streams a `table.Reader` to an `io.Writer` and returns `export.Stats`: detail rows
+written, bytes written, and whether and why the output was truncated.
+
+```go
+stats, err := export.XLSX(ctx, w, result, export.Options{
+    Meta:     export.Meta{Title: "Revenue by lane", GeneratedAt: start, RequestedBy: user,
+        Params: []export.Param{{Name: "window", Value: 30}}},
+    Locale:   language.AmericanEnglish,
+    Location: orgZone,
+    MaxBytes: 50 << 20,
+})
+```
+
+| Writer | For | What it writes |
+|---|---|---|
+| `export.CSV` | people (default) or programs (`Raw`) | formatted cells under the labels, labelled subtotal and total rows, a truncation notice; `Raw` writes column IDs, exact values and detail rows only. `Delimiter` and a UTF-8 `BOM` are options |
+| `export.JSON` | stored runs, diffs, agents | the rows envelope `{meta, schema, rows, levels, totals, summary}` with raw values: decimals as exact strings, instants as RFC 3339 UTC strings, epochs as seconds |
+| `export.XLSX` | spreadsheets | native numbers, dates and booleans with the column's number format; text for displays Excel cannot express; bold header and summary rows; tones as fills; an info sheet with the title and parameters in declared order |
+| `export.Arrow` | notebooks and dataframes | an Arrow IPC stream: `utf8`, `int64`, `float64`, `bool`, `decimal128(38, s)`, `timestamp[us, UTC]` for times and `timestamp[s, UTC]` for epochs, detail rows only |
+
+- **Formula injection.** CSV cells that a spreadsheet would run (starting with `=`, `+`, `@`, a tab,
+  a carriage return, or `-` followed by anything but a number) are prefixed with `'`. Exact numbers
+  in a raw CSV are never touched.
+- **XLSX streams for real.** The writer emits the zip entries and sheet XML itself as rows arrive,
+  with inline strings and no shared-string table, estimates column widths from the first 100 rows,
+  and continues on `Data (2)`, `Data (3)`, … after 1,048,575 rows. Writing two million rows keeps
+  the live heap flat (about 2.4 MiB before and after); `TestXLSXStreamsInFlatMemory` checks it.
+- **Arrow costs no dependency.** The IPC stream is written by keel's own encoder; keel tests it by
+  reading it back with apache/arrow-go, which is a test-only dependency.
+- **Byte limits.** With `MaxBytes`, a writer stops reading rows once its output reaches the limit,
+  writes the truncation notice (CSV, XLSX), the summary (JSON) or a final record batch with
+  `keel.truncated` in its metadata (Arrow), and closes the file, which is always complete. The limit
+  is checked between rows (every 512 rows for XLSX, every batch for Arrow).
+- **Words.** `Options.Text` carries the words a writer puts in a file ("Total", the notices, sheet
+  names) for the application to translate.
+
+`export.ReadJSON` reads an envelope back as an `*export.Envelope`: its meta, the time zone, the
+summary and a `*table.Table` whose last row is the grand total. It refuses an envelope whose rows do
+not match its schema.
+
+### Run diffs
+
+`diff.Compare` reads two runs and reports what changed:
+
+```go
+before, _ := export.ReadJSON(lastWeek)
+after, _ := export.ReadJSON(thisWeek)
+res, err := diff.Compare(ctx, before.Table.Reader(), after.Table.Reader(), diff.Options{})
+for _, ch := range res.Changes {
+    fmt.Println(ch.Kind, ch.Key, ch.Measures)
+}
+```
+
+- Rows are matched by key: by default every string, enum, reference, boolean and instant column;
+  `Options.Keys` chooses others. Measures default to the numeric columns (`Options.Measures`).
+- Measures compare as exact decimals; a null measure counts as zero. A null key cell is not the
+  empty string.
+- A key that repeats within either run is reported once as `duplicate` and never compared.
+- Added and removed rows state their measures against zero, so they rank by size with the rest.
+  Changes are ordered duplicates, removed, added, changed, each biggest movement first, and capped
+  at `Options.Limit` (200 by default; negative for all). The summary always counts every row.
+- `Totals` sums each measure over the detail rows present on each side; `Truncated` says that a
+  run hit its row limit, so a removed row may only be past it.
+
+### Performance
+
+On a 4-core cloud VM (`go test -bench . ./analytics/format ./analytics/export`):
+
+| Work | Time |
+|---|---|
+| Format 100,000 values of one column (text, counts, dates in Chicago, money in German, 20-digit quotients) | 1.6–23.5 ms (16–235 ns a value); no allocations once warm except for the quotients, which do not fit an int64 |
+| Write 100,000 rows of six columns: CSV / raw CSV / JSON / XLSX / Arrow | 80 / 51 / 26 / 202 / 7.5 ms |
+| Write 2,000,000 rows as XLSX | 4.5 s, live heap flat |
