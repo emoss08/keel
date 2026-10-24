@@ -1,87 +1,185 @@
 package schema
 
-import "testing"
+import (
+	"reflect"
+	"strings"
+	"testing"
+)
 
 func TestParseFieldTag(t *testing.T) {
 	cases := []struct {
-		tag   string
-		ok    bool
-		err   bool
-		check func(t *testing.T, ft FieldTag)
+		tag  string
+		ok   bool
+		want FieldTag
 	}{
 		{tag: "", ok: false},
 		{tag: "-", ok: false},
-		{tag: "id,pk,autoid:shp_", ok: true, check: func(t *testing.T, ft FieldTag) {
-			if ft.Name != "id" || !ft.Flags.Has(FlagPK|FlagAutoID) || ft.IDPrefix != "shp_" {
-				t.Fatalf("%+v", ft)
-			}
-		}},
-		{tag: "organization_id,pk,tenant", ok: true, check: func(t *testing.T, ft FieldTag) {
-			if !ft.Flags.Has(FlagPK | FlagTenant) {
-				t.Fatalf("%+v", ft)
-			}
-		}},
-		{tag: "search_vector,noselect,readonly,tsvector", ok: true, check: func(t *testing.T, ft FieldTag) {
-			if !ft.Flags.Has(FlagNoSelect|FlagReadOnly) || !ft.TSVector {
-				t.Fatalf("%+v", ft)
-			}
-		}},
-		{tag: "belongs:customer_id", ok: true, check: func(t *testing.T, ft FieldTag) {
-			if ft.Rel != BelongsTo || ft.RelKey != "customer_id" {
-				t.Fatalf("%+v", ft)
-			}
-		}},
-		{tag: "many:shipment_id", ok: true, check: func(t *testing.T, ft FieldTag) {
-			if ft.Rel != HasMany || !ft.Rel.ToMany() {
-				t.Fatalf("%+v", ft)
-			}
-		}},
-		{tag: "m2m:shipment_tags.shipment_id.tag_id", ok: true, check: func(t *testing.T, ft FieldTag) {
-			if ft.JoinTable != "shipment_tags" || ft.JoinLocal != "shipment_id" || ft.JoinRemote != "tag_id" {
-				t.Fatalf("%+v", ft)
-			}
-		}},
-		{tag: "m2m:shipment_tags.shipment_id", err: true},
-		{tag: "belongs:customer_id,pk", err: true},
-		{tag: "Name", err: true},
-		{tag: "name,unknown", err: true},
-		{tag: "id,autoid:", err: true},
-		{tag: "x,readonly,pk", err: true},
-		{tag: "1abc", err: true},
-		{tag: "a-b", err: true},
+		{tag: "id,pk,autoid:shp_", ok: true, want: FieldTag{Name: "id", Flags: FlagPK | FlagAutoID, IDPrefix: "shp_"}},
+		{tag: "organization_id,pk,tenant", ok: true, want: FieldTag{Name: "organization_id", Flags: FlagPK | FlagTenant}},
+		{tag: "search_vector,noselect,readonly,tsvector", ok: true,
+			want: FieldTag{Name: "search_vector", Flags: FlagNoSelect | FlagReadOnly, TSVector: true}},
+		{tag: "v, version ,autocreate,autoupdate", ok: true,
+			want: FieldTag{Name: "v", Flags: FlagVersion | FlagAutoCreate | FlagAutoUpdate}},
+		{tag: "attrs,jsonb", ok: true, want: FieldTag{Name: "attrs", Flags: FlagJSONB}},
+		{tag: "pro_number,label=PRO Number", ok: true, want: FieldTag{Name: "pro_number", Label: "PRO Number"}},
+		{tag: "x,noreport", ok: true, want: FieldTag{Name: "x", Report: ReportTag{Exclude: true}}},
+		{tag: "x,report,dimension", ok: true, want: FieldTag{Name: "x", Report: ReportTag{Include: true, Kind: Dimension}}},
+		{tag: "x,measure", ok: true, want: FieldTag{Name: "x", Report: ReportTag{Kind: Measure}}},
+		{tag: "x,format=weight", ok: true, want: FieldTag{Name: "x", Report: ReportTag{Format: "weight"}}},
+		{tag: "x,format=date:short", ok: true, want: FieldTag{Name: "x", Report: ReportTag{Format: "date:short"}}},
+		{tag: "x,type=epoch", ok: true, want: FieldTag{Name: "x", Report: ReportTag{Type: ValueEpoch}}},
+		{tag: "x,type=date", ok: true, want: FieldTag{Name: "x", Report: ReportTag{Type: ValueDate}}},
+		{tag: "x,type=decimal", ok: true, want: FieldTag{Name: "x", Report: ReportTag{Type: ValueDecimal}}},
+		{tag: "x,agg=sum|avg| count_distinct", ok: true,
+			want: FieldTag{Name: "x", Report: ReportTag{Aggs: AggSum | AggAvg | AggCountDistinct}}},
+		{tag: "belongs:customer_id", ok: true, want: FieldTag{Rel: BelongsTo, RelKey: "customer_id"}},
+		{tag: "belongs:bill_to_id,label=Bill To,noreport", ok: true,
+			want: FieldTag{Rel: BelongsTo, RelKey: "bill_to_id", Label: "Bill To", NoReport: true}},
+		{tag: "one:worker_id", ok: true, want: FieldTag{Rel: HasOne, RelKey: "worker_id"}},
+		{tag: "many:shipment_id", ok: true, want: FieldTag{Rel: HasMany, RelKey: "shipment_id"}},
+		{tag: "m2m:shipment_tags.shipment_id.tag_id", ok: true,
+			want: FieldTag{Rel: ManyToMany, JoinTable: "shipment_tags", JoinLocal: "shipment_id", JoinRemote: "tag_id"}},
+		{tag: "pick:moves.stops,first=moves.sequence|stops.sequence", ok: true, want: FieldTag{Rel: Pick,
+			PickPath:  []string{"moves", "stops"},
+			PickOrder: []PickRef{{"moves", "sequence"}, {"stops", "sequence"}}}},
+		{tag: "pick:stops,last=stops.sequence,noreport,label=Last", ok: true, want: FieldTag{Rel: Pick,
+			PickPath: []string{"stops"}, PickOrder: []PickRef{{"stops", "sequence"}}, PickLast: true, NoReport: true,
+			Label: "Last"}},
 	}
 	for _, c := range cases {
 		t.Run(c.tag, func(t *testing.T) {
 			ft, ok, err := ParseFieldTag(c.tag)
-			if c.err {
-				if err == nil {
-					t.Fatalf("no error for %q", c.tag)
-				}
-				return
-			}
 			if err != nil {
 				t.Fatal(err)
 			}
 			if ok != c.ok {
 				t.Fatalf("ok = %v", ok)
 			}
-			if c.check != nil {
-				c.check(t, ft)
+			if !reflect.DeepEqual(ft, c.want) {
+				t.Fatalf("got %+v\nwant %+v", ft, c.want)
+			}
+		})
+	}
+}
+
+func TestParseFieldTagErrors(t *testing.T) {
+	for tag, want := range map[string]string{
+		"Name":                            `identifier "Name" must match`,
+		"1abc":                            "must not start with a digit",
+		"a-b":                             `identifier "a-b" must match`,
+		"name,unknown":                    `unknown option "unknown"`,
+		"name,":                           "empty option",
+		"name,pk,pk":                      "option pk is repeated",
+		"name,pk=yes":                     "option pk takes no value",
+		"name,tsvector=1":                 "option tsvector takes no value",
+		"id,autoid:":                      "option autoid needs a value (autoid:…)",
+		"id,autoid=x":                     "write autoid:<prefix>",
+		"id,autoid:a/b":                   `autoid prefix "a/b" must match`,
+		"x,readonly,pk":                   "readonly excludes write options",
+		"x,jsonb,tsvector":                "jsonb and tsvector exclude each other",
+		"x,label":                         "option label needs a value (label=…)",
+		"x,label= ":                       "option label needs a value",
+		"x,report,noreport":               "report and noreport exclude each other",
+		"x,report=Ops":                    "option report takes no value",
+		"x,dimension,measure":             "dimension and measure exclude each other",
+		"x,measure=1":                     "option measure takes no value",
+		"x,format":                        "option format needs a value",
+		"x,format=a b":                    `format "a b" must match`,
+		"x,type=money":                    "type=money: want epoch, date or decimal",
+		"x,type":                          "option type needs a value",
+		"x,agg=":                          "option agg needs a value",
+		"x,agg=sum|median":                `unknown aggregation "median"`,
+		"x,agg=sum|sum":                   "agg=sum|sum: sum is repeated",
+		"x,first=a.b":                     `unknown option "first"`,
+		"belongs:customer_id,pk":          `relation option "pk"`,
+		"belongs:Customer":                `identifier "Customer" must match`,
+		"belongs:c,first=c.id":            "option first is only for pick relations",
+		"belongs:c,label=":                "option label needs a value",
+		"belongs:c,noreport=1":            "option noreport takes no value",
+		"m2m:shipment_tags.shipment_id":   "m2m needs m2m:<join_table>.<local_fk>.<remote_fk>",
+		"m2m:a.B.c":                       `identifier "B" must match`,
+		"pick:moves.stops":                "pick relations need first= or last=",
+		"pick:,first=x.y":                 "pick path: empty identifier",
+		"pick:moves.Stops,first=moves.id": `pick path: identifier "Stops" must match`,
+		"pick:moves,first=moves.id,last=moves.id": "first= and last= exclude each other",
+		"pick:moves,first=":                       "option first needs a value",
+		"pick:moves,first=moves":                  `first=moves: "moves" must be <segment>.<column>`,
+		"pick:moves,first=stops.id":               "first=stops.id: stops is not a segment of the path moves",
+		"pick:moves,first=moves.ID":               `first=moves.ID: identifier "ID" must match`,
+		"pick:moves,first=moves.id,pk":            `relation option "pk"`,
+	} {
+		t.Run(tag, func(t *testing.T) {
+			_, _, err := ParseFieldTag(tag)
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("got %v, want an error containing %q", err, want)
+			}
+			if !strings.HasPrefix(err.Error(), `keel tag "`+tag+`": `) {
+				t.Fatalf("error %q does not name the tag", err)
 			}
 		})
 	}
 }
 
 func TestParseTableTag(t *testing.T) {
-	tt, err := ParseTableTag("shipments")
-	if err != nil || tt.Name != "shipments" {
-		t.Fatal(tt, err)
+	for tag, want := range map[string]TableTag{
+		"shipments":                         {Name: "shipments"},
+		"shipments,report":                  {Name: "shipments", Report: true},
+		"shipments,report=Operations":       {Name: "shipments", Report: true, Category: "Operations"},
+		"people,label=Person,plural=People": {Name: "people", Label: "Person", Plural: "People"},
+	} {
+		got, err := ParseTableTag(tag)
+		if err != nil || got != want {
+			t.Errorf("ParseTableTag(%q) = %+v, %v; want %+v", tag, got, err, want)
+		}
 	}
-	if _, err := ParseTableTag("shipments,alias:sp"); err == nil {
-		t.Fatal("unknown option accepted")
+	for tag, want := range map[string]string{
+		"":                        "table name: empty identifier",
+		"Shipments":               `identifier "Shipments" must match`,
+		"shipments,alias:sp":      `unknown table option "alias:sp"`,
+		"shipments,report=":       "option report needs a value",
+		"shipments,label=":        "option label needs a value",
+		"shipments,plural":        "option plural needs a value",
+		"shipments,report,report": "option report is repeated",
+		"shipments,pk":            `unknown table option "pk"`,
+	} {
+		if _, err := ParseTableTag(tag); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("ParseTableTag(%q) = %v, want an error containing %q", tag, err, want)
+		}
 	}
-	if _, err := ParseTableTag(""); err == nil {
-		t.Fatal("empty name accepted")
+}
+
+func TestAggs(t *testing.T) {
+	if got := strings.Join(AggsNumeric.Names(), ","); got != "count,count_distinct,sum,avg,min,max" {
+		t.Fatal(got)
+	}
+	if !AggsNumeric.Has(AggsOrdered) || AggsOrdered.Has(AggSum) || !AggsOrdered.Has(AggsCount) {
+		t.Fatal("aggregation sets do not nest")
+	}
+	for _, n := range AggsNumeric.Names() {
+		if a, ok := ParseAgg(n); !ok || !AggsNumeric.Has(a) {
+			t.Fatalf("ParseAgg(%s) = %v, %v", n, a, ok)
+		}
+	}
+	if _, ok := ParseAgg("median"); ok {
+		t.Fatal("median parsed")
+	}
+}
+
+func TestValueTypes(t *testing.T) {
+	for _, v := range []ValueType{ValueInt, ValueFloat, ValueDecimal} {
+		if !v.Numeric() || !v.Ordered() {
+			t.Errorf("%d is not numeric and ordered", v)
+		}
+	}
+	for _, v := range []ValueType{ValueString, ValueTime, ValueDate, ValueEpoch} {
+		if v.Numeric() || !v.Ordered() {
+			t.Errorf("%d is numeric or not ordered", v)
+		}
+	}
+	for _, v := range []ValueType{ValueEnum, ValueBool, ValueJSON, ValueArray, ValueBytes, ValueTSVector, ValueOther} {
+		if v.Numeric() || v.Ordered() {
+			t.Errorf("%d is numeric or ordered", v)
+		}
 	}
 }
 

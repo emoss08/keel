@@ -188,9 +188,9 @@ func loadPending(ctx context.Context, run *runner, work []pending) error {
 	return loadPending(ctx, run, next)
 }
 
-// loadStmt builds the statement that loads a to-many node for its parents: one = ANY($1) filter
-// over the parents' keys, through the join table for many-to-many, LATERAL per parent when the load
-// has a limit. It returns a nil statement when no parent has a key.
+// loadStmt builds the statement that loads a to-many or pick node for its parents: one = ANY($1)
+// filter over the parents' keys, through the join table for many-to-many, LATERAL per parent key
+// when the load has a limit or picks a row. It returns a nil statement when no parent has a key.
 func loadStmt(ctx context.Context, run *runner, w pending) (*stmt, *selectPlan, error) {
 	n := w.node
 	parent := n.parent.table
@@ -198,7 +198,10 @@ func loadStmt(ctx context.Context, run *runner, w pending) (*stmt, *selectPlan, 
 	if len(rel.Local) != 1 {
 		return nil, nil, errf("relation %s.%s: to-many loads need a single-column key", parent.Name, rel.Name)
 	}
-	local, remote := rel.Local[0], rel.Remote[0]
+	local, remote := rel.Local[0], int32(-1)
+	if len(rel.Remote) == 1 {
+		remote = rel.Remote[0]
+	}
 	kind, err := keyKindOf(parent, local)
 	if err != nil {
 		return nil, nil, err
@@ -216,11 +219,16 @@ func loadStmt(ctx context.Context, run *runner, w pending) (*stmt, *selectPlan, 
 	q.allTenants = n.allTenants()
 	r := newRender(run.sc, ctx, run.db)
 	defer r.recycle()
-	m2m := rel.Kind == schema.ManyToMany
+	keyed := rel.Kind == schema.ManyToMany || rel.Kind == schema.Pick
 
 	var plan *selectPlan
 	switch {
-	case m2m:
+	case rel.Kind == schema.Pick:
+		if q.limit > 0 {
+			return nil, nil, errf("relation %s.%s: pick loads do not take a Limit", parent.Name, rel.Name)
+		}
+		plan = pickSelect(r, &q, n, ix)
+	case rel.Kind == schema.ManyToMany:
 		plan = q.renderSelect(r, n, m2mOpts(r, rel, n.table, remote, ix))
 		if q.limit > 0 {
 			return nil, nil, errf("relation %s.%s: many-to-many loads do not take a Limit", parent.Name, rel.Name)
@@ -248,7 +256,7 @@ func loadStmt(ctx context.Context, run *runner, w pending) (*stmt, *selectPlan, 
 	child := n.table
 	s.scan = func(rows pgx.Rows) error {
 		return plan.scan(run.sc, s.sql, rows, func(row unsafe.Pointer, key relKey) {
-			if !m2m {
+			if !keyed {
 				var ok bool
 				if key, ok = readKey(child, row, remote); !ok {
 					return

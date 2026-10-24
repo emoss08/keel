@@ -128,12 +128,11 @@ type Shipment struct {
 }
 ```
 
-The tag keeps storage facts only: column, keys, tenant, version, generated columns, relations. It does not
-grow labels, formats or report options:
-- **Long:** a field carrying a label, a description, a format, aggregations and an access class becomes
-  a 200-character tag.
-- **Unchecked:** tag strings are untyped, so a misspelt format is found at run time.
-- **Untranslatable:** labels in tags can't carry translations.
+The tag carries storage facts (column, keys, tenant, version, generated columns, relations) and, only
+where a derived default is wrong, short report overrides (`label=`, `format=`, `noreport`, `type=`,
+`agg=`). Everything longer comes from the source itself: descriptions from doc comments, enum labels from
+constants, formats from a `KeelFormat()` method on the field's type. The guide's tag reference lists every
+option; `keel gen` rejects anything else with the field's position.
 
 ### What keel gen reads from the source
 

@@ -41,6 +41,9 @@ func (m *Money) parse(s string) error {
 	return nil
 }
 
+// KeelFormat tells keel gen that reports display amounts as money.
+func (Money) KeelFormat() string { return "money" }
+
 // Value writes a numeric value.
 func (m Money) Value() (driver.Value, error) {
 	return strconv.FormatFloat(float64(m.Cents)/100, 'f', 2, 64), nil

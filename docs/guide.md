@@ -17,6 +17,9 @@ tenant (see [Tenancy](#tenancy)).
 - [Install](#install)
 - [Configuration](#configuration)
 - [Models](#models)
+  - [Tag reference](#tag-reference)
+  - [Pick relations](#pick-relations)
+  - [Derived metadata](#derived-metadata)
 - [Generating code](#generating-code)
 - [Reading](#reading)
 - [Loading relations](#loading-relations)
@@ -214,84 +217,134 @@ AfterConnect: func(ctx context.Context, conn *pgx.Conn) error {
 
 ## Models
 
-A model is a plain struct that embeds `keel.Table`, an empty marker whose `db` tag names the table.
-Every stored field carries a `db` tag. These are the shipment and customer models of the examples:
+A model is a plain struct that embeds `keel.Table`, an empty marker whose `keel` tag names the
+table. Every stored field carries a `keel` tag. These are the shipment and customer models of the
+examples:
 
 ```go
+// Customer is a tenant's customer.
 type Customer struct {
-    keel.Table `db:"customers"`
+    keel.Table `keel:"customers,report=Sales"`
 
-    ID             ids.ID  `db:"id,pk,autoid:cus_"`
-    OrganizationID ids.ID  `db:"organization_id,pk,tenant"`
-    BusinessUnitID ids.ID  `db:"business_unit_id,pk,tenant"`
-    Name           string  `db:"name"`
-    Code           string  `db:"code"`
-    Email          *string `db:"email"`
-    Version        int64   `db:"version,version"`
-    CreatedAt      int64   `db:"created_at,autocreate"`
-    UpdatedAt      int64   `db:"updated_at,autoupdate"`
+    ID             ids.ID `keel:"id,pk,autoid:cus_"`
+    OrganizationID ids.ID `keel:"organization_id,pk,tenant"`
+    BusinessUnitID ids.ID `keel:"business_unit_id,pk,tenant"`
+    // Name is the customer's trading name.
+    Name      string  `keel:"name"`
+    Code      string  `keel:"code"`
+    Email     *string `keel:"email"`
+    Version   int64   `keel:"version,version"`
+    CreatedAt int64   `keel:"created_at,autocreate"`
+    UpdatedAt int64   `keel:"updated_at,autoupdate"`
 }
 
+// Shipment is a load moved for a customer.
 type Shipment struct {
-    keel.Table `db:"shipments"`
+    keel.Table `keel:"shipments,report=Operations"`
 
-    ID             ids.ID         `db:"id,pk,autoid:shp_"`
-    OrganizationID ids.ID         `db:"organization_id,pk,tenant"`
-    BusinessUnitID ids.ID         `db:"business_unit_id,pk,tenant"`
-    CustomerID     ids.ID         `db:"customer_id"`
-    BillToID       *ids.ID        `db:"bill_to_id"`
-    ProNumber      string         `db:"pro_number"`
-    Status         Status         `db:"status"`
-    Priority       Priority       `db:"priority"`
-    Weight         *int64         `db:"weight"`
-    Total          Money          `db:"total"`
-    Hazmat         bool           `db:"hazmat"`
-    Labels         []string       `db:"labels"`
-    Attributes     map[string]any `db:"attributes,jsonb"`
-    SearchVector   string         `db:"search_vector,noselect,readonly,tsvector"`
-    StageRank      int16          `db:"stage_rank,readonly"`
-    CanceledAt     *int64         `db:"canceled_at"`
-    Version        int64          `db:"version,version"`
-    CreatedAt      int64          `db:"created_at,autocreate"`
-    UpdatedAt      int64          `db:"updated_at,autoupdate"`
+    ID             ids.ID  `keel:"id,pk,autoid:shp_"`
+    OrganizationID ids.ID  `keel:"organization_id,pk,tenant"`
+    BusinessUnitID ids.ID  `keel:"business_unit_id,pk,tenant"`
+    CustomerID     ids.ID  `keel:"customer_id"`
+    BillToID       *ids.ID `keel:"bill_to_id"`
+    // ProNumber is the carrier's progressive number, unique per tenant.
+    ProNumber string   `keel:"pro_number,label=PRO Number"`
+    Status    Status   `keel:"status"`
+    Priority  Priority `keel:"priority"`
+    // Weight is the shipment's gross weight in pounds.
+    Weight       *int64         `keel:"weight,format=weight"`
+    Total        Money          `keel:"total,type=decimal"`
+    Hazmat       bool           `keel:"hazmat"`
+    Labels       []string       `keel:"labels"`
+    Attributes   map[string]any `keel:"attributes,jsonb,noreport"`
+    SearchVector string         `keel:"search_vector,noselect,readonly,tsvector"`
+    StageRank    int16          `keel:"stage_rank,readonly,dimension"`
+    CanceledAt   *int64         `keel:"canceled_at"`
+    Version      int64          `keel:"version,version"`
+    CreatedAt    int64          `keel:"created_at,autocreate"`
+    UpdatedAt    int64          `keel:"updated_at,autoupdate"`
 
-    Customer *Customer `db:"belongs:customer_id"`
-    BillTo   *Customer `db:"belongs:bill_to_id"`
-    Moves    []*Move   `db:"many:shipment_id"`
-    Tags     []*Tag    `db:"m2m:shipment_tags.shipment_id.tag_id"`
+    Customer *Customer `keel:"belongs:customer_id"`
+    BillTo   *Customer `keel:"belongs:bill_to_id,label=Bill-to Customer"`
+    Moves    []*Move   `keel:"many:shipment_id"`
+    Tags     []*Tag    `keel:"m2m:shipment_tags.shipment_id.tag_id,noreport"`
+    // OriginStop is the first stop of the shipment's first move.
+    OriginStop *Stop `keel:"pick:moves.stops,first=moves.sequence|stops.sequence"`
+    // DestinationStop is the last stop of the shipment's last move.
+    DestinationStop *Stop `keel:"pick:moves.stops,last=moves.sequence|stops.sequence"`
 }
 ```
 
-`ids.ID` is `type ID string`, `Status` a string enum, `Priority` an `int16`, and `Money` a
-`sql.Scanner` stored as `numeric`.
+`ids.ID` is `type ID string`, `Status` a string enum, `Priority` an `int16` enum, and `Money` a
+`sql.Scanner` stored as `numeric` whose `KeelFormat` method says it is displayed as money.
 
 Table and column names are lower-case identifiers (`[a-z_][a-z0-9_]*`); schema-qualified names are
-not accepted. A field tagged `db:"-"`, or without a `db` tag, is not stored (the `Worker` model's
-`Initials` is derived in a hook). Stored fields must be exported.
+not accepted. A field tagged `keel:"-"`, or without a `keel` tag, is not stored (the `Worker`
+model's `Initials` is derived in a hook). Stored fields must be exported. keel reads only its own
+tag key, so `db`, `json` or `bun` tags on the same struct are left to their libraries.
 
-### Column options
+### Tag reference
 
-The tag is the column name followed by options:
+A tag is a head (the table or column name, or a relation) followed by comma-separated options.
+Options are plain words or `key=value`; `autoid` keeps its `autoid:<prefix>` form. keel validates
+every option: an unknown option, a repeated option, a value on a plain word, an empty value or a
+malformed one fails `keel gen` with the field's position (`models/shipment.go:48:2:
+Shipment.Weight: keel tag "weight,fromat=weight": unknown option "fromat"`).
+
+**On the `keel.Table` marker**
 
 | Option | Meaning | Example |
 |---|---|---|
-| `pk` | part of the primary key | `db:"id,pk"` |
-| `tenant` | a tenant column: filled from the scope on insert, compared with the scope on every statement, added to every relation join | `db:"organization_id,pk,tenant"` |
-| `autoid:<prefix>` | on insert, an empty value is replaced by `Config.NewID(prefix)`; the field must be a string type | `db:"id,pk,autoid:shp_"` |
-| `autocreate` | stamped on insert; `int64` means Unix seconds, `time.Time` a timestamp | `db:"created_at,autocreate"` |
-| `autoupdate` | stamped on insert and on every update, bulk updates and upserts included | `db:"updated_at,autoupdate"` |
-| `version` | optimistic locking: `Save` compares and increments it, bulk updates and upserts increment it; must be `int64` | `db:"version,version"` |
-| `readonly` | never written (generated or trigger-maintained columns); read back after inserts and saves | `db:"stage_rank,readonly"` |
-| `noselect` | not selected by default; usable in predicates. Mark a generated `noselect` column `readonly` too | `db:"search_vector,noselect,readonly,tsvector"` |
-| `jsonb` | the value is encoded as JSON; a nil map or slice in a non-pointer field is written as `{}` or `[]` | `db:"attributes,jsonb"` |
+| `<name>` | the table name, first | `keel:"shipments"` |
+| `report` / `report=<Category>` | the model is a report's starting entity, optionally grouped under a category | `keel:"shipments,report=Operations"` |
+| `label=<text>` | the model's label instead of the derived one | `keel:"bols,label=Bill of Lading"` |
+| `plural=<text>` | the plural label instead of the derived one | `keel:"people,label=Person,plural=People"` |
+
+**On a column**
+
+| Option | Meaning | Example |
+|---|---|---|
+| `<name>` | the column name, first | `keel:"pro_number"` |
+| `pk` | part of the primary key | `keel:"id,pk"` |
+| `tenant` | a tenant column: filled from the scope on insert, compared with the scope on every statement, added to every relation join | `keel:"organization_id,pk,tenant"` |
+| `autoid:<prefix>` | on insert, an empty value is replaced by `Config.NewID(prefix)`; the field must be a string type | `keel:"id,pk,autoid:shp_"` |
+| `autocreate` | stamped on insert; `int64` means Unix seconds, `time.Time` a timestamp | `keel:"created_at,autocreate"` |
+| `autoupdate` | stamped on insert and on every update, bulk updates and upserts included | `keel:"updated_at,autoupdate"` |
+| `version` | optimistic locking: `Save` compares and increments it, bulk updates and upserts increment it; must be `int64` | `keel:"version,version"` |
+| `readonly` | never written (generated or trigger-maintained columns); read back after inserts and saves | `keel:"stage_rank,readonly"` |
+| `noselect` | not selected by default; usable in predicates. Mark a generated `noselect` column `readonly` too | `keel:"search_vector,noselect,readonly,tsvector"` |
+| `jsonb` | the value is encoded as JSON; a nil map or slice in a non-pointer field is written as `{}` or `[]` | `keel:"attributes,jsonb"` |
 | `tsvector` | the column gets the full-text operators | see `noselect` |
+| `label=<text>` | the column's label instead of the derived one | `keel:"pro_number,label=PRO Number"` |
+| `noreport` | reports do not offer the column | `keel:"internal_key,noreport"` |
+| `report` | reports offer a column they leave out by default (a tenant, version, `noselect`, bytea or tsvector column, or an exposed foreign key) | `keel:"customer_id,report"` |
+| `dimension` / `measure` | reports group by / aggregate the column instead of what keel derives; `measure` needs a numeric column | `keel:"sequence,dimension"` |
+| `agg=<a>\|<b>…` | the aggregations reports offer, from `count`, `count_distinct`, `sum`, `avg`, `min`, `max`; each must apply to the value type | `keel:"sequence,agg=min\|max"` |
+| `format=<name>` | how reports display values (`[A-Za-z0-9_.:-]+`), instead of the type's `KeelFormat` | `keel:"weight,format=weight"` |
+| `type=epoch` / `type=date` / `type=decimal` | the value type reports read: an `int64` of Unix seconds, a `time.Time` holding a date, a scanner or string holding a decimal | `keel:"total,type=decimal"` |
 
 A model has at most one `version`, `autoid`, `autocreate` and `autoupdate` column. `readonly`
-cannot be combined with `pk`, `tenant`, `version`, `autoid`, `autocreate` or `autoupdate`.
+cannot be combined with `pk`, `tenant`, `version`, `autoid`, `autocreate` or `autoupdate`; `jsonb`
+and `tsvector`, `report` and `noreport`, `dimension` and `measure` exclude each other. The report
+options (`noreport`, `report`, `dimension`, `measure`, `agg=`, `format=`, `type=`) need `report` on
+the model's table tag.
 
-There is no `default:`, `type:` or `notnull`: the SQL migrations own the schema. The value in the
-struct is the value written; keel never substitutes `DEFAULT` for a zero value. A nil slice in a
-non-pointer array field is written as an empty array.
+There is no `default:` or `notnull`: the SQL migrations own the schema. The value in the struct is
+the value written; keel never substitutes `DEFAULT` for a zero value. A nil slice in a non-pointer
+array field is written as an empty array.
+
+**On a relation**
+
+| Head or option | Meaning | Example |
+|---|---|---|
+| `belongs:<fk>` | this table's `<fk>` column references the target's primary key | `Customer *Customer \`keel:"belongs:customer_id"\`` |
+| `one:<fk>` | the target's `<fk>` references this table's primary key; at most one row | `Profile *DriverProfile \`keel:"one:worker_id"\`` |
+| `many:<fk>` | the target's `<fk>` references this table's primary key | `Moves []*Move \`keel:"many:shipment_id"\`` |
+| `m2m:<join_table>.<local_fk>.<remote_fk>` | rows linked through a join table: `<local_fk>` references this table, `<remote_fk>` the target | `Tags []*Tag \`keel:"m2m:shipment_tags.shipment_id.tag_id"\`` |
+| `pick:<relation>.<relation>…` | one row picked along a path that crosses a to-many relation (see [Pick relations](#pick-relations)) | `OriginStop *Stop \`keel:"pick:moves.stops,first=moves.sequence\|stops.sequence"\`` |
+| `first=<segment>.<column>\|…` / `last=…` | a pick's order: the first or the last row by these columns; exactly one is required on `pick` and allowed nowhere else | see `pick` |
+| `label=<text>` | the relation's label instead of the derived one | `keel:"belongs:bill_to_id,label=Bill-to Customer"` |
+| `noreport` | reports do not offer the relation as an edge | `keel:"m2m:shipment_tags.shipment_id.tag_id,noreport"` |
 
 ### Go types
 
@@ -316,18 +369,9 @@ and has the same column type. Plain `int` is refused, because its width is not p
 
 ### Relations
 
-A relation field is a pointer (to-one) or a slice (to-many) of another model, tagged with its kind
-and key. Relation tags take no options.
-
-| Tag | Meaning | Example |
-|---|---|---|
-| `belongs:<fk>` | this table's `<fk>` column references the target's primary key | `Customer *Customer \`db:"belongs:customer_id"\`` |
-| `one:<fk>` | the target's `<fk>` references this table's primary key; at most one row | `Profile *DriverProfile \`db:"one:worker_id"\`` |
-| `many:<fk>` | the target's `<fk>` references this table's primary key | `Moves []*Move \`db:"many:shipment_id"\`` |
-| `m2m:<join_table>.<local_fk>.<remote_fk>` | rows linked through a join table: `<local_fk>` references this table, `<remote_fk>` the target | `Tags []*Tag \`db:"m2m:shipment_tags.shipment_id.tag_id"\`` |
-
-A model may relate to itself (`Worker.Manager *Worker \`db:"belongs:manager_id"\``) and to the same
-target twice (`Customer` and `BillTo`).
+A relation field is a pointer (to-one: `belongs`, `one`, `pick`) or a slice (to-many: `many`,
+`m2m`) of another model. A model may relate to itself (`Worker.Manager *Worker
+\`keel:"belongs:manager_id"\``) and to the same target twice (`Customer` and `BillTo`).
 
 Rules:
 
@@ -336,6 +380,83 @@ Rules:
   constants from the scope under a tenant scope and as column equalities under a system scope.
 - Keys of to-many relations must be string or integer columns.
 - The target must be a model of the same `keel gen` run.
+
+### Pick relations
+
+A pick relation is a to-one relation that picks one row along a to-many path in a total order: a
+shipment's origin stop is the first stop of its first move.
+
+```go
+OriginStop      *Stop `keel:"pick:moves.stops,first=moves.sequence|stops.sequence"`
+DestinationStop *Stop `keel:"pick:moves.stops,last=moves.sequence|stops.sequence"`
+```
+
+- The path names relations hop by hop, each by its field name in snake case (`Moves` → `moves`,
+  `BillTo` → `bill_to`), starting from the model's own relations. It must cross at least one
+  to-many relation, may not walk through another pick, and must end at the field's model.
+- `first=` and `last=` list order keys as `<segment>.<column>`: a column of the table that path
+  segment reaches. `last=` orders every key descending. `keel gen` appends the target's primary
+  key when the order does not end with it, so the order is total and the pick is deterministic;
+  keys after the target's key are refused because they never apply.
+- The model's key the first hop starts from must be a string or integer column.
+
+`Load(s.OriginStop())` fills the field, and the pick's own relations load like any other
+(`s.OriginStop().Location()`). A statement that reads at most two rows in no particular order
+(`One`, `Get`, `Limit(1)` without `Order`) joins the pick into itself as `LEFT JOIN LATERAL (… ORDER
+BY … LIMIT 1) os ON TRUE`, so the lateral subquery runs at most twice. Any other read loads the pick
+after its statement, in the next round trip with the level's other loads, as one statement per
+pick for all the parents' keys: `unnest($1) k CROSS JOIN LATERAL (… WHERE m.shipment_id = k.k …
+LIMIT 1)`, so the work is bounded by the rows returned, not by the rows the filter scanned. A pick
+beneath a to-many load (`s.Moves().FirstStop()`) loads the same way, one lateral per move.
+
+```go
+s := fleetdb.Shipments
+origin := s.OriginStop()
+
+rows, err := s.
+    Where(origin.Location().City.Eq("Austin")).
+    Load(origin.Location(), s.DestinationStop().Location()).
+    Order(s.CreatedAt.Desc()).
+    Limit(50).
+    List(ctx, db)
+```
+
+Filtering through a pick (`origin.Location().City.Eq(...)`) joins the lateral subquery into the
+statement; `origin.Any(...)` and `origin.None()` compile to `EXISTS` over it. Every hop of the
+subquery is scoped to the tenant (constants under a tenant scope, equalities with the previous
+table under a system scope, which needs `AllTenants()`) and filtered by the interceptors of its
+table. A pick load takes `Where` (a picked row that does not match leaves the field nil) but no
+`Limit`, and bulk updates and deletes cannot filter through a pick: `UPDATE … FROM` cannot reference
+the updated table from a lateral subquery.
+
+### Derived metadata
+
+`keel gen` writes what it can derive from the source into the generated schema, so nothing about a
+model is written twice. `fleetdb.ShipmentsSchema()` returns it at run time for any feature to read
+(the analytics catalog, forms, exports, error messages):
+
+| Fact | Where | Derived from | Override |
+|---|---|---|---|
+| Label | `Table.Label`, `Column.Label`, `Relation.Label` | the model or field name, split at case changes, digits and underscores; acronyms in capitals (`ProNumber` → "PRO Number" with `-acronyms PRO`, `CustomerID` → "Customer ID", `Address2` → "Address 2") | `label=` |
+| Plural label | `Table.Plural` | the label with its last word in the plural ("Shipments", "Categories") | `plural=` |
+| Description | `Table.Doc`, `Column.Doc`, `Relation.Doc`, `EnumValue.Doc` | the doc comment (a field's line comment when it has no doc comment), paragraphs kept, lines joined | — |
+| Enum values | `Column.Enum` | the constants of the column's named string or integer type, in declaration order, from any package; labels from the constant names without the type name (`StatusInTransit` → "In Transit") | — |
+| Reportable entity | `Table.Report` | `report[=Category]` on the table tag | — |
+| Included | `Column.Report.Included` | every column except tenant, version, `noselect`, bytea and tsvector columns and foreign keys a reported `belongs` relation exposes | `noreport`, `report` |
+| Value type | `Column.Report.Type` | the Go type: strings, enums, integers, floats, decimals (`shopspring/decimal`, `pgtype.Numeric`), bools, times, JSON, arrays, bytea, tsvector; `int64` columns named `*_at`, `*_date` or `*_time` are epochs | `type=` |
+| Measure or dimension | `Column.Report.Kind` | numeric columns that are neither keys (primary keys, foreign keys of `belongs`, `one` and `many` relations) nor enums are measures; everything else is a dimension | `dimension`, `measure` |
+| Aggregations | `Column.Report.Aggs` | numbers: count, count distinct, sum, avg, min, max; strings, times, dates and epochs: count, count distinct, min, max; everything else: count, count distinct | `agg=` |
+| Format | `Column.Report.Format` | a `KeelFormat() string` method on the column's type, value or pointer receiver, returning a string literal: `func (Money) KeelFormat() string { return "money" }` | `format=` |
+
+The default acronyms are ID, URL, API, JSON and UUID; `keel gen -acronyms PRO,BOL,SCAC,DOT,MC,ID,URL`
+(or `gen.Options.Acronyms`) replaces the list. Words already in capitals in the source stay in
+capitals. Report facts are written only for models tagged `report`, and the report options are
+refused elsewhere. Labels are the fallback text of translation keys; the analytics layer translates
+them.
+
+The generated file declares each enum's values once, as an array that every column of the type
+slices, and each distinct set of report facts once (`reportDimEpoch`, `reportMeasureDecimalMoney`),
+so the schema stays static data that compiles without init-time work.
 
 ### Model hooks
 
@@ -374,7 +495,8 @@ validation that needs the database, audit and side effects.
 ## Generating code
 
 `keel gen` loads the model packages with `go/packages` and writes one data-access package per
-package that holds models.
+package that holds models. It validates every tag, links relations, resolves picks and derives the
+[metadata](#derived-metadata); every error names the file, line and column of the field at fault.
 
 ```sh
 go run github.com/emoss08/keel/cmd/keel gen ./internal/...
@@ -386,9 +508,12 @@ go run github.com/emoss08/keel/cmd/keel gen ./internal/...
 | `-kinds` | `keelkinds` | directory, relative to the module root, of the shared package that holds column types for named types declared outside model packages |
 | `-tags` | none | comma-separated build tags used to load the packages |
 | `-check` | `false` | fail, listing the stale files, when generated files are out of date, instead of writing them |
+| `-acronyms` | `ID,URL,API,JSON,UUID` | comma-separated words that labels write in capitals (`PRO,BOL,SCAC,DOT,MC,ID,URL`); replaces the default list |
 
 Without package patterns it loads `./...`. Pass every model package in one run: a relation's
-target must be a model the same run generates. keel's own Makefile runs:
+target must be a model the same run generates. Errors in previously generated packages are ignored,
+so removing or renaming a model field never stops the run that rewrites them. keel's own Makefile
+runs:
 
 ```sh
 go run ./cmd/keel gen -kinds internal/testmodels/keelkinds ./internal/testmodels/...
@@ -424,13 +549,17 @@ it holds:
 | `func (t *ShipmentsTable) As(alias string) *ShipmentsTable` | a second reference to the table for self-joins and correlated subqueries |
 | `func (t *ShipmentsTable) Get(ctx, db, key ids.ID) (*fleet.Shipment, error)` | fetch by primary key; generated when the key, besides tenant columns, is one non-pointer column |
 | `func BuildShipments(*keel.Ref) *ShipmentsTable` | builds a handle for a reference; relation and alias methods call it |
-| `func ShipmentsSchema() *schema.Table` | the table metadata, written as a static literal with field accessors and hook trampolines |
+| `func ShipmentsSchema() *schema.Table` | the table metadata, written as a static literal with field accessors, hook trampolines, labels, docs, enum values and report facts |
 
 The handle name is the model name in the plural: `Shipment` → `Shipments`, `Address` →
 `Addresses`, `Company` → `Companies`. Named column types declared in a model package get their
 wrapper in that package's generated package (`fleetdb.StatusCol`, `fleetdb.PriorityCol`,
 `fleetdb.MoneyCol`); named types declared elsewhere get theirs in the `-kinds` package, prefixed
 with their package name (`keelkinds.IdsIDCol` for `ids.ID`; `pulid.ID` would be `PulidIDCol`).
+
+Values many columns share are declared once per file: `enumStatus`, an array of
+`schema.EnumValue` that every `Status` column slices, and one `schema.ReportInfo` per distinct set
+of report facts (`reportDimEpoch`, `reportMeasureDecimalMoney`), named by its content.
 
 Only data-access packages should import generated packages. The generic types they mention
 (`keel.Handle[T]`, `keel.Query[T]`) then stay out of the rest of the build.
@@ -951,6 +1080,9 @@ How loads run:
   `= ANY($1)` over the parents' keys plus the scope's tenant columns. The statements of one level
   share a round trip, so `Load(s.Customer(), s.Moves().Stops())` costs three round trips: the
   shipments with their customers, the moves, the stops.
+- **Pick** relations join into a statement that reads at most two rows without an order and
+  otherwise load with the level's to-many relations, one lateral statement per pick for all
+  parents' keys (see [Pick relations](#pick-relations)).
 - A path loads every relation on it: `m.Stops().Location()` loads moves, their stops and the stops'
   locations.
 
@@ -2424,24 +2556,26 @@ The same pattern works for an application:
 
 | Bun | keel |
 |---|---|
-| `bun.BaseModel \`bun:"table:shipments,alias:sp"\`` | `keel.Table \`db:"shipments"\``; aliases are derived |
-| `bun:"id,pk,type:VARCHAR(100),notnull"` | `db:"id,pk,autoid:shp_"` |
-| `bun:"organization_id,pk"` plus tenant helpers | `db:"organization_id,pk,tenant"` |
-| `bun:"version,type:BIGINT"` plus `Version++`, `Where("version = ?")`, `CheckRowsAffected` | `db:"version,version"` plus `Save` |
+| `bun.BaseModel \`bun:"table:shipments,alias:sp"\`` | `keel.Table \`keel:"shipments"\``; aliases are derived |
+| `bun:"id,pk,type:VARCHAR(100),notnull"` | `keel:"id,pk,autoid:shp_"` |
+| `bun:"organization_id,pk"` plus tenant helpers | `keel:"organization_id,pk,tenant"` |
+| `bun:"version,type:BIGINT"` plus `Version++`, `Where("version = ?")`, `CheckRowsAffected` | `keel:"version,version"` plus `Save` |
 | `BeforeAppendModel` setting IDs and timestamps | `autoid`, `autocreate`, `autoupdate` |
 | `BeforeAppendModel` validation, `AfterUpdate` audit | table hooks: `keel.OnCreate(db, s, keel.BeforeWrite, …)`, `keel.OnUpdate(…, keel.AfterWrite, …, keel.Needs(…))` |
 | `AfterScanRow` | `AfterLoad` |
-| `bun:"type:jsonb"` | `db:"attributes,jsonb"` |
+| `bun:"type:jsonb"` | `keel:"attributes,jsonb"` |
 | `bun:",array"` | nothing; `[]string` and `[]int64` are arrays |
 | `bun:",nullzero"` | a pointer field; keel writes the value in the struct |
-| `bun:",scanonly"` (generated column) | `db:"stage_rank,readonly"`, plus `noselect` when it should not be read |
+| `bun:",scanonly"` (generated column) | `keel:"stage_rank,readonly"`, plus `noselect` when it should not be read |
 | `bun:",default:..."` | nothing; set the value in Go |
-| `bun:"-"` | `db:"-"` |
+| `bun:"-"` | `keel:"-"` |
 | `bun:",soft_delete"` | not built in; an interceptor that adds `deleted_at IS NULL` |
-| `bun:"rel:belongs-to,join:customer_id=id"` | `db:"belongs:customer_id"` |
-| `bun:"rel:has-one,join:id=worker_id"` | `db:"one:worker_id"` |
-| `bun:"rel:has-many,join:id=shipment_id"` | `db:"many:shipment_id"` |
-| `bun:"m2m:shipment_tags,join:Shipment=Tag"` | `db:"m2m:shipment_tags.shipment_id.tag_id"` |
+| `bun:"rel:belongs-to,join:customer_id=id"` | `keel:"belongs:customer_id"` |
+| `bun:"rel:has-one,join:id=worker_id"` | `keel:"one:worker_id"` |
+| `bun:"rel:has-many,join:id=shipment_id"` | `keel:"many:shipment_id"` |
+| `bun:"m2m:shipment_tags,join:Shipment=Tag"` | `keel:"m2m:shipment_tags.shipment_id.tag_id"` |
+| a hand-written `LEFT JOIN LATERAL (… ORDER BY … LIMIT 1)` for a shipment's first stop | `keel:"pick:moves.stops,first=moves.sequence\|stops.sequence"` and `Load(s.OriginStop())` |
+| labels, descriptions and enum values curated in a report catalog | derived by `keel gen` from names, doc comments and constants ([Derived metadata](#derived-metadata)) |
 | `db.NewSelect().Model(&sh).WherePK().Scan(ctx)` | `s.Get(ctx, db, id)` |
 | `db.NewSelect().Model(&rows).Where("sp.status = ?", st).Scan(ctx)` | `s.Where(s.Status.Eq(st)).Limit(n).List(ctx, db)` |
 | `WhereGroup(" AND ", func(q) {... ScopeTenant ...})` | nothing; the scope applies the tenant |

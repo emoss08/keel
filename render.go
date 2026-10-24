@@ -221,7 +221,7 @@ func (r *render) alias(ref *Ref) string {
 	if sc == nil {
 		sc = r.sc
 	}
-	if sc.joinMode == joinNone {
+	if sc.joinMode == joinNone || (sc.joinMode == joinFrom && rel.Kind == schema.Pick) {
 		r.fail(fmt.Errorf("keel: %s cannot be joined here", ref.name()))
 		return "_"
 	}
@@ -348,13 +348,18 @@ func (r *render) relCond(parent *schema.Table, rel *schema.Relation, parentAlias
 		r.b('.')
 		r.s(parent.Columns[rel.Local[i]].Quoted)
 	}
+	r.relTenant(parent, target, parentAlias, childAlias, allTenants)
+}
+
+// relTenant writes the tenant part of a join condition after its key equality: the target's
+// tenant constants under a tenant scope, its tenant columns equal to the parent's under a system
+// scope.
+func (r *render) relTenant(parent, target *schema.Table, parentAlias, childAlias string, allTenants bool) {
 	if !target.HasTenant() {
 		return
 	}
 	if !r.scope.system && r.scope.tenant != nil {
-		if len(rel.Local) > 0 {
-			r.s(" AND ")
-		}
+		r.s(" AND ")
 		r.tenantPred(target, childAlias, false)
 		return
 	}

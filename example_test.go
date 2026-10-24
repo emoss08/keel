@@ -25,6 +25,7 @@ import (
 	"github.com/emoss08/keel/internal/testmodels/fleet/fleetdb"
 	"github.com/emoss08/keel/internal/testmodels/ids"
 	"github.com/emoss08/keel/migrate"
+	"github.com/emoss08/keel/schema"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -868,6 +869,41 @@ func ExampleQuery_Load_limit() {
 	for _, sh := range rows {
 		if len(sh.Moves) > 0 {
 			fmt.Println(sh.ProNumber, "last move", sh.Moves[0].ID)
+		}
+	}
+}
+
+func ExampleQuery_Load_pick() {
+	ctx, db := requestContext(), appDB
+	s := fleetdb.Shipments
+	origin := s.OriginStop()
+
+	rows, err := s.
+		Where(origin.Location().City.Eq("Austin")).
+		Load(origin.Location(), s.DestinationStop().Location()).
+		Order(s.CreatedAt.Desc()).
+		Limit(50).
+		List(ctx, db)
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, sh := range rows {
+		if sh.DestinationStop != nil {
+			fmt.Println(sh.ProNumber, sh.OriginStop.Location.City, "→", sh.DestinationStop.Location.City)
+		}
+	}
+}
+
+func Example_metadata() {
+	t := fleetdb.ShipmentsSchema()
+	fmt.Println(t.Label, t.Plural, t.Report.Category, t.Doc)
+	for _, c := range t.Columns {
+		if c.Report == nil || !c.Report.Included {
+			continue
+		}
+		fmt.Println(c.Label, c.Report.Kind == schema.Measure, c.Report.Format, c.Doc)
+		for _, v := range c.Enum {
+			fmt.Println("  ", v.Value, v.Label)
 		}
 	}
 }

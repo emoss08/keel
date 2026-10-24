@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/emoss08/keel/schema"
 	"golang.org/x/tools/go/packages"
 )
 
@@ -28,6 +29,9 @@ type Options struct {
 	Kinds string
 	// Tags are build tags used to load the packages.
 	Tags []string
+	// Acronyms are the words labels write in capitals (PRO, BOL, SCAC). Defaults to ID, URL, API,
+	// JSON and UUID.
+	Acronyms []string
 }
 
 // File is one generated file.
@@ -44,8 +48,12 @@ func Generate(o Options) ([]File, error) {
 	if o.Kinds == "" {
 		o.Kinds = "keelkinds"
 	}
+	labels, err := newLabeler(o.Acronyms)
+	if err != nil {
+		return nil, err
+	}
 	cfg := &packages.Config{
-		Mode: packages.NeedName | packages.NeedTypes | packages.NeedModule | packages.NeedFiles,
+		Mode: packages.NeedName | packages.NeedTypes | packages.NeedSyntax | packages.NeedModule | packages.NeedFiles,
 		Dir:  o.Dir,
 	}
 	if len(o.Tags) > 0 {
@@ -60,6 +68,9 @@ func Generate(o Options) ([]File, error) {
 	}
 	var loadErrs []error
 	packages.Visit(pkgs, nil, func(p *packages.Package) {
+		if isGenerated(p) {
+			return
+		}
 		for _, e := range p.Errors {
 			loadErrs = append(loadErrs, fmt.Errorf("%s: %s", p.PkgPath, e.Msg))
 		}
@@ -68,6 +79,13 @@ func Generate(o Options) ([]File, error) {
 		return nil, errors.Join(loadErrs...)
 	}
 
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil, err
+	}
+	src := newSource(pkgs[0].Fset, cwd)
+	rd := &reader{src: src, labels: labels, enums: map[*types.Named][]schema.EnumValue{},
+		formats: map[*types.Named]string{}}
 	byPath := map[string]*pkgModels{}
 	all := map[*types.Named]*model{}
 	var modRoot, modPath string
@@ -90,7 +108,7 @@ func Generate(o Options) ([]File, error) {
 			if !ok {
 				continue
 			}
-			m, err := readModel(pm, tn)
+			m, err := rd.readModel(pm, tn)
 			if err != nil {
 				return nil, err
 			}
@@ -120,7 +138,10 @@ func Generate(o Options) ([]File, error) {
 	for _, p := range sortedPkgs(byPath) {
 		models = append(models, p.models...)
 	}
-	if err := resolve(all, models); err != nil {
+	if err := resolve(src, all, models); err != nil {
+		return nil, err
+	}
+	if err := resolveReports(src, models); err != nil {
 		return nil, err
 	}
 
@@ -134,18 +155,18 @@ func Generate(o Options) ([]File, error) {
 
 	var files []File
 	for _, p := range sortedPkgs(byPath) {
-		src, err := e.emitPackage(p)
+		content, err := e.emitPackage(p)
 		if err != nil {
 			return nil, err
 		}
-		files = append(files, File{Path: filepath.Join(p.outDir, "keel_gen.go"), Content: src})
+		files = append(files, File{Path: filepath.Join(p.outDir, "keel_gen.go"), Content: content})
 	}
-	src, err := e.emitKinds()
+	kinds, err := e.emitKinds()
 	if err != nil {
 		return nil, err
 	}
-	if src != nil {
-		files = append(files, File{Path: filepath.Join(e.kinds.outDir, "keel_gen.go"), Content: src})
+	if kinds != nil {
+		files = append(files, File{Path: filepath.Join(e.kinds.outDir, "keel_gen.go"), Content: kinds})
 	}
 	return files, nil
 }
@@ -181,6 +202,7 @@ func Stale(files []File) []string {
 	return stale
 }
 
+// pkgDir returns the directory of p relative to the module root.
 func pkgDir(p *packages.Package, modRoot string) (string, error) {
 	if len(p.GoFiles) == 0 {
 		return "", fmt.Errorf("%s has no Go files", p.PkgPath)
@@ -192,6 +214,7 @@ func pkgDir(p *packages.Package, modRoot string) (string, error) {
 	return filepath.ToSlash(rel), nil
 }
 
+// isGenerated reports whether p is a package keel gen wrote.
 func isGenerated(p *packages.Package) bool {
 	for _, f := range p.GoFiles {
 		if filepath.Base(f) == "keel_gen.go" {
