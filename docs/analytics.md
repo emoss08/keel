@@ -378,6 +378,12 @@ fresh exactly until one of those changes for T.
 The cache applies to every entry point, previews and dashboards included, which is where repeated reads
 actually happen.
 
+> **Status: built.** `analytics/cache` has the in-memory store (sharded LRU with TTLs), the Postgres
+> store (`keel_analytics_cache`, unlogged, created on first use, batched expiry cleanup, capped
+> values) and a Redis adapter over a three-method client interface, plus `cache.Loader`, which shares
+> one load between concurrent misses of a key. The engine adapts `cache.Store` to `analytics.Cache`.
+> See "Analytics: caching and rollups" in the guide.
+
 ## Rollups
 
 For tenants with millions of rows, the fastest query is one that reads a small pre-aggregated table:
@@ -402,6 +408,18 @@ var ShipmentsDaily = analytics.Rollup("shipments_daily", Shipments, analytics.Ro
   distinct is answered from a rollup only at the rollup's exact grain.
 - **Freshness.** A rollup slice pending refresh is detected through the dirty table, and the compiler
   falls back to the base tables for that report.
+
+> **Status: built, with one change.** `analytics/rollup` declares rollups with `rollup.MustDefine(name,
+> table, rollup.Day(col), rollup.Dims(...), rollup.Measures(...))`, generates their migrations
+> (`keel analytics rollups migration`), refreshes dirty slices concurrently with `SKIP LOCKED` and
+> advisory locks, and routes resolved definitions through `rollup.Router`, which checks freshness
+> against the dirty table. The change: slices are marked by statement triggers with transition
+> tables, written by the rollup's migration, rather than by keel's write path. Triggers mark in the
+> write's transaction with one statement per write statement, see writes keel cannot (`Exec`,
+> `InsertFrom`, `COPY`, other services), and work in implicit transactions, where a table hook's
+> context carries no transaction to write in. Marks are keyed by transaction id, so writers never
+> contend; a refresh deletes only committed marks and reads the source afterwards, so it never
+> misses a committed write.
 
 ## Formatting and exports
 
@@ -438,6 +456,10 @@ var ShipmentsDaily = analytics.Rollup("shipments_daily", Shipments, analytics.Ro
 A CI check (`-check`) keeps it in step with the server. The client's hand-copied rule tables and its copy
 of the dashboard semantics are deleted.
 
+> **Status: generation built.** `keel analytics ts [-check] -out path` writes this module through
+> `analytics/ir/tsgen` (`analytics/analyticscli`); `keel analytics i18n` writes the label message
+> catalog.
+
 ## For the AI agent
 
 - **`catalog.For(ctx, policy).Describe()`** returns a compact text description of the caller's catalog
@@ -446,6 +468,10 @@ of the dashboard semantics are deleted.
   goes away.
 - **Corrective errors.** Validation errors carry suggestions ("unknown field `customer.nam`; did you
   mean `customer.name`?"), which replaces `report_hints.go`.
+
+> **Status: schema description built.** `keel analytics describe` writes a compact description of
+> the reportable entities, fields, relations and rollups from the schema; the policy-aware
+> `catalog.For(ctx, policy).Describe()` belongs to the engine.
 
 ## keel core additions this needs
 
