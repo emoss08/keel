@@ -143,6 +143,9 @@ func (rd *reader) readModel(p *pkgModels, obj *types.TypeName) (*model, error) {
 	if err != nil || !isModel {
 		return nil, err
 	}
+	if !obj.Exported() {
+		return nil, rd.src.errorf(obj.Pos(), "%s: models must be exported; the generated package refers to them", m.name)
+	}
 	for i := 0; i < st.NumFields(); i++ {
 		f := st.Field(i)
 		if f.Embedded() && isKeelTable(f.Type()) {

@@ -168,6 +168,7 @@ func TestGenerateErrors(t *testing.T) {
 		{"bad hook", oneA(`ID string ~keel:"id,pk"~`) + "func (a *A) BeforeSave() error { return nil }\n", at(5, 13) + ": A.BeforeSave must be func(context.Context) error"},
 		{"unexported", oneA(`id string ~keel:"id,pk"~`), field(3) + ": A.id: stored fields must be exported"},
 		{"no models", "type A struct{ X int }\n", "no models"},
+		{"unexported model", "type a struct {\n\tkeel.Table ~keel:\"a\"~\n\tID string ~keel:\"id,pk\"~\n}\n", ": a: models must be exported"},
 		{"nullzero pointer", oneA(`P *string ~keel:"p,nullzero"~`), field(3) + ": A.P: nullzero needs a non-pointer field"},
 		{"nullzero pk", oneA(`ID string ~keel:"id,pk,nullzero"~`), field(3) + ": A.…nullzero excludes pk"},
 		{"nullzero tenant", oneA(`T string ~keel:"t,tenant,nullzero"~`), field(3) + ": A.…nullzero excludes pk, tenant"},
