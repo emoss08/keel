@@ -3487,7 +3487,7 @@ The tables are generated from the registry by `go generate ./analytics/ir`.
 | `a is not null` | 30 | True when the operand is not null. |
 | `a \|\| b` | 40 | Both sides as text, joined; null when either is null. |
 | `a + b` | 50 | Addition. |
-| `a - b` | 50 | Subtraction. |
+| `a - b` | 50 | Subtraction; between two dates or times, the seconds from the second to the first: an int for two epochs, a decimal otherwise. |
 | `a * b` | 60 | Multiplication. |
 | `a / b` | 60 | Division; int / int is decimal, and dividing by zero gives null. |
 | `a % b` | 60 | Remainder of int or decimal division; by zero gives null. |
@@ -3519,7 +3519,7 @@ The tables are generated from the registry by `go generate ./analytics/ir`.
 | `count(value?: any)` | int | aggregate | The number of rows in the group, or of rows where the value is not null. | `count({moves.id})` |
 | `count_distinct(value: any)` | int | aggregate | The number of distinct non-null values in the group. | `count_distinct({customer.id})` |
 | `sum(number: number)` | the type of number | aggregate | The total of the values in the group. | `sum({totalCharge}) / sum({moves.distance})` |
-| `avg(number: number)` | decimal (float for a float) | aggregate | The mean of the values in the group. | `avg({weight})` |
+| `avg(value: mean)` | the type of a date or time, else decimal (float for a float) | aggregate | The mean of the values in the group; the mean of dates or times is the date or time at their average (to the second for an epoch, to the day for a date). | `avg({weight})` |
 | `min(value: ordered)` | the type of value | aggregate | The smallest value in the group. | `min({shippedAt})` |
 | `max(value: ordered)` | the type of value | aggregate | The largest value in the group. | `max({deliveredAt})` |
 

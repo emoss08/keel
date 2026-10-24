@@ -287,11 +287,14 @@ func toText(x *Typed) {
 }
 
 func (c *checker) arithmetic(n *Node, l, r *Typed) Type {
+	if n.Value == "-" && l.Type.Temporal() && r.Type.Temporal() {
+		return instantDifference(l, r)
+	}
 	for _, x := range []*Typed{l, r} {
 		if !numericOrOpen(x.Type) {
 			hint := ""
 			if x.Type.Temporal() {
-				hint = "; use date_diff to measure time between dates"
+				hint = "; subtract two dates or times for the seconds between them, or use date_diff"
 			}
 			c.fail(x.Node, CodeType, "%s needs numbers, but this is %s%s", n.Value, typeName(x.Type), hint)
 			return Unknown
@@ -310,6 +313,17 @@ func (c *checker) arithmetic(n *Node, l, r *Typed) Type {
 	coerceTo(l, result)
 	coerceTo(r, result)
 	return result
+}
+
+// instantDifference types the difference of two dates or times: the seconds from r to l, an int
+// for two epochs and otherwise a decimal over both converted to timestamps.
+func instantDifference(l, r *Typed) Type {
+	if l.Type == Epoch && r.Type == Epoch {
+		return Int
+	}
+	coerceTo(l, Timestamp)
+	coerceTo(r, Timestamp)
+	return Decimal
 }
 
 func numberOf(t Type) Type {
@@ -420,6 +434,10 @@ func (c *checker) argument(fn *Function, p Param, a *Typed) {
 		if !open && !a.Type.Ordered() {
 			bad("a number, text or date")
 		}
+	case ClassMean:
+		if !open && !a.Type.Numeric() && !a.Type.Temporal() {
+			bad("a number, a date or a time")
+		}
 	case ClassDigits:
 		c.digits(fn, p, a)
 	case ClassUnit:
@@ -459,6 +477,12 @@ func (c *checker) result(n *Node, fn *Function, args []*Typed) Type {
 		return args[0].Type
 	case ResultFractional:
 		if args[0].Type == Float || args[0].Type == Unknown {
+			return args[0].Type
+		}
+		coerceTo(args[0], Decimal)
+		return Decimal
+	case ResultMean:
+		if args[0].Type.Temporal() || args[0].Type == Float || args[0].Type == Unknown {
 			return args[0].Type
 		}
 		coerceTo(args[0], Decimal)

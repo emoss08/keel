@@ -77,7 +77,8 @@ type Field struct {
 	Type formula.Type
 	// Kind says whether the field groups (dimension) or aggregates (measure) by default.
 	Kind schema.ReportKind
-	// Aggs are the aggregations the field supports.
+	// Aggs are the aggregations the field supports: those keel gen derived, and avg for a date or
+	// time that takes min and max, since the mean of instants is an instant.
 	Aggs []ir.Agg
 	// Format is the display kind keel gen resolved (format= or the type's KeelFormat).
 	Format string
@@ -210,7 +211,11 @@ func fieldOf(e *Entity, i int32) (*Field, bool) {
 	f := &Field{Key: key, Entity: e, Column: i, Label: orDefault(col.Label, col.Name),
 		LabelKey: e.Key + "." + key, Doc: col.Doc, Type: typ, Kind: info.Kind, Format: info.Format,
 		Filterable: true, Groupable: info.Kind == schema.Dimension && typ != formula.JSON}
-	for _, name := range info.Aggs.Names() {
+	aggs := info.Aggs
+	if typ.Temporal() && aggs.Has(schema.AggMin|schema.AggMax) {
+		aggs |= schema.AggAvg
+	}
+	for _, name := range aggs.Names() {
 		f.Aggs = append(f.Aggs, ir.Agg(name))
 	}
 	for _, v := range col.Enum {

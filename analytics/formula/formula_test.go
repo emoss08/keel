@@ -327,6 +327,11 @@ func TestCheckTypes(t *testing.T) {
 		{"sum({weight})", Int, Aggregate},
 		{"sum({totalCharge}) / count()", Decimal, Aggregate},
 		{"avg({weight})", Decimal, Aggregate},
+		{"avg({shippedAt})", Epoch, Aggregate},
+		{"avg({deliveredOn})", Date, Aggregate},
+		{"avg({pickedUpAt}) - avg({shippedAt})", Decimal, Aggregate},
+		{"max({shippedAt}) - min({shippedAt})", Int, Aggregate},
+		{"{deliveredOn} - {shippedAt}", Decimal, Row},
 		{"count_distinct({customer.name})", Int, Aggregate},
 		{"max({shippedAt})", Epoch, Aggregate},
 		{"[customer] || ': ' || [revenue]", String, Aggregate},
@@ -357,7 +362,7 @@ func TestCheckErrors(t *testing.T) {
 		"@windw":                          "unknown parameter @windw; did you mean @window?",
 		"@statuses = 'A'":                 "takes several values",
 		"{customer.name} + 1":             "+ needs numbers, but this is string",
-		"{shippedAt} - {pickedUpAt}":      "use date_diff",
+		"{shippedAt} + {pickedUpAt}":      "subtract two dates or times",
 		"[ratio] % 2":                     "% needs int or decimal",
 		"{weight} = null":                 "use is null",
 		"{hazmat} < true":                 "< compares numbers, text and dates, not bool and bool",
@@ -429,8 +434,19 @@ func TestCoercionsAreRecorded(t *testing.T) {
 	if typed.Func.Template(typed.Node.Args) != "count(*)" {
 		t.Errorf("count() renders %q", typed.Func.Template(typed.Node.Args))
 	}
-	if OperatorSQL(mustParse(t, "1 / 2")) != "({0} / nullif({1}, 0))" || OperatorSQL(mustParse(t, "-1")) != "(-{0})" || OperatorSQL(mustParse(t, "1 is not null")) != "({0} IS NOT NULL)" {
+	op := func(src string) string {
+		t.Helper()
+		typed, err := check(t, src)
+		if err != nil {
+			t.Fatalf("%s: %v", src, err)
+		}
+		return OperatorSQL(typed)
+	}
+	if op("1 / 2") != "({0} / nullif({1}, 0))" || op("-1") != "(-{0})" || op("1 is not null") != "({0} IS NOT NULL)" {
 		t.Error("operator templates")
+	}
+	if op("max({shippedAt}) - min({shippedAt})") != "({0} - {1})" || op("{deliveredOn} - {shippedAt}") != "extract(epoch from ({0} - {1}))" {
+		t.Error("instant difference templates")
 	}
 }
 
@@ -444,6 +460,9 @@ func TestCallType(t *testing.T) {
 		{"sum", []Type{Decimal}, Decimal},
 		{"avg", []Type{Int}, Decimal},
 		{"avg", []Type{Float}, Float},
+		{"avg", []Type{Epoch}, Epoch},
+		{"avg", []Type{Timestamp}, Timestamp},
+		{"avg", []Type{Date}, Date},
 		{"count", []Type{String}, Int},
 		{"count_distinct", []Type{Ref}, Int},
 		{"min", []Type{Timestamp}, Timestamp},
@@ -457,6 +476,12 @@ func TestCallType(t *testing.T) {
 	}
 	if _, err := CallType("sum", String); err == nil {
 		t.Error("sum of text")
+	}
+	if _, err := CallType("avg", String); err == nil {
+		t.Error("avg of text")
+	}
+	if _, err := CallType("sum", Epoch); err == nil {
+		t.Error("sum of instants")
 	}
 	if _, err := CallType("nope"); err == nil {
 		t.Error("unknown function")

@@ -175,8 +175,16 @@ func (f *frame) innerMeasure(fp fieldPath, key string, agg keel.DynExpr) keel.Dy
 }
 
 // aggregate applies a measure aggregation to a per-row value, with a filter, and casts a sum of
-// integers back to an integer.
+// integers back to an integer. t is the aggregate's type: an average of instants averages their
+// seconds and returns the instant at the mean.
 func aggregate(agg ir.Agg, x keel.DynExpr, filter keel.Pred, t formula.Type) keel.DynExpr {
+	if agg == ir.AggAvg && t.Temporal() {
+		e := seconds(x, t).Avg()
+		if filter != nil {
+			e = e.Filter(filter)
+		}
+		return instantAt(e, t)
+	}
 	var e keel.DynExpr
 	switch agg {
 	case ir.AggCount:
@@ -226,18 +234,46 @@ func (f *frame) manyMeasure(agg ir.Agg, fp fieldPath, x keel.DynExpr, inner keel
 	case ir.AggMin, ir.AggMax:
 		return aggregate(agg, f.innerMeasure(fp, key, aggregate(agg, x, inner, t)), outer, t)
 	}
-	sum := f.innerMeasure(fp, "sum\x00"+key, aggregate(ir.AggSum, x, inner, formula.Decimal))
+	sum := f.innerMeasure(fp, "sum\x00"+key, aggregate(ir.AggSum, seconds(x, t), inner, formula.Decimal))
 	n := f.innerMeasure(fp, "count\x00"+key, aggregate(ir.AggCount, x, inner, formula.Int))
 	return mean(aggregate(ir.AggSum, sum, outer, formula.Decimal), aggregate(ir.AggSum, n, outer, formula.Decimal), t)
 }
 
 // mean divides a total by a count of type t's values, nothing over no values: floating point for
-// floats and an exact decimal otherwise.
+// floats, the instant at the mean of instants' seconds, and an exact decimal otherwise.
 func mean(total, count keel.DynExpr, t formula.Type) keel.DynExpr {
 	if t == formula.Float {
 		return total.Cast(keel.TypeFloat64).Div(count.NullIf(0))
 	}
-	return total.Cast(keel.TypeNumeric).Div(count.NullIf(0))
+	m := total.Cast(keel.TypeNumeric).Div(count.NullIf(0))
+	if t.Temporal() {
+		return instantAt(m, t)
+	}
+	return m
+}
+
+// seconds returns a value of type t as the number a mean of it averages: an instant's seconds
+// since 1970 (a date's days), anything else as it is.
+func seconds(x keel.DynExpr, t formula.Type) keel.DynExpr {
+	switch t {
+	case formula.Timestamp:
+		return keel.DynOf(keel.Raw("extract(epoch from ?)", x))
+	case formula.Date:
+		return keel.DynOf(keel.Raw("(? - DATE '1970-01-01')", x))
+	}
+	return x
+}
+
+// instantAt returns the instant of type t a mean of seconds denotes: epoch seconds rounded to the
+// second, a timestamp, or a date rounded to the day.
+func instantAt(m keel.DynExpr, t formula.Type) keel.DynExpr {
+	switch t {
+	case formula.Timestamp:
+		return keel.DynOf(keel.Raw("to_timestamp(?)", m))
+	case formula.Date:
+		return keel.DynOf(keel.Raw("(DATE '1970-01-01' + CAST(round(?) AS integer))", m))
+	}
+	return keel.DynOf(keel.Raw("CAST(round(?) AS bigint)", m))
 }
 
 // coalesceZero is coalesce(e, 0): a group without related rows counts zero.

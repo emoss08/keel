@@ -72,7 +72,7 @@ func (c *compiler) operator(t *formula.Typed, env formulaEnv) (keel.DynExpr, err
 	if err != nil {
 		return keel.DynExpr{}, err
 	}
-	return c.template(formula.OperatorSQL(t.Node), args)
+	return c.template(formula.OperatorSQL(t), args)
 }
 
 // call renders a function call: an aggregate through env, anything else through the registry's
