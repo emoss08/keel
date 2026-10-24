@@ -460,7 +460,7 @@ func Example_operators() {
 		s.Labels.Has("expedite"),
 		s.Attributes.Contains(map[string]any{"temperature": "frozen"}),
 		s.Attributes.Text("trailer", "type").Eq("reefer"),
-		s.SearchVector.Matches("dallas reefer"),
+		s.SearchVector.Match("dallas reefer"),
 		keel.Or(s.CanceledAt.IsNull(), s.CanceledAt.Gt(since.Unix())),
 		keel.Not(s.Customer().Name.ContainsFold("test")),
 	).Count(ctx, db)
@@ -766,7 +766,7 @@ func ExampleQuery_Timeout() {
 	ctx, db := requestContext(), appDB
 	s := fleetdb.Shipments
 
-	n, err := s.Where(s.SearchVector.Matches("reefer")).Timeout(2*time.Second).Count(ctx, db)
+	n, err := s.Where(s.SearchVector.Match("reefer")).Timeout(2*time.Second).Count(ctx, db)
 	if errors.Is(err, context.DeadlineExceeded) {
 		fmt.Println("search took too long")
 	} else if err != nil {
@@ -1818,4 +1818,132 @@ func ExampleDynQuery_Explain() {
 		log.Fatal("report too expensive")
 	}
 	fmt.Println(plan.TotalCost)
+}
+
+func Example_nullZero() {
+	ctx, db := requestContext(), appDB
+	c := fleetdb.Contacts
+	contact := &fleet.Contact{Name: "Dana"}
+	if err := c.Create(ctx, db, contact); err != nil {
+		log.Fatal(err)
+	}
+	unassigned, err := c.Where(c.CustomerID.Eq("")).Count(ctx, db)
+	if err != nil {
+		log.Fatal(err)
+	}
+	_, err = c.Where(c.Name.Eq("Dana")).Update(ctx, db, c.Phone.To(""))
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(unassigned)
+}
+
+func ExampleQuery_Compute() {
+	ctx, db := requestContext(), appDB
+	c, s := fleetdb.Contacts, fleetdb.Shipments
+	rows, err := c.
+		Compute(c.CustomerName, c.Customer().Name).
+		Compute(c.Loads, keel.Scalar(s.Pick(keel.Count()).Where(s.CustomerID.EqCol(c.CustomerID)))).
+		Where(c.Loads.Gt(0)).
+		Order(c.Loads.Desc()).
+		Limit(50).
+		List(ctx, db)
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, r := range rows {
+		fmt.Println(r.Name, r.CustomerName, r.Loads)
+	}
+}
+
+func ExampleTSVectorCol_Match() {
+	ctx, db := requestContext(), appDB
+	n := fleetdb.Notes
+	q := "dallas ree"
+	rows, err := n.
+		Compute(n.Rank, n.SearchVector.Rank(q)).
+		Where(n.SearchVector.Match(q, keel.SearchConfig("simple", "english"),
+			keel.SearchModes(keel.WebSearch, keel.Prefix))).
+		Order(n.Rank.Desc()).
+		Limit(20).
+		List(ctx, db)
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, r := range rows {
+		fmt.Println(r.Body, r.Rank)
+	}
+}
+
+func Example_relationKeys() {
+	ctx, db := requestContext(), appDB
+	l := fleetdb.Leaves
+	e := l.Entries()
+	leaves, err := l.
+		Where(e.Any(e.Hours.Gte(8))).
+		Load(e.Order(e.PostedAt.Asc()), l.LastEntry()).
+		Order(l.ID.Asc()).
+		Limit(100).
+		List(ctx, db)
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, lv := range leaves {
+		fmt.Println(lv.ID, len(lv.Entries), lv.LastEntry != nil)
+	}
+}
+
+func ExampleQuery_Omit() {
+	ctx, db := requestContext(), appDB
+	c := fleetdb.Contacts
+	contacts, err := c.Omit(c.Avatar, c.Prefs).Order(c.Name.Asc()).Limit(50).List(ctx, db)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(len(contacts))
+}
+
+func ExampleHandle_SaveExcept() {
+	ctx, db := requestContext(), appDB
+	c := fleetdb.Contacts
+	contact, err := c.Where(c.Name.Eq("Dana")).One(ctx, db)
+	if err != nil {
+		log.Fatal(err)
+	}
+	contact.Phone = "555-0100"
+	if err := c.SaveExcept(ctx, db, contact, c.Balance); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func ExampleUnnest() {
+	ctx, db := requestContext(), appDB
+	c := fleetdb.Contacts
+	ids := []ids.ID{"con_01", "con_02"}
+	phones := []string{"555-0101", "555-0102"}
+	scores := []int64{10, 20}
+	out := keel.Unnest("outcome", []string{"id", "phone", "score"}, ids, phones, scores)
+	n, err := c.With(out).
+		Join(out, out.Col("id").EqCol(c.ID)).
+		Where(c.VIP.IsFalse()).
+		Update(ctx, db, c.Phone.ToExpr(out.Col("phone")), c.Score.ToExpr(out.Col("score")))
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(n)
+}
+
+func ExampleDynQuery_Compute() {
+	ctx, db := requestContext(), appDB
+	c, s := fleetdb.Contacts, fleetdb.Shipments
+	q := keel.DynFrom(fleetdb.ContactsSchema())
+	q.Compute("loads", keel.DynOf(keel.Scalar(s.Pick(keel.Count()).Where(s.CustomerID.EqCol(c.CustomerID))))).
+		Select(q.Path("name"), q.Path("loads")).
+		Order(q.Path("loads").Desc()).
+		Limit(10)
+	res, err := q.Run(ctx, db)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(res.Rows)
 }

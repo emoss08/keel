@@ -41,6 +41,8 @@ const (
 	FlagNullable
 	FlagJSONB
 	FlagAutoID
+	FlagNullZero
+	FlagComputed
 )
 
 // Has reports whether every flag in f2 is set.
@@ -62,7 +64,18 @@ type Column struct {
 	Enum []EnumValue
 	// Report is how reports present the column; nil when the model is not reportable.
 	Report *ReportInfo
+	// TSConfig is the text search configuration a tsvector column is searched with by default,
+	// from the tag's tsvector=<config> option; empty means the database's default.
+	TSConfig string
 }
+
+// Stored reports whether the column is a column of the table, as opposed to a computed field that
+// queries fill with an expression.
+func (c *Column) Stored() bool { return !c.Flags.Has(FlagComputed) }
+
+// MayBeNull reports whether the column can hold NULL: its Go type is nullable (a pointer, a slice,
+// a Null… scanner) or it is nullzero, which stores the zero value as NULL.
+func (c *Column) MayBeNull() bool { return c.Flags&(FlagNullable|FlagNullZero) != 0 }
 
 // RelKind is the shape of a relation.
 type RelKind uint8
@@ -210,6 +223,9 @@ func Derive(t *Table) {
 		}
 		if c.Flags.Has(FlagAutoUpdate) {
 			t.AutoUpdate = idx
+		}
+		if c.Flags.Has(FlagComputed) {
+			continue
 		}
 		if !c.Flags.Has(FlagNoSelect) {
 			t.Select = append(t.Select, idx)

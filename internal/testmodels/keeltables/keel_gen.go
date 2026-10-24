@@ -4,15 +4,21 @@ package keeltables
 
 import (
 	"github.com/emoss08/keel/internal/testmodels/fleet/fleetdb"
+	"github.com/emoss08/keel/internal/testmodels/geo/geodb"
 	"github.com/emoss08/keel/schema"
 )
 
 // All returns every table keel gen generated, in name order.
 func All() []*schema.Table {
 	return []*schema.Table{
+		fleetdb.ContactsSchema(),
 		fleetdb.CustomersSchema(),
+		fleetdb.LeaveEntriesSchema(),
+		fleetdb.LeavesSchema(),
 		fleetdb.LocationsSchema(),
 		fleetdb.MovesSchema(),
+		fleetdb.NotesSchema(),
+		geodb.PlacesSchema(),
 		fleetdb.PlantsSchema(),
 		fleetdb.ShipmentsSchema(),
 		fleetdb.StopsSchema(),

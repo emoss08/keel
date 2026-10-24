@@ -93,7 +93,9 @@ reference to a table, under that alias, for self-joins.
 | `readonly` | never written (generated or trigger-maintained columns); read back after writes |
 | `noselect` | not selected by default (a `tsvector`); usable in predicates. A generated `noselect` column must also be tagged `readonly` |
 | `jsonb` | the value is encoded as JSON; a nil map or slice in a non-pointer field is written as `{}` or `[]` |
-| `tsvector` | the column gets the full-text operators |
+| `tsvector` / `tsvector=<config>` | the column gets the full-text operators; `<config>` (`Column.TSConfig`) is the text search configuration its searches use by default |
+| `nullzero` | a non-pointer field's zero value is stored as NULL and NULL reads back as the zero value (see Nullzero columns) |
+| `computed` | not a column of the table: a field queries fill with `Compute(field, expr)` (see Computed fields) |
 | `label=` | the column's label, instead of the one derived from the field name |
 | `noreport`, `report`, `dimension`, `measure`, `agg=`, `format=`, `type=epoch\|date\|decimal` | report facts that differ from the derived ones (see Derived metadata); only on models tagged `report` |
 
@@ -108,8 +110,36 @@ value. A nil slice in a non-pointer array field is written as an empty array.
 
 Column kinds follow the Go type: strings, `int64`, `int32`, `int16`, `float64`, `float32` (a
 `Float64Col`), `bool`, `[]byte`, `time.Time`, `[]string`, `[]int64`, named types with those
-underlying types (enums, IDs), and any type implementing `sql.Scanner` (a decimal). Plain `int` is
-refused: its width is not portable.
+underlying types (enums, IDs), and any other type implementing `sql.Scanner` (a decimal). A named
+type over a basic type is that basic kind even when it implements `sql.Scanner` and
+`driver.Valuer` (`pulid.ID`): keel accesses the underlying value directly and never calls those
+methods. Plain `int` is refused: its width is not portable. A custom type whose `driver.Valuer` has
+a pointer receiver is bound through a pointer by the generated `Value` accessor and wrappers. Bulk
+inserts send custom columns as text cast to the column's type, except an extension base type
+(OID past `FirstNormalObjectId`) whose codec and array codec the connections register: its column
+is one array of values the codec encodes (`columnType.array`, read with the catalog types).
+
+### Nullzero columns
+
+`nullzero` (`schema.FlagNullZero`) makes NULL the stored form of a non-pointer field's zero value.
+
+- The generated `Value` accessor returns nil for the zero value, tested without reflection (a
+  literal for basic kinds, nil for maps and slices, `IsZero()` when the type has it, the composite
+  zero value of a comparable struct otherwise). Every path that binds through `Value` (VALUES
+  inserts, `Copy`, `Save`, upserts) stores NULL. Bulk inserts build the column's array from
+  pointers into the rows' fields, nil for zero values, using the nullable array types. `To(zero)`
+  binds NULL in bulk updates and `Conflict.Set`. `InsertFrom` reads its source through
+  `FROM (src) AS s(c1, …)` and writes `nullif(s.cN, zero)` for string, numeric, bool and time
+  columns.
+- Reads wrap the column's pgx scan plan in a plan that stores the zero value for NULL (typed per
+  basic kind, so no reflection or allocation; `reflect.Value.SetZero` for other types); it is
+  cached per connection and statement like every scan plan.
+- `Column.MayBeNull()` is true for nullable and nullzero columns; keyset pages, the dynamic layer
+  and rollups use it where they need to know whether a column can hold NULL.
+- A value compared with a nullzero column means the field's value: `= zero` is `IS NULL`, `<> zero`
+  `IS NOT NULL`, `<> v` `IS DISTINCT FROM v`, `= ANY(list)` with zero in the list adds
+  `OR col IS NULL`, `<> ALL(list)` without it adds `OR col IS NULL`.
+- Relation keys read from a nullzero column skip the zero value.
 
 ### Relations
 
@@ -118,13 +148,21 @@ refused: its width is not portable.
 | `belongs:<fk>` | this table's `<fk>` references the target's primary key |
 | `one:<fk>` | the target's `<fk>` references this table's primary key, at most one row |
 | `many:<fk>` | the target's `<fk>` references this table's primary key |
+| `belongs:<fk>\|<fk>[=<key>]…` (and `one:`, `many:`) | a key of several columns; each item is a foreign-key column and, after `=`, the referenced column (default: the primary key for the first, the same name for the others) |
 | `m2m:<join_table>.<local_fk>.<remote_fk>` | rows linked through a join table |
 | `pick:<rel>.<rel>…,first=<seg>.<col>\|…` (or `last=`) | one row along a path that crosses a to-many relation, the first (last) in a total order |
 
 Relation tags take `label=` and `noreport`; `first=` and `last=` only on `pick`.
 
-The primary key of a related table, besides its tenant columns, must be a single column, and the
-keys of to-many relations must be string or integer columns. When both sides have tenant columns,
+`Relation.Local` and `Relation.Remote` hold one column per key pair, and every renderer walks all
+pairs: join conditions (`relCond`, `relCondNoTenant`), relation loads (`= ANY($1)` for one column,
+`(cols) IN (SELECT * FROM unnest($1, …))` for several, unnested keys for `Limit` loads and picks,
+keyed statements returning one key column per pair), picks, dynamic paths and pre-aggregation keys.
+A key of several columns indexes parents by its values joined with NUL (`joinKey`), which text
+cannot hold; single-column keys stay a string or an integer, without allocation. With one column
+and no `=`, the referenced primary key, besides its tenant columns, must be a single column; the
+keys of to-many and pick relations must be string or integer columns; many-to-many relations take
+one column per side; tenant columns are refused in a key. When both sides have tenant columns,
 keel adds them to the join: as constants from the scope under a tenant scope, as column equalities
 under a system scope.
 
@@ -223,7 +261,7 @@ page, err := s.
 
 ### Builder methods
 
-`Where`, `Pick`, `Load`, `Order`, `Group`, `GroupingSets`, `Rollup`, `Cube`, `Having`, `Window`,
+`Where`, `Pick`, `Omit`, `Compute`, `Load`, `Order`, `Group`, `GroupingSets`, `Rollup`, `Cube`, `Having`, `Window`,
 `Limit`, `Offset`, `Lock`, `Join`, `LeftJoin`, `JoinLateral`, `LeftJoinLateral`, `DistinctOn`,
 `With`, `AllTenants`, `Timeout`, `CustomPlan`; `Any` and `None` turn a query into a predicate.
 Builders are mutable and chainable; `Clone` copies one. `ToSQL` renders the main statement and
@@ -261,7 +299,7 @@ Every clause takes expressions, never strings. Columns are typed by their Go kin
 | bytea | `Eq`, `To` |
 | jsonb | `Contains`, `HasKey`, `HasAnyKey`, `HasAllKeys`, `Text(path...)`, `To` |
 | array | `Has`, `Overlaps`, `ContainsAll`, `ContainedBy`, `To`; `Len` on text arrays |
-| tsvector | `Matches`, `MatchesConfig`, `Rank` |
+| tsvector | `Match(q, opts...)`, `Rank(q, opts...)`, `RankCD(q, opts...)`: the search string bound once, the tsquery built by `websearch_to_tsquery` (default), `plainto_tsquery`, `phraseto_tsquery` or `to_tsquery` over the string's words as lexemes or prefixes, for each configuration (`SearchConfig`, else the column's `TSConfig`, else the database default) and each mode (`SearchModes`), ORed |
 
 Combinators: `keel.And`, `keel.Or`, `keel.Not`, `keel.When`, `keel.Exists`, `keel.NotExists`,
 `keel.True`, `keel.Raw`, `keel.Val`. Aggregates: `keel.Count()`, `keel.CountOf`, `keel.Sum`,
@@ -282,6 +320,27 @@ comparable values compared with the same column through the same operator, and e
 the same explicit cast. Writes never share. A column resolves to the innermost statement that references
 its table; a column of a table's base handle also resolves inside a statement built on a relation
 path to that table.
+
+### Computed fields
+
+A `computed` field (`schema.FlagComputed`, `Column.Stored()` false) stays in `Table.Columns`, so it
+has a column index, a `Ptr` and a `Value` accessor, but `Derive` leaves it out of `Select`,
+`Insert`, `Update` and `Returning`; the bulk-insert catalog lookup skips it, reports never include
+it, and writes that name it are refused.
+
+- `Compute(field, expr)` records `(column, expr)` on the query, after checking that the field is a
+  computed field of the query's table, computed once, and that `expr`'s value kind, when keel
+  knows it (columns, `StringExpr`, `Scalar` of one typed expression, aggregates and window
+  functions by their function and argument), fits the field's kind.
+- When a statement renders, each node's computes are registered on its render scope. A column
+  reference to a computed field (`r.col`) writes `(expr)` from the innermost scope that computes
+  it, so the field can be selected, filtered, ordered, paged by keyset and projected; with no
+  compute in scope the statement fails. The select list appends computed fields after a node's
+  columns, and the scan plan decodes them into the field like any column.
+- `DynQuery.Compute(name, expr)` is the dynamic counterpart: `Path(name)` resolves the field, which
+  renders the expression.
+- `keel.Scalar(q)` is `(SELECT …)` as an expression, typically correlated, to fill a computed field
+  with an aggregate over related rows.
 
 ## Relation loading
 
@@ -335,19 +394,23 @@ err := s.Create(ctx, db, sh)                       // autoid, timestamps, tenant
 err = s.CreateMany(ctx, db, rows)                  // unnest of one array per column, 10,000 rows per statement, one round trip
 err = s.Save(ctx, db, sh)                          // compare-and-increment version, ErrConflict on mismatch
 err = s.Save(ctx, db, sh, s.Status, s.CanceledAt)  // only these columns (and the autoupdate column)
+err = s.SaveExcept(ctx, db, sh, s.Token)           // every updatable column but these
 err = s.DeleteRow(ctx, db, sh)                     // ErrNotFound when nothing was deleted
 n, err := s.Where(...).Update(ctx, db, s.Status.To(shipment.StatusCanceled))
+out := keel.Unnest("outcome", []string{"id", "status"}, ids, statuses) // a CTE over Go slices
+n, err = s.With(out).Join(out, out.Col("id").EqCol(s.ID)).Where(...).Update(ctx, db, s.Status.ToExpr(out.Col("status")))
 n, err = s.Where(...).Delete(ctx, db)
 ins, err := s.Upsert(ctx, db, rows, keel.OnConflict(s.OrganizationID, s.BusinessUnitID, s.ProNumber).Update(s.Status))
 ins, err = s.Upsert(ctx, db, rows, keel.OnConflict(...).Set(s.Status.ToExpr(s.Status.Excluded()), s.Priority.Add(1)))
-n, err = s.CreateOrSkip(ctx, db, rows, s.OrganizationID, s.BusinessUnitID, s.ProNumber)
+n, err = s.CreateOrSkip(ctx, db, rows, s.OrganizationID, s.BusinessUnitID, s.ProNumber) // no targets: any unique violation
 n, err = s.InsertFrom(ctx, db, src.Pick(...), s.Name, s.Code)
 n, err = s.Copy(ctx, db, rows)                     // binary COPY; prepared as Create, nothing read back
 ```
 
 After a write keel reads back only what Postgres may have changed: `readonly` columns, and the
 version where it changed it. `Upsert` reports per row whether it inserted (`xmax = 0`); a row that
-conflicted keeps the primary key it was sent with. `Conflict.Update` takes columns from the proposed
+conflicted keeps the primary key it was sent with. `OnConflict` targets are columns or index
+expressions (written in parentheses, without aliases, refusing binds). `Conflict.Update` takes columns from the proposed
 row (`col = EXCLUDED.col`); `Conflict.Set` takes `Assignment`s, in which the table's columns read
 the stored row and `Col.Excluded()` the proposed row, with values bound as parameters; a column
 assigned twice is refused, and the `autoupdate` and `version` columns are maintained unless `Set`

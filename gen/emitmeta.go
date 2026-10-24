@@ -207,7 +207,8 @@ func (s *shared) tableMeta(m *model) string {
 	return out
 }
 
-// columnMeta writes the label, doc, enum and report fields of a column literal.
+// columnMeta writes the label, doc, enum, report and text search configuration fields of a column
+// literal.
 func (s *shared) columnMeta(c *column) string {
 	out := ", Label: " + lit(c.label) + optStr("Doc", c.doc)
 	if c.enum != nil {
@@ -216,7 +217,7 @@ func (s *shared) columnMeta(c *column) string {
 	if c.report != nil {
 		out += ", Report: " + s.report(*c.report)
 	}
-	return out
+	return out + optStr("TSConfig", c.tag.TSConfig)
 }
 
 // relationMeta writes the label, doc, report and pick fields of a relation literal.

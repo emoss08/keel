@@ -16,10 +16,10 @@ type pickHop struct {
 // writePick writes the subquery that picks rel's row for one parent: the tables of the path joined
 // hop by hop, each scoped to the tenant and filtered by interceptors, ordered by the relation's
 // keys and limited to one row. parentAlias is the parent's alias when the parent is a table of the
-// statement, so its tenant columns can be compared under a system scope; key writes the parent's
-// key the first hop starts from.
+// statement, so its tenant columns can be compared under a system scope; key writes column i of the
+// parent's key the first hop starts from.
 func (r *render) writePick(parent *schema.Table, rel *schema.Relation, allTenants bool, parentAlias string,
-	key func(r *render),
+	key func(r *render, i int),
 ) {
 	hops := r.pickHops(parent, rel)
 	sc := &scope{parent: r.sc, joinMode: joinLeft, allTenants: allTenants}
@@ -73,24 +73,29 @@ func (r *render) pickHops(parent *schema.Table, rel *schema.Relation) []pickHop 
 	return hops
 }
 
-// pickStart writes the condition that ties the first hop to the parent's key, with the tenant
-// columns the parent shares under a system scope.
-func (r *render) pickStart(h pickHop, parentAlias string, key func(r *render)) {
+// pickStart writes the condition that ties the first hop to the parent's key, every column of it,
+// with the tenant columns the parent shares under a system scope.
+func (r *render) pickStart(h pickHop, parentAlias string, key func(r *render, i int)) {
 	switch {
 	case h.rel.Kind == schema.ManyToMany:
 		r.s(h.joinAlias)
 		r.b('.')
 		r.s(h.rel.JoinLocalQ[0])
 		r.s(" = ")
-		key(r)
+		key(r, 0)
 	case parentAlias != "":
 		r.relCondNoTenant(h.from, h.rel, parentAlias, h.alias)
 	default:
-		r.s(h.alias)
-		r.b('.')
-		r.s(h.rel.Target.Columns[h.rel.Remote[0]].Quoted)
-		r.s(" = ")
-		key(r)
+		for i, rc := range h.rel.Remote {
+			if i > 0 {
+				r.s(" AND ")
+			}
+			r.s(h.alias)
+			r.b('.')
+			r.s(h.rel.Target.Columns[rc].Quoted)
+			r.s(" = ")
+			key(r, i)
+		}
 	}
 	if h.rel.Target.HasTenant() && !r.scope.system {
 		r.s(" AND ")
@@ -172,11 +177,7 @@ func (r *render) writePickJoin(sc *scope, j *join) {
 	rel := j.ref.relation()
 	parent := j.ref.parent.Table
 	r.s(" LEFT JOIN LATERAL (")
-	r.writePick(parent, rel, sc.allTenants, j.parentAlias, func(r *render) {
-		r.s(j.parentAlias)
-		r.b('.')
-		r.s(parent.Columns[rel.Local[0]].Quoted)
-	})
+	r.writePick(parent, rel, sc.allTenants, j.parentAlias, parentKey(parent, rel, j.parentAlias))
 	r.s(") ")
 	r.s(j.alias)
 	r.s(" ON ")
@@ -185,30 +186,41 @@ func (r *render) writePickJoin(sc *scope, j *join) {
 	}
 }
 
+// parentKey writes column i of the key a pick starts from: the parent's local key column under
+// parentAlias.
+func parentKey(parent *schema.Table, rel *schema.Relation, parentAlias string) func(r *render, i int) {
+	return func(r *render, i int) {
+		r.s(parentAlias)
+		r.b('.')
+		r.s(parent.Columns[rel.Local[i]].Quoted)
+	}
+}
+
 // pickSelect loads a pick relation for every parent key in one statement:
-// SELECT k.k, … FROM unnest($1) k CROSS JOIN LATERAL (…pick…) alias.
+// SELECT k.k, … FROM unnest($1, …) k CROSS JOIN LATERAL (…pick…) alias.
 func pickSelect(r *render, q *query, n *lnode, ix *parentIndex) *selectPlan {
 	parent := n.parent.table
 	rel := &parent.Relations[n.rel]
 	keyAlias := r.newAlias("k")
+	key := func(r *render, i int) {
+		r.s(keyAlias)
+		r.b('.')
+		r.s(ix.keyName(i))
+	}
 	return q.renderSelect(r, n, selectOpts{
 		prefiltered: true,
 		keyColumn: func(r *render) {
-			r.s(keyAlias)
-			r.s(".k")
+			for i := range ix.cols() {
+				if i > 0 {
+					r.s(", ")
+				}
+				key(r, i)
+			}
 		},
 		from: func(r *render, alias string) {
-			r.s("unnest(")
-			r.arg(ix.arg())
-			r.s("::")
-			r.s(ix.arrayType())
-			r.s(") AS ")
-			r.s(keyAlias)
-			r.s("(k) CROSS JOIN LATERAL (")
-			r.writePick(parent, rel, q.allTenants, "", func(r *render) {
-				r.s(keyAlias)
-				r.s(".k")
-			})
+			ix.writeUnnest(r, keyAlias)
+			r.s(" CROSS JOIN LATERAL (")
+			r.writePick(parent, rel, q.allTenants, "", key)
 			r.s(") ")
 			r.s(alias)
 		},
@@ -221,11 +233,7 @@ func pickFromSubquery(parent *schema.Table, rel *schema.Relation, parentAlias st
 ) func(r *render, alias string) {
 	return func(r *render, alias string) {
 		r.b('(')
-		r.writePick(parent, rel, allTenants, parentAlias, func(r *render) {
-			r.s(parentAlias)
-			r.b('.')
-			r.s(parent.Columns[rel.Local[0]].Quoted)
-		})
+		r.writePick(parent, rel, allTenants, parentAlias, parentKey(parent, rel, parentAlias))
 		r.s(") ")
 		r.s(alias)
 	}

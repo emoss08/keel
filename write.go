@@ -40,7 +40,14 @@ func (h Handle[T]) CreateMany(ctx context.Context, db *DB, rows []*T) error {
 // Interceptors' predicates join the primary key in the WHERE clause: a row they exclude is not
 // written, and Save reports it as ErrConflict on a table with a version column, else ErrNotFound.
 func (h Handle[T]) Save(ctx context.Context, db *DB, row *T, cols ...interface{ column() Col }) error {
-	return db.save(ctx, h.Ref, unsafe.Pointer(row), cols)
+	return db.save(ctx, h.Ref, unsafe.Pointer(row), cols, false)
+}
+
+// SaveExcept is Save writing every updatable column except cols: the columns a caller must never
+// overwrite from a row it read (secrets, columns another process maintains). The autoupdate column
+// is always written.
+func (h Handle[T]) SaveExcept(ctx context.Context, db *DB, row *T, cols ...interface{ column() Col }) error {
+	return db.save(ctx, h.Ref, unsafe.Pointer(row), cols, true)
 }
 
 // DeleteRow deletes row by its primary key. Interceptors' predicates join the primary key in the
@@ -51,20 +58,19 @@ func (h Handle[T]) DeleteRow(ctx context.Context, db *DB, row *T) error {
 
 // Conflict is the ON CONFLICT clause of an upsert. Its methods return a changed copy.
 type Conflict struct {
-	cols    []Col
+	targets []Expr
 	where   []Pred
 	update  []Col
 	set     []Assignment
 	nothing bool
 }
 
-// OnConflict names the unique columns an upsert conflicts on.
-func OnConflict(cols ...interface{ column() Col }) Conflict {
-	c := Conflict{}
-	for _, col := range cols {
-		c.cols = append(c.cols, col.column())
-	}
-	return c
+// OnConflict names what an upsert conflicts on, as a unique index declares it: columns of the
+// table, or expressions for an index on expressions, such as keel.Raw("md5(?)", t.Endpoint) for
+// ON CONFLICT (md5(endpoint)). Expressions must not bind values; columns in them are written
+// without an alias, as the index names them.
+func OnConflict(targets ...Expr) Conflict {
+	return Conflict{targets: targets}
 }
 
 // Where matches a partial unique index: ON CONFLICT (…) WHERE …. The predicates must not bind
@@ -102,12 +108,18 @@ func (c Conflict) Set(sets ...Assignment) Conflict {
 // updatable column without either), then the autoupdate column.
 func (c *Conflict) check(ref *Ref) ([]int32, error) {
 	t := ref.Table
-	if len(c.cols) == 0 {
+	if len(c.targets) == 0 && !c.nothing {
 		return nil, errf("OnConflict needs the conflicting columns")
 	}
-	for _, col := range c.cols {
-		if col.Ref.Table != t {
-			return nil, errf("OnConflict names a column of %s on %s", col.Ref.Table.Name, t.Name)
+	for _, e := range c.targets {
+		col, ok := e.(columnar)
+		if !ok {
+			continue
+		}
+		if cc := col.column(); cc.Ref.Table != t {
+			return nil, errf("OnConflict names a column of %s on %s", cc.Ref.Table.Name, t.Name)
+		} else if !t.Columns[cc.Index].Stored() {
+			return nil, errf("OnConflict names the computed field %s.%s", t.Name, t.Columns[cc.Index].Name)
 		}
 	}
 	if c.nothing {
@@ -117,6 +129,9 @@ func (c *Conflict) check(ref *Ref) ([]int32, error) {
 	assign := func(col Col) error {
 		if col.Ref.Table != t {
 			return errf("OnConflict assigns a column of %s on %s", col.Ref.Table.Name, t.Name)
+		}
+		if !t.Columns[col.Index].Stored() {
+			return errf("OnConflict assigns the computed field %s.%s", t.Name, t.Columns[col.Index].Name)
 		}
 		if slices.Contains(changed, col.Index) {
 			return errf("OnConflict assigns %s.%s twice", t.Name, t.Columns[col.Index].Name)
@@ -148,14 +163,10 @@ func (c *Conflict) check(ref *Ref) ([]int32, error) {
 // in the SET clause.
 func (c *Conflict) write(r *render, ref *Ref, changed []int32) {
 	t := ref.Table
-	r.s(" ON CONFLICT (")
-	for i, col := range c.cols {
-		if i > 0 {
-			r.s(", ")
-		}
-		r.s(t.Columns[col.Index].Quoted)
+	r.s(" ON CONFLICT")
+	if len(c.targets) > 0 {
+		c.writeTargets(r)
 	}
-	r.b(')')
 	if hasPreds(c.where) {
 		bound := len(r.args)
 		r.bare = true
@@ -205,6 +216,30 @@ func (c *Conflict) write(r *render, ref *Ref, changed []int32) {
 	}
 }
 
+// writeTargets writes the conflict target, (col, (expr), …), without aliases and refusing values.
+func (c *Conflict) writeTargets(r *render) {
+	bound := len(r.args)
+	r.bare = true
+	r.s(" (")
+	for i, e := range c.targets {
+		if i > 0 {
+			r.s(", ")
+		}
+		if _, ok := e.(columnar); ok {
+			e.writeSQL(r)
+			continue
+		}
+		r.b('(')
+		e.writeSQL(r)
+		r.b(')')
+	}
+	r.b(')')
+	r.bare = false
+	if len(r.args) > bound {
+		r.fail(errf("OnConflict expressions must not bind values; use constants"))
+	}
+}
+
 // assignment returns the Set assignment of column ci, or nil when the column takes the proposed
 // row's value.
 func (c *Conflict) assignment(ci int32) *Assignment {
@@ -232,11 +267,11 @@ func (h Handle[T]) Upsert(ctx context.Context, db *DB, rows []*T, c Conflict) ([
 	return db.upsert(ctx, h.Ref, ps, c)
 }
 
-// CreateOrSkip inserts rows, skipping those that conflict on cols, and returns how many were
-// inserted. Inserted rows run the create hooks; skipped rows run none.
-func (h Handle[T]) CreateOrSkip(ctx context.Context, db *DB, rows []*T,
-	cols ...interface{ column() Col },
-) (int64, error) {
+// CreateOrSkip inserts rows, skipping those that conflict on targets (columns or index
+// expressions, as OnConflict takes them), and returns how many were inserted. Without targets it
+// skips rows that violate any unique constraint (ON CONFLICT DO NOTHING). Inserted rows run the
+// create hooks; skipped rows run none.
+func (h Handle[T]) CreateOrSkip(ctx context.Context, db *DB, rows []*T, targets ...Expr) (int64, error) {
 	if len(rows) == 0 {
 		return 0, nil
 	}
@@ -244,7 +279,7 @@ func (h Handle[T]) CreateOrSkip(ctx context.Context, db *DB, rows []*T,
 	for i, r := range rows {
 		ps[i] = unsafe.Pointer(r)
 	}
-	c := OnConflict(cols...)
+	c := OnConflict(targets...)
 	c.nothing = true
 	ins, err := db.upsert(ctx, h.Ref, ps, c)
 	var n int64
@@ -411,7 +446,7 @@ type insertSpec struct {
 // insertStmts builds the INSERT statements of a write. One row is inserted with VALUES; more rows
 // are inserted through unnest with one array per column, in chunks that share one statement text.
 func (db *DB) insertStmts(ctx context.Context, t *schema.Table, rows []unsafe.Pointer, spec *insertSpec) ([]*stmt, error) {
-	var types []string
+	var types []columnType
 	if len(rows) > 1 {
 		var err error
 		if types, err = db.columnTypes(ctx, t); err != nil {
@@ -571,7 +606,7 @@ func scanAt(m *pgtype.Map, fds []pgconn.FieldDescription, raw [][]byte, plans []
 	k int, t *schema.Table, dst any, c int32,
 ) error {
 	if plans[k] == nil {
-		plans[k] = planScan(m, fds[k].DataTypeOID, fds[k].Format, dst)
+		plans[k] = planColumn(m, fds[k].DataTypeOID, fds[k].Format, &t.Columns[c], dst)
 	}
 	if err := plans[k].Scan(raw[k], dst); err != nil {
 		return fmt.Errorf("keel: scan %s.%s: %w", t.Name, t.Columns[c].Name, err)
@@ -670,25 +705,18 @@ func (db *DB) upsert(ctx context.Context, ref *Ref, rows []unsafe.Pointer, c Con
 	return inserted, run.close(ctx, err)
 }
 
-func (db *DB) save(ctx context.Context, ref *Ref, row unsafe.Pointer, cols []interface{ column() Col }) error {
+// save writes row by its primary key: the columns cols name, or with except every updatable
+// column but those, or every updatable column when cols is empty.
+func (db *DB) save(ctx context.Context, ref *Ref, row unsafe.Pointer, cols []interface{ column() Col },
+	except bool,
+) error {
 	t := ref.Table
 	if len(t.PK) == 0 {
 		return errf("%s has no primary key; Save needs one", t.Name)
 	}
-	update := t.Update
-	if len(cols) > 0 {
-		update = make([]int32, 0, len(cols)+1)
-		for _, c := range cols {
-			col := c.column()
-			if col.Ref.Table != t || !slices.Contains(t.Update, col.Index) {
-				return errf("Save cannot write %s.%s", col.Ref.Table.Name,
-					col.Ref.Table.Columns[col.Index].Name)
-			}
-			update = append(update, col.Index)
-		}
-		if t.AutoUpdate >= 0 && !slices.Contains(update, t.AutoUpdate) {
-			update = append(update, t.AutoUpdate)
-		}
+	update, err := saveColumns(t, cols, except)
+	if err != nil {
+		return err
 	}
 	th := db.hooks.forTable(t)
 	run, err := db.writeRunner(ctx, th.has(OpUpdate, AfterWrite))
@@ -821,6 +849,35 @@ func (db *DB) save(ctx context.Context, ref *Ref, row unsafe.Pointer, cols []int
 	return run.close(ctx, err)
 }
 
+// saveColumns returns the columns a Save writes: every updatable column, the named ones, or with
+// except every updatable column but the named ones, with the autoupdate column always included.
+func saveColumns(t *schema.Table, cols []interface{ column() Col }, except bool) ([]int32, error) {
+	if len(cols) == 0 {
+		return t.Update, nil
+	}
+	named := make([]int32, 0, len(cols))
+	for _, c := range cols {
+		col := c.column()
+		if col.Ref.Table != t || !slices.Contains(t.Update, col.Index) {
+			return nil, errf("Save cannot write %s.%s", col.Ref.Table.Name, col.Ref.Table.Columns[col.Index].Name)
+		}
+		named = append(named, col.Index)
+	}
+	update := named
+	if except {
+		update = make([]int32, 0, len(t.Update))
+		for _, c := range t.Update {
+			if !slices.Contains(named, c) || c == t.AutoUpdate {
+				update = append(update, c)
+			}
+		}
+	}
+	if t.AutoUpdate >= 0 && !slices.Contains(update, t.AutoUpdate) {
+		update = append(update, t.AutoUpdate)
+	}
+	return update, nil
+}
+
 func (db *DB) prepareSave(ctx context.Context, sc *scopeState, t *schema.Table, th *tableHooks,
 	row unsafe.Pointer, update []int32,
 ) error {
@@ -913,7 +970,7 @@ func scanInto(rows pgx.Rows, t *schema.Table, row unsafe.Pointer, ret []int32, o
 	i := 0
 	for _, c := range ret {
 		dst := t.Ptr(row, c)
-		if err := planScan(m, fds[i].DataTypeOID, fds[i].Format, dst).Scan(raw[i], dst); err != nil {
+		if err := planColumn(m, fds[i].DataTypeOID, fds[i].Format, &t.Columns[c], dst).Scan(raw[i], dst); err != nil {
 			return fmt.Errorf("keel: scan %s.%s: %w", t.Name, t.Columns[c].Name, err)
 		}
 		i++
@@ -923,7 +980,7 @@ func scanInto(rows pgx.Rows, t *schema.Table, row unsafe.Pointer, ret []int32, o
 	}
 	for _, c := range needs {
 		dst := t.Ptr(old, c)
-		if err := planScan(m, fds[i].DataTypeOID, fds[i].Format, dst).Scan(raw[i], dst); err != nil {
+		if err := planColumn(m, fds[i].DataTypeOID, fds[i].Format, &t.Columns[c], dst).Scan(raw[i], dst); err != nil {
 			return fmt.Errorf("keel: scan old %s.%s: %w", t.Name, t.Columns[c].Name, err)
 		}
 		i++
@@ -1031,6 +1088,10 @@ func (db *DB) insertFrom(ctx context.Context, ref *Ref, src subquery,
 			return 0, run.close(ctx, errf("InsertFrom names a column of %s on %s",
 				col.Ref.Table.Name, t.Name))
 		}
+		if !t.Columns[col.Index].Stored() {
+			return 0, run.close(ctx, errf("InsertFrom names the computed field %s.%s", t.Name,
+				t.Columns[col.Index].Name))
+		}
 		if col.Ref.Table.Columns[col.Index].Flags.Has(schema.FlagTenant) && !run.sc.system {
 			return 0, run.close(ctx, errf("InsertFrom fills tenant columns from the scope; do not list %s",
 				t.Columns[col.Index].Name))
@@ -1055,7 +1116,11 @@ func (db *DB) insertFrom(ctx context.Context, ref *Ref, src subquery,
 		r.s(t.Columns[c].Quoted)
 	}
 	r.s(") ")
-	if tenantCols > 0 {
+	listed := target[:len(target)-tenantCols]
+	switch {
+	case hasNullZeroLiteral(t, listed):
+		writeNullZeroSource(r, run.sc, t, listed, tenantCols > 0, src)
+	case tenantCols > 0:
 		r.s("SELECT s.*")
 		for _, ci := range t.Tenant {
 			r.s(", ")
@@ -1064,7 +1129,7 @@ func (db *DB) insertFrom(ctx context.Context, ref *Ref, src subquery,
 		r.s(" FROM (")
 		src.writeSubquery(r, false)
 		r.s(") s")
-	} else {
+	default:
 		src.writeSubquery(r, false)
 	}
 	if r.err != nil {
@@ -1073,6 +1138,67 @@ func (db *DB) insertFrom(ctx context.Context, ref *Ref, src subquery,
 	s := &stmt{sql: string(r.buf), args: r.argsCopy(), op: "insert", table: t.Name}
 	n, err := run.bulk(ctx, s, t, "", nil, true)
 	return n, run.close(ctx, err)
+}
+
+// nullZeroLiterals are the SQL literals of the zero values of the kinds a nullzero column compares
+// with in InsertFrom; the zero values of the other kinds (nil slices and maps) are NULL already.
+var nullZeroLiterals = map[schema.Kind]string{
+	schema.KindString: "''", schema.KindTSVector: "''", schema.KindInt16: "0", schema.KindInt32: "0",
+	schema.KindInt64: "0", schema.KindFloat32: "0", schema.KindFloat64: "0", schema.KindBool: "false",
+	schema.KindTime: "'0001-01-01 00:00:00+00'",
+}
+
+// hasNullZeroLiteral reports whether a column of cols is nullzero with a zero value that is not
+// NULL in SQL, so InsertFrom must turn it into NULL.
+func hasNullZeroLiteral(t *schema.Table, cols []int32) bool {
+	for _, c := range cols {
+		if t.Columns[c].Flags.Has(schema.FlagNullZero) && nullZeroLiterals[t.Columns[c].Kind] != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// writeNullZeroSource writes the SELECT of an InsertFrom whose listed columns include nullzero
+// ones: SELECT nullif(s.c1, <zero literal>), s.c2, … [, tenant values] FROM (src) AS s(c1, c2, …),
+// so a query that yields a zero value stores NULL, as every other write does.
+func writeNullZeroSource(r *render, sc *scopeState, t *schema.Table, cols []int32, tenant bool, src subquery) {
+	r.s("SELECT ")
+	for i, c := range cols {
+		if i > 0 {
+			r.s(", ")
+		}
+		lit := ""
+		if t.Columns[c].Flags.Has(schema.FlagNullZero) {
+			lit = nullZeroLiterals[t.Columns[c].Kind]
+		}
+		if lit != "" {
+			r.s("nullif(")
+		}
+		r.s("s.")
+		r.s(outputName(i))
+		if lit != "" {
+			r.s(", ")
+			r.s(lit)
+			r.b(')')
+		}
+	}
+	if tenant {
+		for _, ci := range t.Tenant {
+			r.s(", ")
+			r.tenantArg(sc.tenantPos(t.Columns[ci].Name))
+		}
+	}
+	r.s(" FROM (")
+	src.writeSubquery(r, false)
+	r.s(") AS s(")
+	for i := range cols {
+		if i > 0 {
+			r.s(", ")
+		}
+		r.s(outputName(i))
+	}
+	r.b(')')
 }
 
 // afterWrite runs the After hooks now, in the write's transaction, and queues the Committed hooks.

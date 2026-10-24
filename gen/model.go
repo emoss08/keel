@@ -59,7 +59,10 @@ type column struct {
 	elem     *types.Named
 	basic    string
 	scanner  bool
+	valuePtr bool
 	idx      int32
+
+	zero zeroTest
 
 	label   string
 	doc     string
@@ -291,25 +294,26 @@ func readColumn(f *types.Var, ft schema.FieldTag) (*column, error) {
 	}
 	if ft.Flags.Has(schema.FlagJSONB) {
 		c.kind = schema.KindJSON
-		return c, nil
+		return c, checkNullZero(c)
 	}
 	if n, ok := t.(*types.Named); ok {
 		obj := n.Obj()
-		if obj.Pkg() != nil && obj.Pkg().Path() == "time" && obj.Name() == "Time" {
+		_, isBasic := n.Underlying().(*types.Basic)
+		switch {
+		case obj.Pkg() != nil && obj.Pkg().Path() == "time" && obj.Name() == "Time":
 			c.kind = schema.KindTime
-			return c, nil
-		}
-		if types.Implements(types.NewPointer(n), scannerIface) {
+			return c, checkNullZero(c)
+		case isBasic:
+			c.named = n
+		case types.Implements(types.NewPointer(n), scannerIface):
 			c.kind = schema.KindOther
 			c.scanner = true
 			c.named = n
+			c.valuePtr = valuerOnPointer(n)
 			if strings.HasPrefix(obj.Name(), "Null") {
 				c.nullable = true
 			}
-			return c, nil
-		}
-		if _, isBasic := n.Underlying().(*types.Basic); isBasic {
-			c.named = n
+			return c, checkNullZero(c)
 		}
 	}
 	switch u := t.Underlying().(type) {
@@ -368,7 +372,103 @@ func readColumn(f *types.Var, ft schema.FieldTag) (*column, error) {
 	default:
 		return nil, fmt.Errorf("%s needs the jsonb option", f.Type())
 	}
-	return c, nil
+	return c, checkNullZero(c)
+}
+
+// valuerOnPointer reports whether only *n, not n, has a method Value() (driver.Value, error), so
+// the generated Value accessor hands the driver a pointer to the field.
+func valuerOnPointer(n *types.Named) bool {
+	return !hasValuer(types.NewMethodSet(n)) && hasValuer(types.NewMethodSet(types.NewPointer(n)))
+}
+
+// hasValuer reports whether ms has a method Value with no parameters returning a value and an
+// error.
+func hasValuer(ms *types.MethodSet) bool {
+	for i := range ms.Len() {
+		fn, ok := ms.At(i).Obj().(*types.Func)
+		if !ok || fn.Name() != "Value" {
+			continue
+		}
+		sig := fn.Type().(*types.Signature)
+		return sig.Params().Len() == 0 && sig.Results().Len() == 2 &&
+			types.Identical(sig.Results().At(1).Type(), types.Universe.Lookup("error").Type())
+	}
+	return false
+}
+
+// zeroTest is how generated code tests a nullzero field for its zero value.
+type zeroTest uint8
+
+const (
+	zeroNone zeroTest = iota
+	zeroString
+	zeroNumber
+	zeroBool
+	zeroNil
+	zeroMethod
+	zeroStruct
+)
+
+// resolveZero chooses how generated code tests c for its zero value: a literal for basic types,
+// nil for maps, slices, pointers and interfaces, an IsZero() bool method (time.Time, decimals),
+// or a comparison with the composite zero value of a comparable struct or array.
+func resolveZero(c *column) error {
+	if !c.tag.Flags.Has(schema.FlagNullZero) {
+		return nil
+	}
+	t := c.typ
+	if hasIsZero(t) {
+		c.zero = zeroMethod
+		return nil
+	}
+	switch u := t.Underlying().(type) {
+	case *types.Basic:
+		switch {
+		case u.Info()&types.IsString != 0:
+			c.zero = zeroString
+		case u.Info()&types.IsBoolean != 0:
+			c.zero = zeroBool
+		default:
+			c.zero = zeroNumber
+		}
+	case *types.Map, *types.Slice, *types.Pointer, *types.Interface:
+		c.zero = zeroNil
+	case *types.Struct, *types.Array:
+		if !types.Comparable(t) {
+			return fmt.Errorf("nullzero needs a comparable type or an IsZero() bool method; %s has neither", t)
+		}
+		c.zero = zeroStruct
+	default:
+		return fmt.Errorf("nullzero does not apply to %s", t)
+	}
+	return nil
+}
+
+// hasIsZero reports whether t or *t has a method IsZero() bool.
+func hasIsZero(t types.Type) bool {
+	obj, _, _ := types.LookupFieldOrMethod(types.NewPointer(t), true, nil, "IsZero")
+	fn, ok := obj.(*types.Func)
+	if !ok {
+		return false
+	}
+	sig := fn.Type().(*types.Signature)
+	return sig.Params().Len() == 0 && sig.Results().Len() == 1 &&
+		types.Identical(sig.Results().At(0).Type(), types.Typ[types.Bool])
+}
+
+// checkNullZero refuses nullzero on a column whose Go type already stores nil as NULL: a pointer
+// or a Null… scanner.
+func checkNullZero(c *column) error {
+	if !c.tag.Flags.Has(schema.FlagNullZero) {
+		return nil
+	}
+	switch {
+	case c.ptr:
+		return fmt.Errorf("nullzero needs a non-pointer field; a pointer already stores nil as NULL")
+	case c.scanner && c.nullable:
+		return fmt.Errorf("nullzero needs a non-nullable type; %s already stores NULL", c.named.Obj().Name())
+	}
+	return resolveZero(c)
 }
 
 // lookupTag returns the value of key in a struct tag, as reflect.StructTag.Get does.

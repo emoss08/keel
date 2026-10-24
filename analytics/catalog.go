@@ -197,7 +197,7 @@ func (c *Catalog) addEntity(t *schema.Table) error {
 func fieldOf(e *Entity, i int32) (*Field, bool) {
 	col := &e.Table.Columns[i]
 	info := col.Report
-	if info == nil || !info.Included {
+	if info == nil || !info.Included || !col.Stored() {
 		return nil, false
 	}
 	typ, ok := fieldType(info.Type)

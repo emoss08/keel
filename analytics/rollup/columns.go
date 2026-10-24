@@ -95,7 +95,7 @@ func (r *Rollup) storedAggs() []stored {
 // countOf returns the stored count of column col's values: the row count when col is -1 or never
 // null.
 func (r *Rollup) countOf(col int32) stored {
-	if col < 0 || !r.source.Columns[col].Flags.Has(schema.FlagNullable) {
+	if col < 0 || !r.source.Columns[col].MayBeNull() {
 		return stored{fn: "count", col: -1}
 	}
 	return stored{fn: "count", col: col}
@@ -157,6 +157,9 @@ func (r *Rollup) schemaColumn(c column) schema.Column {
 	case colTenant, colDim:
 		sc := r.source.Columns[c.source]
 		keep := schema.FlagNullable | schema.FlagJSONB | schema.FlagTenant
+		if sc.Flags.Has(schema.FlagNullZero) {
+			sc.Flags |= schema.FlagNullable
+		}
 		sc.Flags &= keep
 		sc.Quoted = ""
 		return sc
@@ -172,7 +175,10 @@ func (r *Rollup) schemaColumn(c column) schema.Column {
 
 // nullableBucket flags the bucket nullable when the grain column is.
 func (r *Rollup) nullableBucket() schema.ColFlag {
-	return r.source.Columns[r.grain].Flags & schema.FlagNullable
+	if r.source.Columns[r.grain].MayBeNull() {
+		return schema.FlagNullable
+	}
+	return 0
 }
 
 // aggColumn describes the column of a stored aggregate with the type Postgres gives it: counts

@@ -104,13 +104,14 @@ func lastSegment(p string) string {
 
 // wrapper is a generated column type for a named Go type.
 type wrapper struct {
-	named   *types.Named
-	name    string
-	outPath string
-	outName string
-	base    string
-	basic   string
-	scanner bool
+	named    *types.Named
+	name     string
+	outPath  string
+	outName  string
+	base     string
+	basic    string
+	scanner  bool
+	valuePtr bool
 }
 
 // emitter writes the files of one generation run.
@@ -138,7 +139,7 @@ func (e *emitter) planWrappers() {
 					continue
 				}
 				obj := c.named.Obj()
-				w := &wrapper{named: c.named, scanner: c.scanner, basic: c.basic}
+				w := &wrapper{named: c.named, scanner: c.scanner, basic: c.basic, valuePtr: c.valuePtr}
 				if owner, ok := e.pkgs[obj.Pkg().Path()]; ok {
 					w.outPath, w.outName = owner.outPath, owner.outName
 					w.name = obj.Name() + "Col"
@@ -214,6 +215,7 @@ func flagNames(f schema.ColFlag) string {
 		{schema.FlagAutoCreate, "FlagAutoCreate"}, {schema.FlagAutoUpdate, "FlagAutoUpdate"},
 		{schema.FlagReadOnly, "FlagReadOnly"}, {schema.FlagNoSelect, "FlagNoSelect"},
 		{schema.FlagNullable, "FlagNullable"}, {schema.FlagJSONB, "FlagJSONB"}, {schema.FlagAutoID, "FlagAutoID"},
+		{schema.FlagNullZero, "FlagNullZero"}, {schema.FlagComputed, "FlagComputed"},
 	}
 	var parts []string
 	for _, n := range names {
@@ -525,6 +527,8 @@ func (e *emitter) emitWrapper(b *bytes.Buffer, im *imports, wr *wrapper) {
 	w("type %s struct{ %s.%s }\n\n", wr.name, keel, wr.base)
 	conv := func(v string) string {
 		switch {
+		case wr.valuePtr:
+			return "&" + v
 		case wr.scanner:
 			return v
 		case wr.base == "Float64Col":
@@ -557,8 +561,12 @@ func (e *emitter) emitWrapper(b *bytes.Buffer, im *imports, wr *wrapper) {
 		w("func (c %s) In(vs ...%s) %s.Pred { return c.Int16Col.In(%s.Int16s(vs)...) }\n", wr.name, t, keel, keel)
 		w("func (c %s) NotIn(vs ...%s) %s.Pred { return c.Int16Col.NotIn(%s.Int16s(vs)...) }\n", wr.name, t, keel, keel)
 	case "AnyCol":
-		w("func (c %s) In(vs ...%s) %s.Pred { return c.AnyCol.In(vs) }\n", wr.name, t, keel)
-		w("func (c %s) NotIn(vs ...%s) %s.Pred { return c.AnyCol.NotIn(vs) }\n", wr.name, t, keel)
+		list := "vs"
+		if wr.valuePtr {
+			list = keel + ".Pointers(vs)"
+		}
+		w("func (c %s) In(vs ...%s) %s.Pred { return c.AnyCol.In(%s) }\n", wr.name, t, keel, list)
+		w("func (c %s) NotIn(vs ...%s) %s.Pred { return c.AnyCol.NotIn(%s) }\n", wr.name, t, keel, list)
 	}
 	w("\n")
 }
@@ -612,6 +620,10 @@ func (e *emitter) ptrExpr(im *imports, c *column, unsafePkg string) string {
 }
 
 func (e *emitter) valueStmt(im *imports, c *column, keel string) string {
+	if c.zero != zeroNone {
+		return fmt.Sprintf("\t\tif %s {\n\t\t\treturn nil\n\t\t}\n\t\treturn %s\n", e.zeroCond(im, c),
+			e.plainValue(c, keel))
+	}
 	switch {
 	case c.kind == schema.KindJSON && !c.ptr:
 		switch c.typ.Underlying().(type) {
@@ -626,6 +638,10 @@ func (e *emitter) valueStmt(im *imports, c *column, keel string) string {
 	case c.ptr && c.named != nil && !c.scanner:
 		return fmt.Sprintf("\t\tif r.%s == nil {\n\t\t\treturn nil\n\t\t}\n\t\treturn %s(*r.%s)\n", c.field,
 			c.basic, c.field)
+	case c.ptr && c.valuePtr:
+		return fmt.Sprintf("\t\tif r.%s == nil {\n\t\t\treturn nil\n\t\t}\n\t\treturn r.%s\n", c.field, c.field)
+	case c.valuePtr:
+		return fmt.Sprintf("\t\treturn &r.%s\n", c.field)
 	case c.ptr:
 		return fmt.Sprintf("\t\tif r.%s == nil {\n\t\t\treturn nil\n\t\t}\n\t\treturn *r.%s\n", c.field, c.field)
 	case c.named != nil && !c.scanner:
@@ -644,4 +660,38 @@ func (e *emitter) valueStmt(im *imports, c *column, keel string) string {
 		return fmt.Sprintf("\t\tif r.%s == nil {\n\t\t\treturn []int64{}\n\t\t}\n\t\treturn %s\n", c.field, v)
 	}
 	return fmt.Sprintf("\t\treturn r.%s\n", c.field)
+}
+
+// zeroCond is the condition under which a nullzero field holds its zero value.
+func (e *emitter) zeroCond(im *imports, c *column) string {
+	f := "r." + c.field
+	switch c.zero {
+	case zeroString:
+		return f + ` == ""`
+	case zeroNumber:
+		return f + " == 0"
+	case zeroBool:
+		return "!" + f
+	case zeroNil:
+		return f + " == nil"
+	case zeroMethod:
+		return f + ".IsZero()"
+	}
+	return fmt.Sprintf("%s == (%s{})", f, types.TypeString(c.typ, im.qualifier()))
+}
+
+// plainValue is the value a nullzero field binds when it is not zero.
+func (e *emitter) plainValue(c *column, keel string) string {
+	f := "r." + c.field
+	switch {
+	case c.valuePtr:
+		return "&" + f
+	case c.named != nil && !c.scanner:
+		return c.basic + "(" + f + ")"
+	case c.elem != nil && c.kind == schema.KindStringArray:
+		return keel + ".Strings(" + f + ")"
+	case c.elem != nil && c.kind == schema.KindInt64Array:
+		return keel + ".Int64s(" + f + ")"
+	}
+	return f
 }

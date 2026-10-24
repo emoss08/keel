@@ -202,6 +202,11 @@ func (d DynExpr) bin(op, label string, v any) DynExpr {
 	if err := d.Err(); err != nil {
 		return dynFail(err)
 	}
+	if c := d.nullZeroCol(v); c != nil {
+		if p := nullZeroCmp(*c, op, v); p != nil {
+			return newDyn(p, label)
+		}
+	}
 	b, err := d.rhs(op, v)
 	if err != nil {
 		return dynFail(err)
@@ -265,9 +270,27 @@ func (d DynExpr) In(list any) DynExpr { return d.anyOf(list, " = ANY(") }
 // NotIn is d <> ALL(list).
 func (d DynExpr) NotIn(list any) DynExpr { return d.anyOf(list, " <> ALL(") }
 
+// nullZeroCol returns the column of d when d is a bare nullzero column compared with the value v,
+// so the comparison follows nullzero's meaning of the zero value.
+func (d DynExpr) nullZeroCol(v any) *Col {
+	if d.n == nil || d.n.col == nil || !d.n.col.nullZero() {
+		return nil
+	}
+	switch v.(type) {
+	case DynExpr, Expr, nil:
+		return nil
+	}
+	return d.n.col
+}
+
 func (d DynExpr) anyOf(list any, op string) DynExpr {
 	if err := d.Err(); err != nil {
 		return dynFail(err)
+	}
+	if c := d.nullZeroCol(list); c != nil {
+		if p := nullZeroAny(*c, list, op == " <> ALL("); p != nil {
+			return newDyn(p, d.Label())
+		}
 	}
 	b, err := dynOperand(list)
 	if err != nil {

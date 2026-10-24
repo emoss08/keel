@@ -180,6 +180,89 @@ func (w *Worker) AfterLoad(_ context.Context) error {
 	return nil
 }
 
+// Contact is a person at a customer. Its optional fields are nullzero: an empty value is stored as
+// NULL and NULL reads back as the empty value.
+type Contact struct {
+	keel.Table `keel:"contacts"`
+
+	ID             ids.ID         `keel:"id,pk,autoid:con_"`
+	OrganizationID ids.ID         `keel:"organization_id,pk,tenant"`
+	BusinessUnitID ids.ID         `keel:"business_unit_id,pk,tenant"`
+	CustomerID     ids.ID         `keel:"customer_id,nullzero"`
+	Name           string         `keel:"name"`
+	Phone          string         `keel:"phone,nullzero"`
+	Floor          int16          `keel:"floor,nullzero"`
+	Visits         int32          `keel:"visits,nullzero"`
+	Score          int64          `keel:"score,nullzero"`
+	Rating         float64        `keel:"rating,nullzero"`
+	Weight         float32        `keel:"weight,nullzero"`
+	VIP            bool           `keel:"vip,nullzero"`
+	Status         Status         `keel:"status,nullzero"`
+	Priority       Priority       `keel:"priority,nullzero"`
+	LastSeenAt     time.Time      `keel:"last_seen_at,nullzero"`
+	Balance        Money          `keel:"balance,nullzero"`
+	Notes          []string       `keel:"notes,nullzero"`
+	Prefs          map[string]any `keel:"prefs,jsonb,nullzero"`
+	Avatar         []byte         `keel:"avatar,nullzero"`
+	Version        int64          `keel:"version,version"`
+	// CustomerName is the name of the contact's customer, filled by queries that compute it.
+	CustomerName string `keel:"customer_name,computed,nullzero"`
+	// Loads counts the shipments of the contact's customer, filled by queries that compute it.
+	Loads int64 `keel:"loads,computed"`
+
+	Customer *Customer `keel:"belongs:customer_id"`
+}
+
+// Note is a free-text note about a customer, searched by its words.
+type Note struct {
+	keel.Table `keel:"notes"`
+
+	ID             ids.ID `keel:"id,pk,autoid:not_"`
+	OrganizationID ids.ID `keel:"organization_id,pk,tenant"`
+	BusinessUnitID ids.ID `keel:"business_unit_id,pk,tenant"`
+	CustomerID     ids.ID `keel:"customer_id"`
+	Body           string `keel:"body"`
+	// SearchVector is the note's body stemmed in English.
+	SearchVector string `keel:"search_vector,noselect,readonly,tsvector=english"`
+	// Rank is how well the note matches a search, filled by queries that compute it.
+	Rank float32 `keel:"rank,computed"`
+
+	Customer *Customer `keel:"belongs:customer_id"`
+}
+
+// Leave is a worker's paid time off.
+type Leave struct {
+	keel.Table `keel:"leaves,report=Workforce"`
+
+	ID             ids.ID `keel:"id,pk,autoid:lv_"`
+	OrganizationID ids.ID `keel:"organization_id,pk,tenant"`
+	BusinessUnitID ids.ID `keel:"business_unit_id,pk,tenant"`
+	WorkerID       ids.ID `keel:"worker_id"`
+	Days           int32  `keel:"days"`
+
+	// Entries are the ledger entries that draw on the leave, which belong to the same worker.
+	Entries []*LeaveEntry `keel:"many:source_leave_id|worker_id"`
+	// LastEntry is the leave's latest ledger entry.
+	LastEntry *LeaveEntry `keel:"pick:entries,last=entries.posted_at"`
+}
+
+// LeaveEntry is a ledger entry of a worker's leave balance. It draws on a leave of the same
+// worker: its relation to the leave joins on both columns.
+type LeaveEntry struct {
+	keel.Table `keel:"leave_entries,report=Workforce"`
+
+	ID             ids.ID `keel:"id,pk,autoid:lve_"`
+	OrganizationID ids.ID `keel:"organization_id,pk,tenant"`
+	BusinessUnitID ids.ID `keel:"business_unit_id,pk,tenant"`
+	WorkerID       ids.ID `keel:"worker_id"`
+	SourceLeaveID  ids.ID `keel:"source_leave_id,nullzero"`
+	Hours          int32  `keel:"hours"`
+	PostedAt       int64  `keel:"posted_at"`
+
+	// Source is the leave the entry draws on.
+	Source *Leave `keel:"belongs:source_leave_id|worker_id"`
+}
+
 // Plant is a table without tenant columns, shared by every tenant.
 type Plant struct {
 	keel.Table `keel:"plants"`

@@ -206,7 +206,7 @@ rows, err := s.Where(
     s.Weight.Between(10_000, 40_000),
     s.Labels.Has("expedite"),
     s.Attributes.Text("trailer", "type").Eq("reefer"),
-    s.SearchVector.Matches("dallas reefer"),
+    s.SearchVector.Match("dallas reefer"),
     keel.Or(s.BillToID.IsNull(), s.BillTo().Code.Ne("ACME")),
 ).Order(s.CreatedAt.Desc()).Limit(50).List(ctx, db)
 ```

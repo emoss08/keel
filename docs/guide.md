@@ -18,6 +18,7 @@ tenant (see [Tenancy](#tenancy)).
 - [Configuration](#configuration)
 - [Models](#models)
   - [Tag reference](#tag-reference)
+  - [Nullzero columns](#nullzero-columns)
   - [Pick relations](#pick-relations)
   - [Derived metadata](#derived-metadata)
 - [Generating code](#generating-code)
@@ -220,6 +221,36 @@ AfterConnect: func(ctx context.Context, conn *pgx.Conn) error {
     return nil
 },
 ```
+
+- **Extension types (PostGIS, pgvector):** a column of a Go type that implements `sql.Scanner`
+  and `driver.Valuer` (on the value or on the pointer, as Trenova's `postgis.Point` does) is a
+  custom column (`KindOther`). Register the extension's types and their array types in
+  `AfterConnect` so values travel in binary through a codec; pgvector-go's `pgxvec.RegisterTypes`
+  does it for vectors, and PostGIS's EWKB fits pgx's bytea codec:
+
+```go
+AfterConnect: func(ctx context.Context, conn *pgx.Conn) error {
+    for _, name := range []string{"geometry", "geography"} {
+        var oid, array uint32
+        if err := conn.QueryRow(ctx, `SELECT oid, typarray FROM pg_type WHERE typname = $1`, name).
+            Scan(&oid, &array); err != nil {
+            return err
+        }
+        t := &pgtype.Type{Name: name, OID: oid, Codec: pgtype.ByteaCodec{}}
+        conn.TypeMap().RegisterType(t)
+        conn.TypeMap().RegisterType(&pgtype.Type{Name: "_" + name, OID: array,
+            Codec: &pgtype.ArrayCodec{ElementType: t}})
+    }
+    return nil
+},
+```
+
+  With the codecs registered, every write path binds the type's `Value` (WKB) and every read
+  passes the bytes PostGIS sends (EWKB) to `Scan`; bulk inserts send the column as one array of
+  values that the codec encodes, since keel sees the type and its array registered when it reads
+  the table's column types. Without a codec, reads still work (the driver passes the text form to
+  `Scan`), and writes need a `Value` that returns the type's text input, as hex EWKB is for
+  PostGIS. `Copy` always needs the codec.
 
 ### Read replicas
 
@@ -476,7 +507,9 @@ Shipment.Weight: keel tag "weight,fromat=weight": unknown option "fromat"`).
 | `readonly` | never written (generated or trigger-maintained columns); read back after inserts and saves | `keel:"stage_rank,readonly"` |
 | `noselect` | not selected by default; usable in predicates. Mark a generated `noselect` column `readonly` too | `keel:"search_vector,noselect,readonly,tsvector"` |
 | `jsonb` | the value is encoded as JSON; a nil map or slice in a non-pointer field is written as `{}` or `[]` | `keel:"attributes,jsonb"` |
-| `tsvector` | the column gets the full-text operators | see `noselect` |
+| `tsvector` / `tsvector=<config>` | the column gets the full-text operators (see [Full-text search](#full-text-search)); `<config>` is the text search configuration its searches use by default, an identifier, optionally schema-qualified | `keel:"search_vector,noselect,readonly,tsvector=english"` |
+| `nullzero` | the field's zero value is stored as NULL and NULL reads back as the zero value; see [Nullzero columns](#nullzero-columns) | `keel:"customer_id,nullzero"` |
+| `computed` | not a column of the table: never inserted, updated or selected by default; a query fills it with `Compute`; see [Computed fields](#computed-fields). The name is how dynamic queries address it | `keel:"rank,computed"` |
 | `label=<text>` | the column's label instead of the derived one | `keel:"pro_number,label=PRO Number"` |
 | `noreport` | reports do not offer the column | `keel:"internal_key,noreport"` |
 | `report` | reports offer a column they leave out by default (a tenant, version, `noselect`, bytea or tsvector column, or an exposed foreign key) | `keel:"customer_id,report"` |
@@ -486,14 +519,15 @@ Shipment.Weight: keel tag "weight,fromat=weight": unknown option "fromat"`).
 | `type=epoch` / `type=date` / `type=decimal` | the value type reports read: an `int64` of Unix seconds, a `time.Time` holding a date, a scanner or string holding a decimal | `keel:"total,type=decimal"` |
 
 A model has at most one `version`, `autoid`, `autocreate` and `autoupdate` column. `readonly`
-cannot be combined with `pk`, `tenant`, `version`, `autoid`, `autocreate` or `autoupdate`; `jsonb`
-and `tsvector`, `report` and `noreport`, `dimension` and `measure` exclude each other. The report
+cannot be combined with `pk`, `tenant`, `version`, `autoid`, `autocreate` or `autoupdate`, and
+neither can `nullzero`; `computed` excludes those, `readonly` and `noselect`; `jsonb` and `tsvector`, `report` and `noreport`, `dimension` and `measure`
+exclude each other. The report
 options (`noreport`, `report`, `dimension`, `measure`, `agg=`, `format=`, `type=`) need `report` on
 the model's table tag.
 
 There is no `default:` or `notnull`: the SQL migrations own the schema. The value in the struct is
 the value written; keel never substitutes `DEFAULT` for a zero value. A nil slice in a non-pointer
-array field is written as an empty array.
+array field is written as an empty array, unless the column is `nullzero`.
 
 **On a relation**
 
@@ -502,6 +536,7 @@ array field is written as an empty array.
 | `belongs:<fk>` | this table's `<fk>` column references the target's primary key | `Customer *Customer \`keel:"belongs:customer_id"\`` |
 | `one:<fk>` | the target's `<fk>` references this table's primary key; at most one row | `Profile *DriverProfile \`keel:"one:worker_id"\`` |
 | `many:<fk>` | the target's `<fk>` references this table's primary key | `Moves []*Move \`keel:"many:shipment_id"\`` |
+| `belongs:<fk>\|<fk>[=<key>]…` (and `one:`, `many:`) | a key of several columns: every pair joins; see [Relations](#relations) | `Source *Leave \`keel:"belongs:source_leave_id\|worker_id"\`` |
 | `m2m:<join_table>.<local_fk>.<remote_fk>` | rows linked through a join table: `<local_fk>` references this table, `<remote_fk>` the target | `Tags []*Tag \`keel:"m2m:shipment_tags.shipment_id.tag_id"\`` |
 | `pick:<relation>.<relation>…` | one row picked along a path that crosses a to-many relation (see [Pick relations](#pick-relations)) | `OriginStop *Stop \`keel:"pick:moves.stops,first=moves.sequence\|stops.sequence"\`` |
 | `first=<segment>.<column>\|…` / `last=…` | a pick's order: the first or the last row by these columns; exactly one is required on `pick` and allowed nowhere else | see `pick` |
@@ -523,11 +558,63 @@ array field is written as an empty array.
 | `string` with `tsvector` | `keel.TSVectorCol` |
 | any type with `jsonb` | `keel.JSONBCol` |
 | a named type over one of the above (`Status`, `ids.ID`) | a generated wrapper (`StatusCol`, `IdsIDCol`) whose methods take the named type |
-| a type implementing `sql.Scanner` (`Money`, a decimal) | a generated wrapper over `keel.AnyCol` (`MoneyCol`) |
+| a type implementing `sql.Scanner` (`Money`, a decimal, a PostGIS point) | a generated wrapper over `keel.AnyCol` (`MoneyCol`) whose methods take the type; when only the pointer implements `driver.Valuer`, the wrapper and the generated `Value` accessor bind a pointer |
 
 A pointer field (`*int64`, `*ids.ID`) or a `sql.Scanner` whose name starts with `Null` is nullable
 and has the same column type. Plain `int` is refused, because its width is not portable; use
 `int64`. Structs, maps and slices of other element types need the `jsonb` option.
+
+A named type over a basic type is stored as that basic type even when it implements `sql.Scanner`
+and `driver.Valuer`, as `ids.ID` here and Trenova's `pulid.ID` do: keel reads and writes the
+underlying string or number straight through the field, so the column keeps its typed operators,
+can key relations and travels in typed bulk arrays, and the type's `Scan` and `Value` methods are
+not called. A type whose methods store its zero value as NULL gets that behaviour from `nullzero`.
+Only struct and other non-basic types use their `Scan` and `Value` methods.
+
+### Nullzero columns
+
+`nullzero` is for a non-pointer field whose column is nullable: the zero value of the field (`""`,
+`0`, `false`, the zero `time.Time`, a nil slice or map, a struct's zero value) is stored as NULL,
+and NULL reads back as the zero value. Optional foreign keys are the common case: an empty
+`CustomerID` must be NULL, not `''`, for the foreign key and partial unique indexes to hold.
+
+```go
+type Contact struct {
+    keel.Table `keel:"contacts"`
+
+    ID         ids.ID    `keel:"id,pk,autoid:con_"`
+    // …tenant columns…
+    CustomerID ids.ID    `keel:"customer_id,nullzero"`
+    Phone      string    `keel:"phone,nullzero"`
+    LastSeenAt time.Time `keel:"last_seen_at,nullzero"`
+    Balance    Money     `keel:"balance,nullzero"`
+    Notes      []string  `keel:"notes,nullzero"`
+
+    Customer *Customer `keel:"belongs:customer_id"`
+}
+```
+
+- **Writes.** Every write stores a zero value as NULL: `Create`, `CreateMany` (the column's typed
+  array carries NULL elements), `Copy`, `Upsert` and `CreateOrSkip`, `Save` with or without named
+  columns, bulk `Update` and `Conflict.Set` (`c.Phone.To("")` binds NULL), and `InsertFrom`, which
+  wraps a picked value of a string, number, bool or time column in `nullif(…, zero)`.
+- **Reads.** NULL decodes into the zero value through a scan plan cached per connection, without
+  reflection or an allocation per value for the basic kinds and `time.Time`.
+- **Predicates.** A value compared with a nullzero column follows the field's meaning: `Eq(zero)` is
+  `IS NULL`, `Ne(zero)` and `IsDistinctFrom(zero)` are `IS NOT NULL`, `Ne(v)` is `IS DISTINCT FROM v`
+  so rows holding the zero value match, `In(…)` with the zero value in the list adds `OR col IS
+  NULL`, and `NotIn(…)` without it keeps the NULL rows. The dynamic layer's `Eq`, `Ne`, `In` and
+  `NotIn` on a nullzero column do the same. Ordering comparisons (`Gt`, `Lt`, `Between`) see NULL as
+  SQL does: it never matches.
+- **Ordering and pages.** NULL sorts last ascending and first descending, as in Postgres; keyset
+  pages over a nullzero column place its zero values that way.
+- **Relations.** A nullzero foreign key holding the zero value has no related row: `Load` leaves the
+  relation nil, and key lists for relation loads skip it.
+
+The generated `Value` accessor tests the zero value (`r.Phone == ""`, `r.LastSeenAt.IsZero()`,
+`r.Balance == (Money{})`): a struct type needs an `IsZero() bool` method or must be comparable.
+`nullzero` on a pointer field or a `Null…` scanner is refused, since those store NULL already, and
+so is `nullzero` on a `pk`, `tenant`, `version`, `autoid`, `autocreate` or `autoupdate` column.
 
 ### Relations
 
@@ -535,12 +622,53 @@ A relation field is a pointer (to-one: `belongs`, `one`, `pick`) or a slice (to-
 `m2m`) of another model. A model may relate to itself (`Worker.Manager *Worker
 \`keel:"belongs:manager_id"\``) and to the same target twice (`Customer` and `BillTo`).
 
+A relation can join on several columns: list them with `|`. Each item names a foreign-key column
+(this table's for `belongs`, the target's for `one` and `many`) and, after `=`, the column it
+references on the other side; without `=`, the first item references the primary key and the
+others the column of the same name. A ledger entry that draws on a leave of the same worker:
+
+```go
+type Leave struct {
+    keel.Table `keel:"leaves"`
+    ID       ids.ID `keel:"id,pk,autoid:lv_"`
+    // …tenant columns…
+    WorkerID ids.ID `keel:"worker_id"`
+
+    Entries   []*LeaveEntry `keel:"many:source_leave_id|worker_id"`
+    LastEntry *LeaveEntry   `keel:"pick:entries,last=entries.posted_at"`
+}
+
+type LeaveEntry struct {
+    keel.Table `keel:"leave_entries"`
+    ID            ids.ID `keel:"id,pk,autoid:lve_"`
+    // …tenant columns…
+    WorkerID      ids.ID `keel:"worker_id"`
+    SourceLeaveID ids.ID `keel:"source_leave_id,nullzero"`
+    PostedAt      int64  `keel:"posted_at"`
+
+    Source *Leave `keel:"belongs:source_leave_id|worker_id"` // = leaves.id AND = leaves.worker_id
+}
+```
+
+Every use honours every pair: joins and relation path filters (`e.Source().Days.Gt(1)`), loads
+(to-many loads filter by `(fk1, fk2) IN (SELECT * FROM unnest($1, $2))` and attach by the whole key,
+`Limit` loads and picks unnest one array per key column), `Any` and `None`, picks whose first hop
+has several columns, bulk updates and deletes through the relation, the dynamic layer's paths,
+`Rel`, `Any`, `None` and pre-aggregations, and the analytics edges built on them.
+
 Rules:
 
-- The referenced primary key, besides its tenant columns, must be a single column. Tenant columns
-  are not part of the relation key: when both sides have them, keel adds them to every join, as
-  constants from the scope under a tenant scope and as column equalities under a system scope.
-- Keys of to-many relations must be string or integer columns.
+- A key column given without `=`, other than the first, must exist on the other side under the
+  same name; name it with `=` otherwise. Paired columns must hold the same kind of value (any two
+  integer widths pair). The referenced columns should be unique on their table (the primary key,
+  or a unique constraint as `(id, worker_id)` above).
+- With one column and no `=`, the referenced primary key, besides its tenant columns, must be a
+  single column.
+- Tenant columns are not part of the relation key and are refused in it: when both sides have
+  them, keel adds them to every join, as constants from the scope under a tenant scope and as
+  column equalities under a system scope.
+- Keys of to-many and pick relations must be string or integer columns. Many-to-many relations
+  take one column per side.
 - The target must be a model of the same `keel gen` run.
 
 ### Pick relations
@@ -789,6 +917,15 @@ column of another table) makes the query a projection, which needs `keel.Into`.
 sh, err := s.Pick(s.ProNumber, s.Status).Where(s.ID.Eq(id)).One(ctx, db) // sh.Total is zero
 ```
 
+`Omit` is the other way round: the default columns except the ones named, for a heavy or secret
+column (a transcript, a file's contents, a token). The primary key and the columns relation loads
+need are read anyway, and loads take it too:
+
+```go
+runs, err := r.Omit(r.Transcript).Where(r.ThreadID.Eq(id)).Limit(50).List(ctx, db)
+rows, err := s.Load(s.Customer().Omit(s.Customer().Email)).Limit(50).List(ctx, db)
+```
+
 ### Operators
 
 Every clause takes expressions, never strings, and each column offers the operators of its Go
@@ -807,7 +944,7 @@ n, err := s.Where(
     s.Labels.Has("expedite"),
     s.Attributes.Contains(map[string]any{"temperature": "frozen"}),
     s.Attributes.Text("trailer", "type").Eq("reefer"),
-    s.SearchVector.Matches("dallas reefer"),
+    s.SearchVector.Match("dallas reefer"),
     keel.Or(s.CanceledAt.IsNull(), s.CanceledAt.Gt(since.Unix())),
     keel.Not(s.Customer().Name.ContainsFold("test")),
 ).Count(ctx, db)
@@ -830,7 +967,7 @@ late, err := st.Where(st.ArrivedAt.Gte(since), st.Kind.Eq("delivery")).Count(ctx
 | `JSONBCol` | `Contains(v)` (`@>`, `v` encoded as JSON), `HasKey`, `HasAnyKey`, `HasAllKeys`, `Text(path...)` (`#>>`, a `StringExpr`), `To` |
 | `StringArrayCol` | `Has`, `Overlaps`, `ContainsAll`, `ContainedBy`, `Len`, `To` |
 | `Int64ArrayCol` | `Has`, `Overlaps`, `ContainsAll`, `ContainedBy`, `To` |
-| `TSVectorCol` | `Matches(q)` (`@@ websearch_to_tsquery(q)`), `MatchesConfig(config, q)`, `Rank(q)` |
+| `TSVectorCol` | `Match(q, opts...)` (`@@ websearch_to_tsquery(…)`), `Rank(q, opts...)` (`ts_rank`), `RankCD(q, opts...)` (`ts_rank_cd`); see [Full-text search](#full-text-search) |
 
 Generated wrappers (`StatusCol`, `IdsIDCol`) take the named type in `Eq`, `Ne`, `Gt`, `Gte`, `Lt`,
 `Lte`, `IsDistinctFrom`, `Between`, `To`, and for string, integer and scanner kinds `In` and
@@ -844,6 +981,54 @@ valid only inside `Conflict.Set` (see [Upsert](#upsert)) and fails the statement
 Combinators: `keel.And(ps...)` and `keel.Or(ps...)` skip nil predicates (`And` of nothing is
 `TRUE`, `Or` of nothing `FALSE`), `keel.Not(p)`, `keel.True()`. `Where` joins its arguments with
 `AND`.
+
+### Full-text search
+
+A `tsvector` column (`TSVectorCol`) is searched with `Match` and ranked with `Rank` and `RankCD`. The
+search string is always a bound parameter, so user input goes in as it is typed:
+
+```go
+n := fleetdb.Notes // SearchVector string `keel:"search_vector,noselect,readonly,tsvector=english"`
+q := "dallas reefer"
+rows, err := n.
+    Compute(n.Rank, n.SearchVector.Rank(q)).
+    Where(n.SearchVector.Match(q)).
+    Order(n.Rank.Desc()).
+    Limit(20).
+    List(ctx, db)
+// … WHERE n."search_vector" @@ websearch_to_tsquery('english'::regconfig, $3)
+//   ORDER BY (ts_rank(n."search_vector", websearch_to_tsquery('english'::regconfig, $3))) DESC
+```
+
+Options shape the query:
+
+| Option | Query |
+|---|---|
+| none | `websearch_to_tsquery(config, q)`: words ANDed, `"quoted phrase"`, `or`, `-excluded` |
+| `keel.SearchModes(keel.Plain)` | `plainto_tsquery(config, q)`: the words ANDed, operators ignored |
+| `keel.SearchModes(keel.Phrase)` | `phraseto_tsquery(config, q)`: the words next to each other, in order |
+| `keel.SearchModes(keel.Prefix)` | `to_tsquery(config, 'dal':* & 'ree':*)`: every word as a prefix, for search as you type |
+| `keel.SearchModes(keel.AnyWord)` | `to_tsquery(config, 'dallas' \| 'reefer')`: any of the words |
+| `keel.SearchModes(keel.AnyPrefix)` | `to_tsquery(config, 'dal':* \| 'ree':*)`: any word as a prefix |
+| `keel.SearchModes(a, b, …)` | the queries of each mode ORed: `(websearch_to_tsquery(…) \|\| to_tsquery(…))` |
+| `keel.SearchConfig("simple", "english")` | the queries built with each configuration ORed, so a word matches stemmed or not |
+| `keel.RankNormalization(32)` | `ts_rank(vector, query, 32)`: the normalization bit mask of `Rank` and `RankCD` |
+
+The configuration is the column's `tsvector=<config>` unless `SearchConfig` names others, and the
+database's `default_text_search_config` when neither does. Names must be identifiers (optionally
+`schema.name`); they are written into the statement as `'name'::regconfig`, and Postgres refuses a
+configuration it does not have. The word modes split the string into runs of letters and digits,
+so punctuation and tsquery operators in user input are only separators; a string without words
+makes a query that matches nothing (`NULL::tsquery`). `Rank` and `RankCD` return a `real`, usable
+in `Order`, in `Pick` and to fill a computed field; a search string written twice in one statement
+(in `Match` and `Rank`) binds once. A GIN index on the vector serves every mode.
+
+The dynamic layer has the same methods on `DynExpr`: `q.Path("search_vector").Match(q, opts...)`,
+`.Rank(q, opts...)` and `.RankCD(q, opts...)`.
+
+Trigram similarity (`pg_trgm`'s `similarity()` and `%`) has no typed operator: a trigram GIN index
+serves `ContainsFold` and `ILike`, and `keel.Raw("similarity(?, ?)", col, text)` reaches the
+functions where a ranking needs them.
 
 ### Optional filters
 
@@ -955,6 +1140,15 @@ hazmatShippers, err := c.Where(
 ```
 
 Subqueries are scoped like any statement: the tenant predicate is added to each.
+
+`keel.Scalar(q)` is the value of a query that picks one expression and returns at most one row,
+`(SELECT …)`, usable wherever an expression is: in `Pick`, `Where`, `Order`, and to fill a computed
+field (below).
+
+```go
+loads := keel.Scalar(s.Pick(keel.Count()).Where(s.CustomerID.EqCol(c.ID)))
+busy, err := c.Where(keel.Raw("? > 10", loads)).All(ctx, db)
+```
 
 ### Lateral joins
 
@@ -1089,6 +1283,48 @@ and the column methods `Count`, `CountDistinct`, `Min`, `Max`, `Sum`, `Avg`, `Le
 `Agg` compares to values (`Eq`, `Ne`, `Gt`, `Gte`, `Lt`, `Lte`), orders (`Asc`, `Desc`), restricts its
 rows with `Filter(pred)` (`FILTER (WHERE …)`), and becomes a window function with `Over` or
 `OverWindow`. Use a pointer field for an aggregate that can be NULL (`max` over no rows).
+
+### Computed fields
+
+A field tagged `computed` is not a column of the table: a search rank, a count of related rows, a
+name from a joined table. Writes never insert or update it, queries do not select it by default,
+the bulk-insert column catalog skips it, and reports do not offer it. A query fills it with
+`Compute(field, expr)`, which selects the expression into the field for the rows it returns:
+
+```go
+type Contact struct {
+    keel.Table `keel:"contacts"`
+    // …
+    CustomerName string `keel:"customer_name,computed,nullzero"`
+    Loads        int64  `keel:"loads,computed"`
+}
+
+c, s := fleetdb.Contacts, fleetdb.Shipments
+rows, err := c.
+    Compute(c.CustomerName, c.Customer().Name).
+    Compute(c.Loads, keel.Scalar(s.Pick(keel.Count()).Where(s.CustomerID.EqCol(c.CustomerID)))).
+    Where(c.Loads.Gt(0)).
+    Order(c.Loads.Desc()).
+    Limit(50).
+    List(ctx, db)
+```
+
+- The field is filled only by queries that compute it; elsewhere it keeps its zero value. A field
+  that can read NULL (a `LEFT JOIN`ed name, `max` over no rows) needs a pointer type or `nullzero`.
+- Inside the query, the field stands for its expression: `Where`, `Order`, `Pick`, keyset `Page`s
+  and `keel.Into` projections write the expression where the field is used. Using a computed field
+  in a query that does not compute it fails the query.
+- The expression's type must fit the field: keel knows the type of columns, string expressions,
+  `Scalar` over one typed expression, counts and ranks (`bigint`), `ts_rank` (`real`), `sum` and
+  `avg` (by their argument), `min` and `max` (their argument's type), and refuses an expression
+  that does not fit (a `bigint` field takes integers, a `double precision` field any number, a
+  scanner field such as a decimal any number). Expressions whose type keel cannot tell (`Raw`) are
+  checked by the driver when rows decode.
+- `Compute` works on loads too (`Load(m.Compute(m.Rank, …))`) and on the dynamic layer:
+  `q.Compute("loads", expr)` makes `q.Path("loads")` read the expression, and a query without
+  `Select` returns the field after the table's default columns.
+- `Save`, bulk `Update`, `OnConflict` and `InsertFrom` refuse a computed field, and `keel.Needs`
+  panics on one: it has no stored value.
 
 ### Grouping sets, rollups and cubes
 
@@ -1271,7 +1507,7 @@ pgx cancels the statement and the error matches `context.DeadlineExceeded`. Insi
 canceled statement aborts the transaction.
 
 ```go
-n, err := s.Where(s.SearchVector.Matches("reefer")).Timeout(2*time.Second).Count(ctx, db)
+n, err := s.Where(s.SearchVector.Match("reefer")).Timeout(2*time.Second).Count(ctx, db)
 if errors.Is(err, context.DeadlineExceeded) {
     // the search took too long
 }
@@ -1599,7 +1835,8 @@ res, err := q.Run(ctx, db)
 ```
 
 Each selected expression becomes a result column named by its label: the path
-(`"customer.name"`), or the name given with `As(label)`. Labels stay in Go and never reach the SQL,
+(`"customer.name"`), or the name given with `As(label)`. `q.Omit(names...)` leaves columns out of
+the default columns a query without `Select` returns. Labels stay in Go and never reach the SQL,
 where result columns are `c1`, `c2`, …; a label selected twice is an error. Without `Select`, a
 table query returns the table's default columns.
 
@@ -1618,6 +1855,7 @@ A `keel.DynExpr` is an expression, and a predicate, so `Where`, `Having`, `keel.
 | CASE | `keel.DynCase().When(cond, then).Else(v)` or `.End()` |
 | functions | `keel.DynFunc(name, args...)` from an allow-list |
 | aggregates | `Sum`, `Avg`, `Min`, `Max`, `Count`, `CountDistinct`, `keel.DynCount()`, `Filter(pred)`, `Over(window)` |
+| full-text search | `Match(q, opts...)`, `Rank(q, opts...)`, `RankCD(q, opts...)` on a `tsvector` column or expression, as on `TSVectorCol` |
 | typed expressions | `keel.DynOf(e)`: a generated column, `keel.Rank()`, `keel.Lag(…)`, `keel.Grouping(…)`, a `Raw` |
 
 `DynFunc` calls only functions of keel's allow-list: `abs`, `ceil`, `floor`, `round`, `trunc`,
@@ -1930,7 +2168,12 @@ err := s.Save(ctx, db, sh, s.Status, s.CanceledAt)
 ```
 
 Only updatable columns can be named: not primary key, tenant, `autocreate`, `version` or `readonly`
-columns.
+columns. `SaveExcept` writes every updatable column but the named ones, for columns a row read
+earlier must never overwrite (tokens another process refreshes, counters a trigger maintains):
+
+```go
+err := conns.SaveExcept(ctx, db, conn, conns.AccessToken, conns.RefreshToken)
+```
 
 [Interceptors](#interceptors) apply to `Save`: their predicates join the primary key in the
 `WHERE` clause (with `FROM` for the relations they reference), so a row they exclude is not
@@ -1978,7 +2221,27 @@ Assignments:
 | `col.ToExpr(e)` | `col = e`, for example `s.Weight.ToExpr(keel.Raw("? * 2", s.Weight))` |
 
 The `autoupdate` column is stamped and the `version` column incremented unless an assignment names
-them. Assignments must be columns of the query's table. Bulk writes run no model hooks and no
+them. Assignments must be columns of the query's table.
+
+A bulk update or delete takes `With` and inner `Join`s of tables and CTEs, which become `FROM`
+(`USING`) items, their `ON` predicates and tenant predicates joining the `WHERE` clause. With
+`keel.Unnest`, a CTE over Go slices bound as one array each, every row gets its own values in one
+statement, whatever the number of rows:
+
+```go
+c := fleetdb.Contacts
+out := keel.Unnest("outcome", []string{"id", "phone", "score"}, ids, phones, scores)
+n, err := c.With(out).
+    Join(out, out.Col("id").EqCol(c.ID)).
+    Where(c.VIP.IsFalse()).
+    Update(ctx, db, c.Phone.ToExpr(out.Col("phone")), c.Score.ToExpr(out.Col("score")))
+// WITH "outcome" ("id", "phone", "score") AS (SELECT * FROM unnest($1::text[], $2::text[], $3::int8[]))
+// UPDATE "contacts" c SET … FROM "outcome" o WHERE … AND o."id" = c."id"
+```
+
+`Unnest` takes slices of strings, integers, floats, bools, times or byte slices (named types
+included) of equal length; it is also a CTE for reads. `LeftJoin` and lateral joins are refused:
+an `UPDATE`'s `FROM` list cannot outer-join the updated table. Bulk writes run no model hooks and no
 `BeforeWrite` hooks; see [which hooks run](#which-hooks-run).
 
 ### Upsert
@@ -1996,7 +2259,10 @@ inserted, err := c.Upsert(ctx, db, rows,
     keel.OnConflict(c.OrganizationID, c.BusinessUnitID, c.Code).Update(c.Name))
 ```
 
-- `keel.OnConflict(cols...)` names the unique columns; it is required.
+- `keel.OnConflict(targets...)` names what the unique index covers; it is required. Targets are
+  columns, or expressions for an index on expressions: `keel.OnConflict(p.OrganizationID,
+  p.BusinessUnitID, keel.Raw("md5(?)", p.Endpoint))` is `ON CONFLICT (organization_id,
+  business_unit_id, (md5(endpoint)))`. An expression must not bind values.
 - `Update(cols...)` names the columns a conflicting row takes from the proposed row
   (`col = EXCLUDED.col`).
 - `Set(assignments...)` gives a conflicting row explicit assignments, the same `Assignment` values
@@ -2034,11 +2300,14 @@ Many rows go through `unnest`, as in `CreateMany`.
 
 ### CreateOrSkip
 
-`CreateOrSkip` inserts rows, skips those that conflict on the given columns (`ON CONFLICT DO
-NOTHING`), and returns how many it inserted:
+`CreateOrSkip` inserts rows, skips those that conflict on the given targets (`ON CONFLICT (…) DO
+NOTHING`), and returns how many it inserted. Targets are columns or index expressions, as for
+`OnConflict`; without any, a row that violates any unique constraint is skipped (`ON CONFLICT DO
+NOTHING`):
 
 ```go
 n, err := c.CreateOrSkip(ctx, db, rows, c.OrganizationID, c.BusinessUnitID, c.Code)
+n, err = c.CreateOrSkip(ctx, db, rows) // any unique violation
 ```
 
 ### InsertFrom
@@ -3231,14 +3500,17 @@ The same pattern works for an application:
 | `AfterScanRow` | `AfterLoad` |
 | `bun:"type:jsonb"` | `keel:"attributes,jsonb"` |
 | `bun:",array"` | nothing; `[]string` and `[]int64` are arrays |
-| `bun:",nullzero"` | a pointer field; keel writes the value in the struct |
+| `bun:",nullzero"` on a non-pointer field | `keel:"customer_id,nullzero"`; on a pointer field drop it, a nil pointer is NULL |
 | `bun:",scanonly"` (generated column) | `keel:"stage_rank,readonly"`, plus `noselect` when it should not be read |
+| `bun:",scanonly"` (a search rank, an aggregate or a joined value scanned onto the model) | `keel:"rank,computed"` plus `q.Compute(s.Rank, expr)` |
+| `ColumnExpr("(SELECT count(*) …) AS loads")` | `Compute(c.Loads, keel.Scalar(s.Pick(keel.Count()).Where(…)))` |
 | `bun:",default:..."` | nothing; set the value in Go |
 | `bun:"-"` | `keel:"-"` |
 | `bun:",soft_delete"` | not built in; an interceptor that adds `deleted_at IS NULL` |
 | `bun:"rel:belongs-to,join:customer_id=id"` | `keel:"belongs:customer_id"` |
 | `bun:"rel:has-one,join:id=worker_id"` | `keel:"one:worker_id"` |
 | `bun:"rel:has-many,join:id=shipment_id"` | `keel:"many:shipment_id"` |
+| `bun:"rel:belongs-to,join:source_pto_id=id,join:worker_id=worker_id"` | `keel:"belongs:source_pto_id\|worker_id"`; drop the `organization_id` and `business_unit_id` pairs, the tenancy adds them |
 | `bun:"m2m:shipment_tags,join:Shipment=Tag"` | `keel:"m2m:shipment_tags.shipment_id.tag_id"` |
 | a hand-written `LEFT JOIN LATERAL (… ORDER BY … LIMIT 1)` for a shipment's first stop | `keel:"pick:moves.stops,first=moves.sequence\|stops.sequence"` and `Load(s.OriginStop())` |
 | labels, descriptions and enum values curated in a report catalog | derived by `keel gen` from names, doc comments and constants ([Derived metadata](#derived-metadata)) |
@@ -3247,7 +3519,16 @@ The same pattern works for an application:
 | `WhereGroup(" AND ", func(q) {... ScopeTenant ...})` | nothing; the scope applies the tenant |
 | `.WhereOr(...)` | `keel.Or(...)` |
 | `.Where("sp.pro_number ILIKE ?", "%"+q+"%")` | `s.ProNumber.ContainsFold(q)` (escaped) |
+| `Where("sv @@ websearch_to_tsquery('simple', ?) \|\| websearch_to_tsquery('english', ?)", q, q)` | `s.SearchVector.Match(q, keel.SearchConfig("simple", "english"))` |
+| `ColumnExpr("ts_rank(sv, …) AS rank")` | `Compute(s.Rank, s.SearchVector.Rank(q))` |
+| `to_tsquery('simple', 'word:*')` built by hand for search as you type | `keel.SearchModes(keel.WebSearch, keel.Prefix)` |
 | `bun.In(ids)` | `col.In(ids...)` |
+| `bun.List(ids)` in `IN (?)` | `col.In(ids...)`, one array parameter |
+| `?TableAlias`, `bun.Ident(col)` in raw fragments | typed columns, or expression arguments of `keel.Raw`; aliases are derived |
+| `payload->'a'->>'b' = ?` | `s.Payload.Text("a", "b").Eq(v)` |
+| `.For("UPDATE OF inv")` | `.Lock(keel.ForUpdate)`, which locks the base table (`FOR UPDATE OF` its alias) |
+| a `*postgis.Point` (`sql.Scanner` and `driver.Valuer`) with `type:geography` | the same field; register the PostGIS codecs in `Config.AfterConnect` ([Enums, domains and decimals](#enums-domains-and-decimals)) |
+| `.Value("geom", "ST_GeomFromGeoJSON(?)", js)` on an insert | a `Value` method that encodes the type, or `Update` with `ToExpr(keel.Raw("ST_GeomFromGeoJSON(?)", js))` in the same transaction |
 | `.Order("sp.created_at DESC")` | `.Order(s.CreatedAt.Desc())` |
 | `.Limit(n).Offset(m)`, `ScanAndCount` | `Page(ctx, db, keel.After(cursor, n).Total(cap))` (one round trip) |
 | `.Count(ctx)`, `.Exists(ctx)` | `Count`, `CountUpTo`, `Exists` |
@@ -3260,6 +3541,7 @@ The same pattern works for an application:
 | `ColumnExpr("count(*) FILTER (WHERE ...)")` | `keel.Count().Filter(pred)` |
 | `.DistinctOn("customer_id")` | `.DistinctOn(s.CustomerID)` |
 | `.With("busy", q).Table("busy")` | `keel.CTE("busy", cols, q)` plus `With(busy)` |
+| `NewUpdate().With("_data", db.NewValues(&rows)).TableExpr("_data").Set(...)`, or `UPDATE … FROM unnest(?::text[], …)` | `keel.Unnest("data", cols, slices...)` plus `With(data).Join(data, …).Update(…)` |
 | `.Union(q)`, `.UnionAll(q)` | `keel.Union(q1, q2)`, `keel.UnionAll(q1, q2)` |
 | `.For("UPDATE NOWAIT")` | `.Lock(keel.ForUpdate, keel.NoWait)` |
 | `db.NewInsert().Model(sh).Exec(ctx)` | `s.Create(ctx, db, sh)` |
@@ -3267,13 +3549,17 @@ The same pattern works for an application:
 | `.Returning("*")` | nothing; keel reads back `readonly` columns and the version |
 | `db.NewUpdate().Model(sh).WherePK().Exec(ctx)` | `s.Save(ctx, db, sh)` |
 | `db.NewUpdate().Model(sh).Column("status").WherePK()` | `s.Save(ctx, db, sh, s.Status)` |
+| `db.NewUpdate().Model(sh).WherePK().ExcludeColumn("token")` | `s.SaveExcept(ctx, db, sh, s.Token)`; `created_at` needs nothing, `Save` never writes `autocreate` |
+| `db.NewSelect().Model(&rows).ExcludeColumn("transcript")` | `s.Omit(s.Transcript)` |
 | `db.NewUpdate().Model((*T)(nil)).Set("status = ?", v).Where(...)` | `s.Where(...).Update(ctx, db, s.Status.To(v))` |
 | `db.NewDelete().Model(sh).WherePK().Exec(ctx)` | `s.DeleteRow(ctx, db, sh)` |
 | `db.NewDelete().Model((*T)(nil)).Where(...)` | `s.Where(...).Delete(ctx, db)` |
 | `.On("CONFLICT (...) DO UPDATE").Set("x = EXCLUDED.x")` | `s.Upsert(ctx, db, rows, keel.OnConflict(...).Update(s.X))` |
 | `.Set("hits = sp.hits + 1, name = EXCLUDED.name")` on a conflict | `keel.OnConflict(...).Set(s.Hits.Add(1), s.Name.ToExpr(s.Name.Excluded()))` |
 | pgx `CopyFrom` on the underlying pool for large loads | `s.Copy(ctx, db, rows)`, with tenant columns, IDs, timestamps and hooks |
-| `.On("CONFLICT DO NOTHING")` | `s.CreateOrSkip(ctx, db, rows, cols...)` |
+| `.On("CONFLICT (cols) DO NOTHING")` | `s.CreateOrSkip(ctx, db, rows, cols...)` |
+| `.On("CONFLICT DO NOTHING")` | `s.CreateOrSkip(ctx, db, rows)` |
+| `.On("CONFLICT (md5(endpoint)) DO UPDATE")` | `keel.OnConflict(keel.Raw("md5(?)", s.Endpoint)).Update(…)` |
 | `INSERT … SELECT` through `NewInsert().Table(...)` | `s.InsertFrom(ctx, db, q, cols...)` |
 | `db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {...})` | `keel.Write(ctx, db, func(ctx context.Context) error {...})`; pass `ctx`, not a `tx` |
 | `bun.IDB` parameters to share a transaction | nothing; the transaction travels on the context |

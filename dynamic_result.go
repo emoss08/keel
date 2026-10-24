@@ -962,7 +962,7 @@ func (q *DynQuery) pagePlan(p PageRequest) (*dynPage, error) {
 			c = &x
 		}
 		return c != nil && c.Ref == q.q.ref && q.derived == nil &&
-			!c.Ref.Table.Columns[c.Index].Flags.Has(schema.FlagNullable)
+			!c.Ref.Table.Columns[c.Index].MayBeNull()
 	}
 	desc := false
 	for _, o := range q.q.order {

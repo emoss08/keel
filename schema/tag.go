@@ -12,11 +12,12 @@ type FieldTag struct {
 	Flags    ColFlag
 	IDPrefix string
 	TSVector bool
+	TSConfig string
 	Label    string
 	Report   ReportTag
 
 	Rel        RelKind
-	RelKey     string
+	RelKeys    []RelKey
 	JoinTable  string
 	JoinLocal  string
 	JoinRemote string
@@ -24,6 +25,15 @@ type FieldTag struct {
 	PickPath   []string
 	PickOrder  []PickRef
 	PickLast   bool
+}
+
+// RelKey is one column pair of a belongs, one or many relation as written: FK names the
+// foreign-key column (this table's for belongs, the target's for one and many), Key the column it
+// references on the other side, empty when the tag leaves it to keel gen (the primary key for the
+// first pair, the column named like FK for the others).
+type RelKey struct {
+	FK  string
+	Key string
 }
 
 // IsRelation reports whether the tag declares a relation.
@@ -191,6 +201,7 @@ func (ft *FieldTag) column(name string, opts []option) error {
 var columnFlags = map[string]ColFlag{
 	"pk": FlagPK, "tenant": FlagTenant, "version": FlagVersion, "autocreate": FlagAutoCreate,
 	"autoupdate": FlagAutoUpdate, "readonly": FlagReadOnly, "noselect": FlagNoSelect, "jsonb": FlagJSONB,
+	"nullzero": FlagNullZero, "computed": FlagComputed,
 }
 
 // columnOption sets one column option.
@@ -202,7 +213,15 @@ func (ft *FieldTag) columnOption(o option) error {
 	switch o.key {
 	case "tsvector":
 		ft.TSVector = true
-		return o.noValue()
+		if !o.hasValue {
+			return nil
+		}
+		v, err := o.needValue()
+		if err != nil {
+			return err
+		}
+		ft.TSConfig = v
+		return checkConfig(v)
 	case "autoid":
 		ft.Flags |= FlagAutoID
 		v, err := o.needValue()
@@ -292,6 +311,12 @@ func (ft *FieldTag) checkColumn() error {
 	case ft.Flags.Has(FlagReadOnly) && ft.Flags&(FlagPK|FlagTenant|FlagVersion|FlagAutoCreate|
 		FlagAutoUpdate|FlagAutoID) != 0:
 		return fmt.Errorf("readonly excludes write options")
+	case ft.Flags.Has(FlagComputed) && ft.Flags&(FlagPK|FlagTenant|FlagVersion|FlagAutoCreate|FlagAutoUpdate|
+		FlagAutoID|FlagReadOnly|FlagNoSelect) != 0:
+		return fmt.Errorf("computed excludes pk, tenant, version, autoid, autocreate, autoupdate, readonly and noselect")
+	case ft.Flags.Has(FlagNullZero) && ft.Flags&(FlagPK|FlagTenant|FlagVersion|FlagAutoCreate|FlagAutoUpdate|
+		FlagAutoID) != 0:
+		return fmt.Errorf("nullzero excludes pk, tenant, version, autoid, autocreate and autoupdate")
 	case ft.Flags.Has(FlagJSONB) && ft.TSVector:
 		return fmt.Errorf("jsonb and tsvector exclude each other")
 	case ft.Report.Include && ft.Report.Exclude:
@@ -310,8 +335,7 @@ func (ft *FieldTag) relation(rel RelKind, key string, opts []option) error {
 	case Pick:
 		err = ft.pickPath(key)
 	default:
-		ft.RelKey = key
-		err = checkIdent(key)
+		err = ft.relKeys(key)
 	}
 	if err != nil {
 		return err
@@ -323,6 +347,28 @@ func (ft *FieldTag) relation(rel RelKind, key string, opts []option) error {
 	}
 	if rel == Pick && ft.PickOrder == nil {
 		return fmt.Errorf("pick relations need first= or last=")
+	}
+	return nil
+}
+
+// relKeys reads the <fk>[=<key>]|… key of a belongs, one or many tag.
+func (ft *FieldTag) relKeys(key string) error {
+	for _, item := range strings.Split(key, "|") {
+		fk, ref, explicit := strings.Cut(strings.TrimSpace(item), "=")
+		if err := checkIdent(fk); err != nil {
+			return err
+		}
+		if explicit {
+			if err := checkIdent(ref); err != nil {
+				return err
+			}
+		}
+		for _, k := range ft.RelKeys {
+			if k.FK == fk {
+				return fmt.Errorf("relation key %s is repeated", fk)
+			}
+		}
+		ft.RelKeys = append(ft.RelKeys, RelKey{FK: fk, Key: ref})
 	}
 	return nil
 }
@@ -437,6 +483,22 @@ func checkIdent(s string) error {
 	}
 	if s[0] >= '0' && s[0] <= '9' {
 		return fmt.Errorf("identifier %q must not start with a digit", s)
+	}
+	return nil
+}
+
+// checkConfig refuses a text search configuration name that is not an identifier, optionally
+// qualified by one schema.
+func checkConfig(name string) error {
+	schemaName, cfg, qualified := strings.Cut(name, ".")
+	if qualified {
+		if err := checkIdent(schemaName); err != nil {
+			return fmt.Errorf("tsvector=%s: %w", name, err)
+		}
+		name = cfg
+	}
+	if err := checkIdent(name); err != nil {
+		return fmt.Errorf("tsvector=%s: %w", name, err)
 	}
 	return nil
 }

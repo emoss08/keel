@@ -21,6 +21,11 @@ func TestParseFieldTag(t *testing.T) {
 		{tag: "v, version ,autocreate,autoupdate", ok: true,
 			want: FieldTag{Name: "v", Flags: FlagVersion | FlagAutoCreate | FlagAutoUpdate}},
 		{tag: "attrs,jsonb", ok: true, want: FieldTag{Name: "attrs", Flags: FlagJSONB}},
+		{tag: "phone,nullzero", ok: true, want: FieldTag{Name: "phone", Flags: FlagNullZero}},
+		{tag: "rank,computed", ok: true, want: FieldTag{Name: "rank", Flags: FlagComputed}},
+		{tag: "sv,tsvector=english", ok: true, want: FieldTag{Name: "sv", TSVector: true, TSConfig: "english"}},
+		{tag: "sv,tsvector=public.my_cfg", ok: true, want: FieldTag{Name: "sv", TSVector: true, TSConfig: "public.my_cfg"}},
+		{tag: "geom,readonly,nullzero", ok: true, want: FieldTag{Name: "geom", Flags: FlagReadOnly | FlagNullZero}},
 		{tag: "pro_number,label=PRO Number", ok: true, want: FieldTag{Name: "pro_number", Label: "PRO Number"}},
 		{tag: "x,noreport", ok: true, want: FieldTag{Name: "x", Report: ReportTag{Exclude: true}}},
 		{tag: "x,report,dimension", ok: true, want: FieldTag{Name: "x", Report: ReportTag{Include: true, Kind: Dimension}}},
@@ -32,11 +37,15 @@ func TestParseFieldTag(t *testing.T) {
 		{tag: "x,type=decimal", ok: true, want: FieldTag{Name: "x", Report: ReportTag{Type: ValueDecimal}}},
 		{tag: "x,agg=sum|avg| count_distinct", ok: true,
 			want: FieldTag{Name: "x", Report: ReportTag{Aggs: AggSum | AggAvg | AggCountDistinct}}},
-		{tag: "belongs:customer_id", ok: true, want: FieldTag{Rel: BelongsTo, RelKey: "customer_id"}},
+		{tag: "belongs:customer_id", ok: true, want: FieldTag{Rel: BelongsTo, RelKeys: []RelKey{{FK: "customer_id"}}}},
+		{tag: "belongs:source_pto_id|worker_id", ok: true, want: FieldTag{Rel: BelongsTo,
+			RelKeys: []RelKey{{FK: "source_pto_id"}, {FK: "worker_id"}}}},
+		{tag: "many:shipment_id|driver_id=worker_id", ok: true, want: FieldTag{Rel: HasMany,
+			RelKeys: []RelKey{{FK: "shipment_id"}, {FK: "driver_id", Key: "worker_id"}}}},
 		{tag: "belongs:bill_to_id,label=Bill To,noreport", ok: true,
-			want: FieldTag{Rel: BelongsTo, RelKey: "bill_to_id", Label: "Bill To", NoReport: true}},
-		{tag: "one:worker_id", ok: true, want: FieldTag{Rel: HasOne, RelKey: "worker_id"}},
-		{tag: "many:shipment_id", ok: true, want: FieldTag{Rel: HasMany, RelKey: "shipment_id"}},
+			want: FieldTag{Rel: BelongsTo, RelKeys: []RelKey{{FK: "bill_to_id"}}, Label: "Bill To", NoReport: true}},
+		{tag: "one:worker_id", ok: true, want: FieldTag{Rel: HasOne, RelKeys: []RelKey{{FK: "worker_id"}}}},
+		{tag: "many:shipment_id", ok: true, want: FieldTag{Rel: HasMany, RelKeys: []RelKey{{FK: "shipment_id"}}}},
 		{tag: "m2m:shipment_tags.shipment_id.tag_id", ok: true,
 			want: FieldTag{Rel: ManyToMany, JoinTable: "shipment_tags", JoinLocal: "shipment_id", JoinRemote: "tag_id"}},
 		{tag: "pick:moves.stops,first=moves.sequence|stops.sequence", ok: true, want: FieldTag{Rel: Pick,
@@ -71,11 +80,19 @@ func TestParseFieldTagErrors(t *testing.T) {
 		"name,":                           "empty option",
 		"name,pk,pk":                      "option pk is repeated",
 		"name,pk=yes":                     "option pk takes no value",
-		"name,tsvector=1":                 "option tsvector takes no value",
+		"name,tsvector=1":                 "tsvector=1: identifier \"1\" must not start with a digit",
 		"id,autoid:":                      "option autoid needs a value (autoid:…)",
 		"id,autoid=x":                     "write autoid:<prefix>",
 		"id,autoid:a/b":                   `autoid prefix "a/b" must match`,
 		"x,readonly,pk":                   "readonly excludes write options",
+		"x,nullzero,version":              "nullzero excludes pk, tenant, version",
+		"x,computed,noselect":             "computed excludes pk, tenant, version, autoid, autocreate, autoupdate, readonly and noselect",
+		"x,tsvector=English":              `tsvector=English: identifier "English" must match`,
+		"x,tsvector=":                     "option tsvector needs a value",
+		"belongs:a|a":                     "relation key a is repeated",
+		"belongs:a|":                      "empty identifier",
+		"many:a=B":                        `identifier "B" must match`,
+		"x,nullzero,autoid:x_":            "nullzero excludes pk, tenant, version, autoid",
 		"x,jsonb,tsvector":                "jsonb and tsvector exclude each other",
 		"x,label":                         "option label needs a value (label=…)",
 		"x,label= ":                       "option label needs a value",
@@ -193,6 +210,7 @@ func TestDerive(t *testing.T) {
 		{Name: "version", Flags: FlagVersion},
 		{Name: "created", Flags: FlagAutoCreate},
 		{Name: "updated", Flags: FlagAutoUpdate},
+		{Name: "rank", Flags: FlagComputed},
 	}}
 	Derive(tb)
 	eqInts(t, tb.PK, 0, 1)
@@ -203,6 +221,9 @@ func TestDerive(t *testing.T) {
 	eqInts(t, tb.Returning, 3)
 	if tb.Version != 5 || tb.AutoID != 0 || tb.AutoCreate != 6 || tb.AutoUpdate != 7 {
 		t.Fatalf("%+v", tb)
+	}
+	if tb.Columns[8].Stored() || !tb.Columns[2].Stored() {
+		t.Fatal("Stored misreports a computed field")
 	}
 	if tb.Quoted != `"t"` || tb.Columns[2].Quoted != `"name"` {
 		t.Fatal("not quoted")

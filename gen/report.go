@@ -137,11 +137,15 @@ func markKeys(models []*model) {
 		for _, r := range m.rels {
 			switch r.kind {
 			case schema.BelongsTo:
-				c := m.columns[r.local[0]]
-				c.key = true
-				c.exposed = c.exposed || !r.tag.NoReport
+				for _, l := range r.local {
+					c := m.columns[l]
+					c.key = true
+					c.exposed = c.exposed || !r.tag.NoReport
+				}
 			case schema.HasOne, schema.HasMany:
-				r.target.columns[r.remote[0]].key = true
+				for _, rc := range r.remote {
+					r.target.columns[rc].key = true
+				}
 			}
 		}
 	}
@@ -270,12 +274,15 @@ func isDecimal(n *types.Named) bool {
 // or noreport says otherwise.
 func included(c *column) bool {
 	switch {
-	case c.tag.Report.Include:
+	case c.tag.Report.Include && !c.tag.Flags.Has(schema.FlagComputed):
 		return true
 	case c.tag.Report.Exclude:
 		return false
 	}
 	f := c.tag.Flags
+	if f.Has(schema.FlagComputed) {
+		return false
+	}
 	return !f.Has(schema.FlagTenant) && !f.Has(schema.FlagVersion) && !f.Has(schema.FlagNoSelect) &&
 		c.kind != schema.KindBytes && c.kind != schema.KindTSVector && !c.exposed
 }

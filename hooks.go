@@ -80,11 +80,17 @@ type HookOption func(*hookEntry)
 
 // Needs asks for the previous values of cols on updates and deletes, read in the same statement
 // (RETURNING old.…, which needs PostgreSQL 18) into Mutation.Old. It costs nothing unless the table
-// has AfterWrite or Committed hooks for the write's op.
+// has AfterWrite or Committed hooks for the write's op. A computed field has no stored value, so
+// naming one panics when the hook is registered.
 func Needs(cols ...interface{ column() Col }) HookOption {
 	return func(h *hookEntry) {
 		for _, c := range cols {
-			h.needs = append(h.needs, c.column().Index)
+			col := c.column()
+			if !col.Ref.Table.Columns[col.Index].Stored() {
+				panic("keel: Needs names the computed field " + col.Ref.Table.Name + "." +
+					col.Ref.Table.Columns[col.Index].Name)
+			}
+			h.needs = append(h.needs, col.Index)
 		}
 	}
 }

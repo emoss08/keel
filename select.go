@@ -133,6 +133,11 @@ func (n *lnode) selectedColumns(extra []int32) []int32 {
 	} else {
 		cols = append(cols, n.table.Select...)
 	}
+	if n.spec != nil && len(n.spec.omit) > 0 {
+		cols = slices.DeleteFunc(cols, func(c int32) bool {
+			return slices.ContainsFunc(n.spec.omit, func(o Col) bool { return o.Index == c })
+		})
+	}
 	need := func(c int32) {
 		if !slices.Contains(cols, c) {
 			cols = append(cols, c)
@@ -153,6 +158,13 @@ func (n *lnode) selectedColumns(extra []int32) []int32 {
 	}
 	for _, c := range extra {
 		need(c)
+	}
+	if n.spec != nil {
+		for _, c := range n.spec.computes {
+			if c.err == nil {
+				need(c.col)
+			}
+		}
 	}
 	return cols
 }
@@ -193,6 +205,8 @@ func (q *query) renderSelect(r *render, sn *lnode, o selectOpts) *selectPlan {
 			plan.parents[i] = n.parent.idx
 		}
 	}
+
+	r.registerComputes(sc, nodes)
 
 	lateral := make([]string, len(q.joins))
 	for i, j := range q.joins {
@@ -289,6 +303,7 @@ func (q *query) renderSelect(r *render, sn *lnode, o selectOpts) *selectPlan {
 			if ni == 0 {
 				extra = o.extraCols
 			}
+			r.checkOmit(n)
 			n.cols = n.selectedColumns(extra)
 			na := r.alias(n.ref)
 			for _, c := range n.cols {
@@ -296,9 +311,13 @@ func (q *query) renderSelect(r *render, sn *lnode, o selectOpts) *selectPlan {
 					r.s(", ")
 				}
 				first = false
-				r.s(na)
-				r.b('.')
-				r.s(n.table.Columns[c].Quoted)
+				if n.table.Columns[c].Stored() {
+					r.s(na)
+					r.b('.')
+					r.s(n.table.Columns[c].Quoted)
+				} else {
+					r.computed(Col{Ref: n.ref, Index: c})
+				}
 				plan.cols = append(plan.cols, lcol{node: ni, col: c})
 			}
 			if ni > 0 {
@@ -441,6 +460,18 @@ func (q *query) renderSelect(r *render, sn *lnode, o selectOpts) *selectPlan {
 	}
 	r.release(with, sel, explicit, from, where, group, having, windows, order)
 	return plan
+}
+
+// checkOmit fails the statement when node n's query omits a column of another table.
+func (r *render) checkOmit(n *lnode) {
+	if n.spec == nil {
+		return
+	}
+	for _, o := range n.spec.omit {
+		if o.Ref == nil || o.Ref.Table != n.table {
+			r.fail(errf("Omit names a column of %s on a query of %s", tableName(o.Ref), n.table.Name))
+		}
+	}
 }
 
 // single reports whether the statement reads at most two rows in no particular order, so a pick

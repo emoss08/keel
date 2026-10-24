@@ -23,6 +23,9 @@ func (h Handle[T]) Pick(es ...Expr) *Query[T] { return h.Query().Pick(es...) }
 // Load starts a query that loads relations.
 func (h Handle[T]) Load(ls ...Loader) *Query[T] { return h.Query().Load(ls...) }
 
+// Omit starts a query that leaves cols out of the columns it reads.
+func (h Handle[T]) Omit(cols ...interface{ column() Col }) *Query[T] { return h.Query().Omit(cols...) }
+
 // Order starts an ordered query.
 func (h Handle[T]) Order(os ...Order) *Query[T] { return h.Query().Order(os...) }
 
@@ -126,6 +129,8 @@ type query struct {
 	distinct   bool
 	ctes       []*CTETable
 	windows    []namedWindow
+	computes   []compute
+	omit       []Col
 }
 
 type joinClause struct {
@@ -145,6 +150,16 @@ func (q *Query[T]) Where(ps ...Pred) *Query[T] {
 // into T with the other fields left zero; otherwise the query is a projection for Into.
 func (q *Query[T]) Pick(es ...Expr) *Query[T] {
 	q.q.exprs = append(q.q.exprs, es...)
+	return q
+}
+
+// Omit leaves cols out of the columns the query reads, so a heavy or secret column (a transcript,
+// raw file contents, a token) is not read; the fields stay zero. The primary key and the columns
+// relation loads need are read anyway. It works on loads too: Load(r.Omit(r.Payload)).
+func (q *Query[T]) Omit(cols ...interface{ column() Col }) *Query[T] {
+	for _, c := range cols {
+		q.q.omit = append(q.q.omit, c.column())
+	}
 	return q
 }
 
@@ -317,6 +332,8 @@ func (q *Query[T]) Clone() *Query[T] {
 	c.q.distinctOn = append([]Expr(nil), q.q.distinctOn...)
 	c.q.ctes = append([]*CTETable(nil), q.q.ctes...)
 	c.q.windows = append([]namedWindow(nil), q.q.windows...)
+	c.q.computes = append([]compute(nil), q.q.computes...)
+	c.q.omit = append([]Col(nil), q.q.omit...)
 	return c
 }
 

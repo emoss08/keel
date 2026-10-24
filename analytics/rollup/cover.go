@@ -112,8 +112,10 @@ func (c *coverer) field(path string) (fieldClass, int32, *analytics.Field, error
 	if sr.Kind != schema.BelongsTo {
 		return fieldNone, -1, f, fmt.Errorf("field %s is reached through %s, which the rollup cannot join", path, via[0].Name)
 	}
-	if len(sr.Remote) == 1 && sr.Remote[0] == f.Column {
-		return c.own(path, sr.Local[0]), sr.Local[0], f, nil
+	for i, rc := range sr.Remote {
+		if rc == f.Column {
+			return c.own(path, sr.Local[i]), sr.Local[i], f, nil
+		}
 	}
 	join, ok := c.ix.joins[via[0].Relation]
 	if !ok {
