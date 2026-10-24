@@ -178,10 +178,6 @@ type selectOpts struct {
 
 // renderSelect writes the SELECT for statement node sn and returns its decoding plan.
 func (q *query) renderSelect(r *render, sn *lnode, o selectOpts) *selectPlan {
-	var with []byte
-	if sn.spec == q && len(q.ctes) > 0 {
-		with = r.section(func() { writeWith(r, q.ctes) })
-	}
 	sc, alias := r.push(sn.ref, joinLeft, q.allTenants)
 	defer r.pop()
 
@@ -259,6 +255,9 @@ func (q *query) renderSelect(r *render, sn *lnode, o selectOpts) *selectPlan {
 			}
 			return
 		}
+		if q.distinct && sn.spec == q {
+			r.s("DISTINCT ")
+		}
 		if len(q.distinctOn) > 0 && sn.spec == q {
 			r.s("DISTINCT ON (")
 			for i, e := range q.distinctOn {
@@ -311,17 +310,11 @@ func (q *query) renderSelect(r *render, sn *lnode, o selectOpts) *selectPlan {
 		}
 	})
 
-	var group, having, order []byte
+	var group, having, windows, order []byte
 	if sn.spec == q {
-		group = r.section(func() {
-			for i, e := range q.group {
-				if i > 0 {
-					r.s(", ")
-				}
-				e.writeSQL(r)
-			}
-		})
+		group = r.section(func() { writeExprs(r, q.group) })
 		having = r.section(func() { r.preds(q.having, false) })
+		windows = r.section(func() { writeWindows(r, q.windows) })
 	}
 	if !o.countOnly && sn.spec != nil {
 		order = r.section(func() {
@@ -330,6 +323,33 @@ func (q *query) renderSelect(r *render, sn *lnode, o selectOpts) *selectPlan {
 					r.s(", ")
 				}
 				ord.writeSQL(r)
+			}
+		})
+	}
+
+	var explicit []byte
+	if sn.spec == q && len(q.joins) > 0 {
+		explicit = r.section(func() {
+			for i, j := range q.joins {
+				r.s(j.kind)
+				if j.lateral != nil {
+					r.b('(')
+					j.lateral.writeSubquery(r, false)
+					r.s(") ")
+					r.s(lateral[i])
+					if j.kind == " LEFT JOIN LATERAL " {
+						r.s(" ON TRUE")
+					}
+					continue
+				}
+				r.s(j.ref.Table.Quoted)
+				r.b(' ')
+				r.s(lateral[i])
+				r.s(" ON ")
+				wrote := r.tenantPred(j.ref.Table, lateral[i], q.allTenants)
+				if !r.preds(j.on, wrote) && !wrote {
+					r.s("TRUE")
+				}
 			}
 		})
 	}
@@ -345,47 +365,27 @@ func (q *query) renderSelect(r *render, sn *lnode, o selectOpts) *selectPlan {
 		if o.extraJoin != nil {
 			o.extraJoin(r, alias)
 		}
-		var late []*join
-		for _, j := range sc.joins {
-			if j.parentAlias == alias {
-				r.writeJoin(sc, j)
-			} else {
-				late = append(late, j)
-			}
-		}
-		for i, j := range q.joins {
-			if sn.spec != q {
-				break
-			}
-			r.s(j.kind)
-			if j.lateral != nil {
-				r.b('(')
-				j.lateral.writeSubquery(r, false)
-				r.s(") ")
-				r.s(lateral[i])
-				if j.kind == " LEFT JOIN LATERAL " {
-					r.s(" ON TRUE")
+		for progress := true; progress; {
+			progress = false
+			for _, j := range sc.joins {
+				if !j.written && (j.parentAlias == alias || sc.joinWritten(j.parentAlias)) {
+					r.writeJoin(sc, j)
+					progress = true
 				}
-				continue
-			}
-			r.s(j.ref.Table.Quoted)
-			r.b(' ')
-			r.s(lateral[i])
-			r.s(" ON ")
-			wrote := r.tenantPred(j.ref.Table, lateral[i], q.allTenants)
-			if !r.preds(j.on, wrote) && !wrote {
-				r.s("TRUE")
 			}
 		}
-		for i := 0; i < len(late); i++ {
-			r.writeJoin(sc, late[i])
-		}
-		for _, j := range sc.joins {
-			if !slices.Contains(late, j) && j.parentAlias != alias {
-				r.writeJoin(sc, j)
+		r.buf = append(r.buf, explicit...)
+		for i := 0; i < len(sc.joins); i++ {
+			if !sc.joins[i].written {
+				r.writeJoin(sc, sc.joins[i])
 			}
 		}
 	})
+
+	var with []byte
+	if sn.spec == q && len(q.ctes) > 0 {
+		with = r.section(func() { writeWith(r, q.ctes) })
+	}
 
 	r.buf = append(r.buf, with...)
 	r.s("SELECT ")
@@ -403,6 +403,10 @@ func (q *query) renderSelect(r *render, sn *lnode, o selectOpts) *selectPlan {
 	if len(having) > 0 {
 		r.s(" HAVING ")
 		r.buf = append(r.buf, having...)
+	}
+	if len(windows) > 0 {
+		r.s(" WINDOW ")
+		r.buf = append(r.buf, windows...)
 	}
 	if len(order) > 0 {
 		r.s(" ORDER BY ")
@@ -431,7 +435,7 @@ func (q *query) renderSelect(r *render, sn *lnode, o selectOpts) *selectPlan {
 		r.s(alias)
 		r.s(wait)
 	}
-	r.release(with, sel, from, where, group, having, order)
+	r.release(with, sel, explicit, from, where, group, having, windows, order)
 	return plan
 }
 
@@ -456,8 +460,11 @@ func presenceOf(cols []lcol, node int, col int32) int {
 	return -1
 }
 
-// writeJoin writes the LEFT JOIN of a to-one relation path, or the lateral pick of a pick path.
+// writeJoin writes the LEFT JOIN of to-one relation path j, or the lateral pick of a pick path,
+// and marks it written. The joins of a scope are written parents first: those whose parent is the
+// base or an already written join, then the statement's explicit joins, then the rest.
 func (r *render) writeJoin(sc *scope, j *join) {
+	j.written = true
 	rel := j.ref.relation()
 	if rel.Kind == schema.Pick {
 		r.writePickJoin(sc, j)

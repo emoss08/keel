@@ -2,6 +2,7 @@ package keel
 
 import (
 	"strings"
+	"unsafe"
 )
 
 // Expr is a SQL expression. keel's column, aggregate and combinator values implement it; code
@@ -113,19 +114,22 @@ func (e RawExpr) writeSQL(r *render) {
 			r.fail(errRawArgs)
 			return
 		}
-		writeOperand(r, e.args[n])
+		writeOperand(r, e.args[n], unsafe.Pointer(&e.args[n]), e.sql)
 		n++
 	}
 }
 
 func (RawExpr) pred() {}
 
-func writeOperand(r *render, v any) {
+// writeOperand writes v in place when it is an expression and binds it otherwise. slot is where
+// the expression stores v and ctx the expression's text, so the same expression written twice
+// binds v once.
+func writeOperand(r *render, v any, slot unsafe.Pointer, ctx string) {
 	if e, ok := v.(Expr); ok {
 		e.writeSQL(r)
 		return
 	}
-	r.arg(v)
+	r.argSlot(v, slot, ctx)
 }
 
 // Exists is EXISTS (q).
@@ -151,12 +155,13 @@ type subquery interface {
 	writeSubquery(r *render, existsOnly bool)
 }
 
-// Val binds v as a parameter where an expression is expected.
-func Val(v any) Expr { return valExpr{v: v} }
+// Val binds v as a parameter where an expression is expected. The same Val written twice in a
+// statement binds v once.
+func Val(v any) Expr { return &valExpr{v: v} }
 
 type valExpr struct{ v any }
 
-func (e valExpr) writeSQL(r *render) { r.arg(e.v) }
+func (e *valExpr) writeSQL(r *render) { r.argSlot(e.v, unsafe.Pointer(e), "") }
 
 // Order is one ORDER BY term.
 type Order struct {

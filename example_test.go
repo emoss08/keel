@@ -1438,3 +1438,329 @@ func ExampleMarkChanged() {
 		log.Fatal(err)
 	}
 }
+
+func ExampleQuery_Rollup() {
+	ctx, db := requestContext(), appDB
+	s := fleetdb.Shipments
+	code := s.Customer().Code
+	level := keel.Grouping(code, s.Status)
+
+	type line struct {
+		Customer *string
+		Status   *fleet.Status
+		Loads    int64
+		Revenue  fleet.Money
+		Level    int32
+	}
+	rows, err := keel.Into[line](ctx, db, s.
+		Pick(code, s.Status, keel.Count(), s.Total.Sum(), level).
+		Rollup(code, s.Status).
+		Order(level.Asc(), code.Asc(), s.Status.Asc()))
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, r := range rows {
+		switch r.Level {
+		case 0:
+			fmt.Println(*r.Customer, *r.Status, r.Loads)
+		case 1:
+			fmt.Println(*r.Customer, "subtotal", r.Loads)
+		default:
+			fmt.Println("total", r.Loads)
+		}
+	}
+}
+
+func ExampleQuery_GroupingSets() {
+	ctx, db := requestContext(), appDB
+	s := fleetdb.Shipments
+	code := s.Customer().Code
+	level := keel.Grouping(code, s.Status)
+
+	type total struct {
+		Customer *string
+		Status   *fleet.Status
+		Loads    int64
+	}
+	rows, err := keel.Into[total](ctx, db, s.
+		Pick(code, s.Status, keel.Count()).
+		GroupingSets([]keel.Expr{code}, []keel.Expr{s.Status}, nil).
+		Having(level.Gt(0)))
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(len(rows))
+}
+
+func ExampleAgg_OverWindow() {
+	ctx, db := requestContext(), appDB
+	s := fleetdb.Shipments
+	byDay := keel.PartitionBy(s.CustomerID).OrderBy(s.CreatedAt.Asc())
+
+	type trend struct {
+		Pro     string
+		Running fleet.Money
+		Moving  float64
+		Share   float64
+		Rank    int64
+		Change  *fleet.Money
+	}
+	rows, err := keel.Into[trend](ctx, db, s.Pick(
+		s.ProNumber,
+		keel.Sum(s.Total).OverWindow(byDay.Rows(keel.UnboundedPreceding, keel.CurrentRow)),
+		keel.Avg(s.Total).OverWindow(byDay.Rows(keel.Preceding(2), keel.CurrentRow)),
+		keel.Raw("? * 100.0 / ?", s.Total, keel.Sum(s.Total).OverWindow(keel.Window{})),
+		keel.Rank().OverWindow(keel.PartitionBy(s.CustomerID).OrderBy(s.Total.Desc())),
+		keel.Raw("? - ?", s.Total, keel.Lag(s.Total, 1, nil).OverWindow(byDay)),
+	).Order(s.CustomerID.Asc(), s.CreatedAt.Asc()).Limit(1000))
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(len(rows))
+}
+
+func ExampleQuery_Window() {
+	ctx, db := requestContext(), appDB
+	s := fleetdb.Shipments
+
+	type numbered struct {
+		Pro     string
+		N       int64
+		Running fleet.Money
+		Tile    int32
+	}
+	rows, err := keel.Into[numbered](ctx, db, s.
+		Pick(s.ProNumber,
+			keel.RowNumber().OverWindow(keel.NamedWindow("per_customer")),
+			keel.Sum(s.Total).OverWindow(keel.NamedWindow("per_customer").
+				Rows(keel.UnboundedPreceding, keel.CurrentRow)),
+			keel.Ntile(4).OverWindow(keel.OrderBy(s.Total.Desc()))).
+		Window("per_customer", keel.PartitionBy(s.CustomerID).OrderBy(s.CreatedAt.Asc())).
+		Limit(500))
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(len(rows))
+}
+
+func Example_sharedParameters() {
+	ctx, db := requestContext(), appDB
+	s := fleetdb.Shipments
+
+	type monthly struct {
+		Month   time.Time
+		Revenue fleet.Money
+	}
+	month := keel.Raw("date_trunc(?, to_timestamp(?))", "month", s.CreatedAt)
+	rows, err := keel.Into[monthly](ctx, db, s.
+		Pick(month, s.Total.Sum()).
+		Group(month).
+		Order(keel.Asc(month)))
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(len(rows))
+}
+
+func ExampleQuery_Explain() {
+	ctx, db := requestContext(), appDB
+	s := fleetdb.Shipments
+	q := s.Where(s.Status.Eq(fleet.StatusNew)).Order(s.CreatedAt.Desc()).Limit(50)
+
+	plan, err := q.Explain(ctx, db, keel.ExplainOptions{})
+	if err != nil {
+		log.Fatal(err)
+	}
+	if plan.TotalCost > 100_000 {
+		fmt.Println("too expensive for an interactive request")
+	}
+
+	analyzed, err := q.Explain(ctx, db, keel.ExplainOptions{Analyze: true})
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(analyzed.Rows, analyzed.ActualRows, analyzed.ExecutionTime)
+}
+
+// reportTables is the registry of the tables reports can start from.
+var reportTables, _ = keel.NewRegistry(fleetdb.ShipmentsSchema(), fleetdb.CustomersSchema(),
+	fleetdb.MovesSchema(), fleetdb.StopsSchema(), fleetdb.TagsSchema(), fleetdb.LocationsSchema())
+
+func ExampleRegistry() {
+	ctx, db := requestContext(), appDB
+	search := "acme"
+
+	q := reportTables.Query("shipments")
+	pro := q.Path("pro_number")
+	customer := q.Path("customer", "name")
+	q.Select(pro, customer, q.Path("status"), q.Path("total")).
+		Where(q.Path("status").In([]string{"New", "Assigned"}), customer.ContainsFold(search)).
+		Order(pro.Desc()).
+		Limit(100)
+	res, err := q.Run(ctx, db)
+	if err != nil {
+		log.Fatal(err)
+	}
+	total := res.Column("total")
+	for i := range res.Rows {
+		fmt.Println(res.Columns[0].String[i], res.Column("customer.name").String[i], total.Numeric[i])
+	}
+}
+
+func ExampleDynQuery_Rollup() {
+	ctx, db := requestContext(), appDB
+	q := reportTables.Query("shipments")
+
+	code := q.Path("customer", "code")
+	month := keel.DynFunc("date_trunc", "month", keel.DynFunc("to_timestamp", q.Path("created_at"))).
+		As("month")
+	revenue := q.Path("total").Sum()
+	level := keel.DynOf(keel.Grouping(code, month))
+	q.Select(code, month, revenue.As("revenue"),
+		keel.DynCount().Filter(q.Path("hazmat").IsTrue()).As("hazmat loads"),
+		revenue.Sum().Over(keel.Window{}).As("all revenue"),
+		keel.DynOf(keel.Rank().OverWindow(keel.OrderBy(revenue.Desc()))).As("rank"),
+		level.As("level")).
+		Rollup(code, month).
+		Order(level.Asc(), code.Asc(), month.Asc())
+	res, err := q.Run(ctx, db)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(res.Rows)
+}
+
+func ExampleDynRel_PreAggregate() {
+	ctx, db := requestContext(), appDB
+	q := reportTables.Query("shipments")
+	code := q.Path("customer", "code")
+
+	moves := q.Rel("moves")
+	stops := q.Rel("moves", "stops")
+	pa := moves.PreAggregate(keel.PreAggCTE)
+	legs := pa.Measure(keel.DynCount().As("legs"))
+	loaded := pa.Measure(keel.DynCount().Filter(moves.Col("loaded").IsTrue()).As("loaded legs"))
+	q.Select(code, q.Path("total").Sum().As("revenue"), legs.Sum().As("legs"),
+		loaded.Sum().As("loaded legs")).
+		Where(moves.Any(moves.Col("status").Eq("New")),
+			stops.None(stops.Col("location", "city").Eq("Dallas"))).
+		Group(code)
+	res, err := q.Run(ctx, db)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(res.Rows)
+}
+
+func ExampleDynQuery_With() {
+	ctx, db := requestContext(), appDB
+	sub := reportTables.Query("shipments")
+	sub.Select(sub.Path("customer_id").As("customer"), sub.Path("total").Sum().As("revenue")).
+		Group(sub.Path("customer_id"))
+
+	c := reportTables.Query("customers")
+	totals := c.With(sub)
+	c.Join(totals, totals.Col("customer").Eq(c.Path("id"))).
+		Select(c.Path("code"), totals.Col("revenue")).
+		Where(totals.Col("revenue").Gt(10_000))
+	res, err := c.Run(ctx, db)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	outer := keel.DynFromQuery(sub)
+	outer.Select(keel.DynCount().As("customers"), outer.Path("revenue").Avg().As("average"))
+	summary, err := outer.Run(ctx, db)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(res.Rows, summary.Column("average").Numeric[0])
+}
+
+func ExampleDynUnionAll() {
+	ctx, db := requestContext(), appDB
+	names := func(table string) *keel.DynQuery {
+		q := reportTables.Query(table)
+		return q.Select(q.Path("name").As("name"))
+	}
+	all := keel.DynUnionAll(names("customers"), names("locations"), names("tags"))
+	all.Order(all.Path("name").Asc())
+	res, err := all.Run(ctx, db)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(res.Column("name").String)
+}
+
+func ExampleDynQuery_Page() {
+	ctx, db := requestContext(), appDB
+	q := reportTables.Query("shipments")
+	pro := q.Path("pro_number")
+	q.Select(pro, q.Path("customer", "code")).Order(pro.Desc())
+
+	cursor := ""
+	for {
+		res, err := q.Page(ctx, db, keel.After(cursor, 50))
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println(res.Column("pro_number").String)
+		if res.Next == "" {
+			break
+		}
+		cursor = res.Next
+	}
+}
+
+func ExampleDynQuery_Stream() {
+	ctx, db := requestContext(), appDB
+	q := reportTables.Query("shipments")
+	q.Select(q.Path("pro_number"), q.Path("customer", "name"), q.Path("total"), q.Path("weight"))
+
+	for batch, err := range q.Stream(ctx, db, 5000) {
+		if err != nil {
+			log.Fatal(err)
+		}
+		weight := batch.Column("weight")
+		for i := range batch.Rows {
+			if weight.IsNull(i) {
+				continue
+			}
+			fmt.Println(batch.Columns[0].String[i], weight.Int64[i])
+		}
+	}
+}
+
+func ExampleDynInto() {
+	ctx, db := requestContext(), appDB
+	q := reportTables.Query("shipments")
+	q.Select(q.Path("status"), keel.DynCount().As("loads")).Group(q.Path("status"))
+
+	statuses := reportTables.Query("shipments")
+	statuses.Select(statuses.Path("status")).Distinct()
+
+	var report, pivot *keel.DynResult
+	var rows int64
+	err := keel.Batch(ctx, db, keel.DynInto(q, &report), keel.DynInto(statuses, &pivot),
+		keel.DynCountInto(q, &rows))
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(report.Rows, pivot.Rows, rows)
+}
+
+func ExampleDynQuery_Explain() {
+	ctx, db := requestContext(), appDB
+	q := reportTables.Query("shipments")
+	q.Select(q.Path("customer", "code"), q.Path("total").Sum().As("revenue")).
+		Group(q.Path("customer", "code"))
+
+	plan, err := q.Explain(ctx, db, keel.ExplainOptions{})
+	if err != nil {
+		log.Fatal(err)
+	}
+	if plan.TotalCost > 1_000_000 || plan.Rows > 100_000 {
+		log.Fatal("report too expensive")
+	}
+	fmt.Println(plan.TotalCost)
+}
