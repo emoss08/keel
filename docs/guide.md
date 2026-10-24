@@ -3771,3 +3771,279 @@ On a 4-core cloud VM (`go test -bench . ./analytics/format ./analytics/export`):
 | Format 100,000 values of one column (text, counts, dates in Chicago, money in German, 20-digit quotients) | 1.6–23.5 ms (16–235 ns a value); no allocations once warm except for the quotients, which do not fit an int64 |
 | Write 100,000 rows of six columns: CSV / raw CSV / JSON / XLSX / Arrow | 80 / 51 / 26 / 202 / 7.5 ms |
 | Write 2,000,000 rows as XLSX | 4.5 s, live heap flat |
+
+## Analytics: caching and rollups
+
+Three packages make repeated and large reports cheap. None of them needs the others:
+
+- [`analytics/cache`](../analytics/cache) holds result caches: in memory, in Postgres, or in Redis
+  through the application's own client.
+- [`analytics/rollup`](../analytics/rollup) maintains pre-aggregated tables, refreshes them
+  incrementally and routes reports to them.
+- [`analytics/analyticscli`](../analytics/analyticscli) adds the `analytics` commands to a keelcli
+  binary: TypeScript, message catalog, model description, rollup migrations and refresh.
+
+[analytics.md](analytics.md) is the design.
+
+### Result caches
+
+A store keeps byte values by key, each with a time to live:
+
+```go
+type Store interface {
+    Get(ctx context.Context, key string) ([]byte, bool, error)
+    Set(ctx context.Context, key string, value []byte, ttl time.Duration) error
+}
+```
+
+| Store | Where values live | Notes |
+|---|---|---|
+| `cache.NewMemory(cache.MemoryOptions{MaxBytes: 256 << 20})` | the process | 64 shards by default, each an LRU list under its own lock; entries expire at their TTL and the least recently used entry of a full shard is evicted. `Get` returns a shared slice: do not modify it |
+| `cache.NewPostgres(db.Pool(), cache.PostgresOptions{})` | `keel_analytics_cache`, an `UNLOGGED` table every process shares | created on first use under an advisory lock; expiry follows the database's clock; expired rows are deleted in batches of `CleanupBatch` in the background, at most every `CleanupEvery` per process, with `SKIP LOCKED`; `Cleanup` runs it on demand |
+| `cache.NewRedis(client, cache.RedisOptions{})` | Redis, Valkey, Dragonfly, … | keel has no Redis dependency: `client` is three methods (`Get`, `Set`, `Del`) the application implements over its own client; the `RedisClient` comment shows go-redis |
+
+A value larger than the store takes (a shard's share of `MaxBytes`, or `MaxValueBytes`, 4 MiB by
+default) is `cache.ErrTooLarge`, and the key's previous value is removed so it is never served
+stale. Keys longer than 200 bytes are stored as their SHA-256 in Postgres and Redis. A TTL of zero
+or less keeps a value until it is evicted.
+
+`cache.Loader` puts a store in front of a computation:
+
+```go
+loader := cache.NewLoader(store, cache.LoaderOptions{OnError: logCacheError})
+
+body, hit, err := loader.Load(ctx, key, 5*time.Minute, func(ctx context.Context) ([]byte, error) {
+    return runReport(ctx, def)
+})
+```
+
+- Concurrent misses of one key in a process share one load: the first caller runs it, the others
+  wait for its value. In-flight loads are spread over sharded locks.
+- The load runs with the first caller's context values but not its cancellation; it is cancelled
+  when every waiting caller has given up, and a caller arriving after that starts a fresh one.
+- A store failure is a miss (`Get`) or is ignored (`Set`) and goes to `OnError`: a cache outage
+  slows reports down without failing them. A load error reaches every waiter and nothing is stored.
+  A panicking load becomes an error.
+
+The key must cover everything the value depends on: the statement and its arguments (the tenant
+among them), the row rules, the output format, and the data versions of every table the statement
+reads (`db.DataVersions`). A report answered from a rollup is keyed on its source tables' versions,
+since the rollup changes only when they do.
+
+### Rollups
+
+A rollup is a tenant table keel keeps aggregated by a time bucket and some dimensions. It is
+declared once, from the generated handles:
+
+```go
+s := fleetdb.Shipments
+
+var ShipmentsDaily = rollup.MustDefine("shipments_daily", fleetdb.ShipmentsSchema(),
+    rollup.Day(s.CreatedAt),
+    rollup.Dims(s.CustomerID, s.Status),
+    rollup.Measures(rollup.Count(), rollup.Sum(s.Total), rollup.Avg(s.Weight), rollup.Max(s.Weight)),
+)
+```
+
+- **Grain**: `rollup.Hour`, `Day`, `Week` (ISO, from Monday), `Month`, `Quarter` or `Year` of a
+  `timestamptz`, `date` or epoch column. Buckets are computed in UTC, or in
+  `rollup.Zone("America/Chicago")`.
+- **Dimensions**: columns of the same table; tenant columns are always kept.
+- **Measures**: `Count()` (rows), `CountOf(c)` (non-null values), `Sum`, `Avg`, `Min`, `Max` and
+  `CountDistinct`. Sums, counts, minimums and maximums compose, so a report over coarser buckets or
+  fewer dimensions re-aggregates them; an average is stored as a sum and a count; a distinct count
+  answers only a report at the rollup's exact grain and dimensions.
+- `Define` returns an error, and `MustDefine` panics, when a column belongs to another table or was
+  taken through a relation; the grain is not a time; a dimension is a tenant column, the grain, a
+  repeat or a tsvector; a sum or average reads non-numbers, a minimum or maximum unordered values;
+  or two derived column names collide.
+
+The rollup table holds the tenant columns, `bucket` (the start of each bucket, a `timestamptz`), the
+dimensions, and one column per stored aggregate: `row_count`, `<column>_sum`, `<column>_count`
+(only for a nullable column; otherwise the row count serves), `<column>_min`, `<column>_max`,
+`<column>_distinct`. `Rollup.Table()` is its `schema.Table`, with the source's belongs-to relations
+whose keys are dimensions, so a report can group by `customer.name` through it.
+
+#### Migrations
+
+```sh
+fleet-db analytics rollups migration -out migrations         # new and changed rollups only
+fleet-db analytics rollups migration -check -out migrations  # CI
+```
+
+`rollup.WriteMigrations(dir, rollups...)` does the same from Go, `rollup.Migration(r)` returns the
+SQL, `rollup.Func(version, r)` wraps it as a Go migration, and `rollup.DropMigration(name, table)`
+removes a rollup that is no longer declared. A rollup migration is a `--keel:notx` file whose parts
+are each safe to run again:
+
+1. `CREATE INDEX CONCURRENTLY` on the source's tenant and grain columns, which refresh reads
+   through (left out with `rollup.WithoutSourceIndex()` when an index with those leading columns
+   exists).
+2. One transaction: the shared `keel_rollup_dirty` and `keel_rollup_state` tables; the rollup table,
+   dropped first when an earlier definition made it, created with `CREATE TABLE … AS … WITH NO DATA`
+   so Postgres takes every column type from the source, and its unique key; the trigger function and
+   three statement triggers on the source.
+3. Marking every existing tenant for a rebuild and recording the rollup as ready. The source's
+   trigger lock is held only for the DDL of part 2, so writes wait briefly.
+
+Row-level security and grants stay with the application: its migrate `After` statements (Trenova's
+`SELECT trenova_rls.reconcile()`) see the rollup table as any other tenant table. Rollups need
+PostgreSQL 15 or later.
+
+#### Dirty tracking
+
+Every write to the source records the (tenant, bucket) slices it touched in `keel_rollup_dirty`,
+inside the write's transaction, through `AFTER … FOR EACH STATEMENT` triggers with transition
+tables: one `INSERT … SELECT DISTINCT … ON CONFLICT DO NOTHING` per statement, however many rows it
+wrote. An update marks only rows whose rollup columns changed, both their old and new slices; a
+delete marks the rows' old slices.
+
+- Marks are keyed by the writing transaction's id, so a transaction marks a slice once and two
+  writers never contend for a row.
+- Triggers see every write, including `keel.Exec`, `InsertFrom`, `COPY`, other services and manual
+  SQL, and work in implicit transactions, where a keel table hook could not write in the same
+  transaction.
+- The cost is one statement per write statement and rollup: on the test VM a one-row create with
+  two rollups takes 1.24 ms instead of 1.06 ms.
+- The application's database role needs `INSERT` on `keel_rollup_dirty`.
+
+#### Refresh
+
+The application schedules refresh: a Temporal schedule, a ticker, or the command line.
+
+```go
+rep, err := rollup.Refresh(ctx, db, ShipmentsDaily, ShipmentsMonthly)
+
+rep, err = rollup.RefreshWith(ctx, db, rollup.RefreshOptions{
+    BatchSize:  500,
+    MaxBatches: 20,
+    OnBegin: func(ctx context.Context, tx pgx.Tx) error {
+        _, err := tx.Exec(ctx, "SELECT set_config('app.bypass_rls', 'on', true)")
+        return err
+    },
+}, ShipmentsDaily)
+```
+
+Each transaction claims up to `BatchSize` dirty rows with `FOR UPDATE SKIP LOCKED`, takes an advisory
+lock per slice without waiting (exclusive per tenant for a whole-tenant rebuild, shared per tenant
+and exclusive per slice otherwise), deletes the committed dirty rows of the slices it locked, then
+deletes and re-inserts those slices of the rollup table from the source in one round trip per
+rollup. Workers on many processes refresh at once without waiting on each other; a slice another
+worker holds is left to it.
+
+A refresh never misses a committed write: the write's mark commits with it, the refresh deletes only
+marks committed before it, and it reads the source in a later statement, so it sees every write
+whose mark it deleted. Marks written while it runs stay for the next refresh.
+
+| Function | Does |
+|---|---|
+| `Refresh`, `RefreshWith` | recompute dirty slices until none is claimable, or `MaxBatches`; `StatementTimeout` bounds each statement; `OnBegin` runs first in every transaction, for row-level security |
+| `Rebuild(ctx, db, opts, r, org, bu)` | recompute one tenant now, waiting for workers on it: a backfill tenant by tenant, or a repair |
+| `MarkAll(ctx, db, rollups...)` | mark every tenant for a rebuild by the next refresh, after writing with the triggers disabled |
+| `Pending(ctx, db, rollups...)` | dirty rows waiting per rollup, for metrics and alerts |
+
+`Report` counts transactions, slices, whole tenants, rows written, slices left to other workers and
+wall time, in total and per rollup. In a zone with clock changes, a slice is read through its
+wall-clock range widened by three hours and filtered by bucket, so a repeated or skipped local time
+never drops a row.
+
+#### Routing
+
+```go
+router, err := rollup.NewRouter(db, rollup.RouterOptions{
+    TenantColumns: cfg.TenantColumns,
+    Location:      reportZone,
+}, ShipmentsDaily, ShipmentsMonthly)
+
+if plan, ok := router.Route(ctx, resolved); ok {
+    // compile the report over plan.Table
+}
+```
+
+`Route` takes a resolved definition (`ir.Resolve`) and tries the entity's rollups, coarser grains and
+fewer dimensions first. A rollup covers a report when:
+
+| Part | Covered when |
+|---|---|
+| The report | it aggregates, and runs in the rollup's time zone |
+| Dimensions | rollup dimensions, the key of a related row (`customer.id` is the rollup's `customer_id`), fields of a belongs-to relation whose key is a dimension (`customer.name`), or the grain field bucketed to the grain or a unit made of whole grain buckets (a day rollup answers days, weeks, months, quarters and years; a week rollup only weeks) |
+| Measures | stored: sum, min, max and count re-aggregate; avg divides a summed sum by a summed count; count distinct only when the report groups by exactly the grain bucket and every dimension, without subtotals or a measure filter |
+| Filters and measure filters | conditions on dimensions and related fields of any shape, row-level calculations over them, and conditions on the grain field that select whole buckets: `gte`, `lt` and `between` on bucket starts, `today` to `last_year` when their period is whole buckets, `is_null`; never a parameter, `last_n_days` or a bound inside a bucket |
+| Calculations, windows, having, sort, top, pivot, subtotals | computed above the rollup; a pivot field must be a dimension; an aggregate calculation must not read fields |
+
+`Route` then checks freshness: the rollup has been built and the report's tenant (every tenant for a
+system-scope report) has no dirty slice in the bucket range its filters read. Otherwise it answers
+false and the report reads its source tables. `Match` does the coverage alone, and its error says
+why each rollup refused.
+
+The `Plan` gives the compiler `Table` (the rollup's `schema.Table`, tenant columns included),
+`Fields` (each path's column, or relation and target column; `Grain` marks the bucket column, whose
+values are instants), `Dimensions` (with `Bucket` when the bucket must be truncated further;
+`BucketSQL` renders it), `Measures` (`MeasurePlan.SQL(alias, filter)` renders the re-aggregation,
+counts as `coalesce(sum(…), 0)::int8`) and the bucket range `[From, To)`. `Route` checks freshness on
+the primary; a report read from a replica runs `Plan.Freshness()` in its own transaction instead, so
+the check and the read share a snapshot.
+
+### Analytics commands
+
+`analyticscli.Command` adds one command, `analytics`, to a keelcli binary:
+
+```go
+keelcli.Main(keelcli.App{
+    Name:       "fleet-db",
+    Config:     dbConfig,
+    Migrations: migrate.Sources(migrate.Source{Name: "app", FS: migrations}),
+    Commands: []keelcli.Command{analyticscli.Command(analyticscli.Config{
+        Tables:  []*schema.Table{fleetdb.ShipmentsSchema(), fleetdb.CustomersSchema()},
+        Rollups: []*rollup.Rollup{ShipmentsDaily},
+    })},
+})
+```
+
+`rollups refresh` and `rollups pending` use the App's database; run without keelcli they open one
+with `Config.Open`.
+
+| Command | Does |
+|---|---|
+| `analytics ts [-check] -out path` | writes the TypeScript module of `analytics/ir` (`tsgen.Write`), or fails when it is out of date |
+| `analytics i18n [-check] -out path` | writes the message catalog below, or fails when it is out of date |
+| `analytics describe [-out path]` | describes the reportable entities, their fields, relations and rollups as compact text for a language model's context |
+| `analytics rollups migration [-check] -out dir` | writes migrations for new and changed rollups, or fails when one is missing or stale |
+| `analytics rollups refresh [-rollup a,b] [-batch n] [-max-batches n] [-rebuild]` | refreshes dirty slices; `-rebuild` marks every tenant first; `-json` prints the `Report` |
+| `analytics rollups pending [-rollup a,b]` | dirty rows waiting per rollup |
+
+A failed check exits 3, a usage error 2. `analyticscli.Run(ctx, cfg, args, out)` runs the same
+commands without keelcli, and `analyticscli.Main(cfg)` wraps it for a `go:generate` program:
+
+```go
+//go:generate go run ./cmd/analyticsgen ts -out ../client/packages/analytics/index.ts
+//go:generate go run ./cmd/analyticsgen i18n -out ../i18n/analytics.en.json
+```
+
+The message catalog is one JSON object of translation key to fallback text, sorted by key, for the
+application's translation pipeline (`analyticscli.Messages` returns it as a map):
+
+| Key | Fallback |
+|---|---|
+| `shipment`, `shipment@plural`, `shipment@description` | the entity's label, plural and doc comment |
+| `shipment.proNumber`, `shipment.proNumber@description` | a field's label and doc comment |
+| `shipment.status.InTransit` | an enum value's label |
+| `shipment.customer`, `shipment.customer@description` | a relation's label and doc comment |
+| `@category.Operations` | a report category |
+
+Keys use the catalog's entity, field and edge keys, which `rollup.DefaultKeys` derives in lower
+camel case (`CustomerID` → `customerId`); `Config.Keys` replaces them. Hidden fields, relations
+marked `noreport` and relations to tables that are not reportable are left out, as are keys with
+no text.
+
+### Performance
+
+On a 4-core cloud VM with Postgres in Docker (`go test -bench . ./analytics/cache ./analytics/rollup`):
+
+| Work | Time |
+|---|---|
+| Memory store `Get`, 4 goroutines | 135 ns, no allocation |
+| Memory store `Set` of 2 KiB, 4 goroutines | 1.1 µs, one allocation (the copy) |
+| `Loader.Load` hit, 4 goroutines | 120 ns |
+| Postgres store `Get` of 2 KiB | 0.23 ms (a round trip) |
+| One-row create with two rollups marking slices / without triggers | 1.24 / 1.06 ms |
