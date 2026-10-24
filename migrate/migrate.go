@@ -1,7 +1,7 @@
 // Package migrate applies SQL and Go migrations to a Postgres database.
 //
-// A migration is a file named <version>_<name>.sql, where version is a 14-digit UTC timestamp
-// (20261023143000), or a Func registered with a Source. Directives at the top of a file change how
+// A migration is a file named <version>_<name>.sql, where version is 14 digits ordered as a number
+// (Create writes a UTC timestamp such as 20261023143000), or a Func registered with a Source. Directives at the top of a file change how
 // it runs:
 //
 //	--keel:notx                  run outside a transaction, statement by statement, split at --keel:split lines

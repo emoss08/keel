@@ -14,7 +14,8 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// versionLayout is the layout of a migration version: a UTC timestamp.
+// versionLayout is the layout of the versions Create writes: a UTC timestamp. Any 14-digit version
+// is accepted, so applications that number migrations within a day keep their versions.
 const versionLayout = "20060102150405"
 
 // Kind is what a migration is.
@@ -72,7 +73,8 @@ type Directives struct {
 
 // Migration is one migration of a Set.
 type Migration struct {
-	// Version is the 14-digit UTC timestamp; empty for a repeatable migration.
+	// Version is the migration's 14-digit version, ordered as a number; empty for a repeatable
+	// migration. Create writes a UTC timestamp.
 	Version string
 	// Name is the file name's label, or the Func's name.
 	Name string
@@ -250,7 +252,7 @@ func parseFile(source, file, body string) (Migration, error) {
 	default:
 		version, name, _ := strings.Cut(base, "_")
 		if err := checkVersion(version); err != nil || name == "" {
-			return m, fmt.Errorf("migrate: %s must be named <version>_<name>.sql with a 14-digit UTC version, or R_<name>.sql", file)
+			return m, fmt.Errorf("migrate: %s must be named <version>_<name>.sql with a 14-digit version, or R_<name>.sql", file)
 		}
 		m.Version, m.Name = version, name
 	}
@@ -268,13 +270,10 @@ func parseFile(source, file, body string) (Migration, error) {
 	return m, nil
 }
 
-// checkVersion reports whether v is a 14-digit UTC timestamp.
+// checkVersion reports whether v is a 14-digit version.
 func checkVersion(v string) error {
 	if len(v) != len(versionLayout) || strings.Trim(v, "0123456789") != "" {
 		return fmt.Errorf("migrate: version %q is not 14 digits", v)
-	}
-	if _, err := time.Parse(versionLayout, v); err != nil {
-		return fmt.Errorf("migrate: version %q is not a timestamp", v)
 	}
 	return nil
 }

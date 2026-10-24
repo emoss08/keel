@@ -78,11 +78,21 @@ func TestDirectivesIgnoreLiterals(t *testing.T) {
 	}
 }
 
+func TestCounterVersions(t *testing.T) {
+	ms, err := one(files("20261231006000_a.sql", "SELECT 1;", "20261231010170_b.sql", "SELECT 2;")).Migrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ms) != 2 || ms[0].Version != "20261231006000" || ms[1].Version != "20261231010170" {
+		t.Fatalf("migrations %+v", ms)
+	}
+}
+
 func TestReadErrors(t *testing.T) {
 	cases := map[string]Set{
 		"bad name":          one(files("items.sql", "x")),
 		"short version":     one(files("1_items.sql", "x")),
-		"not a timestamp":   one(files("20261399000000_items.sql", "x")),
+		"not digits":        one(files("2026010100000x_items.sql", "x")),
 		"down file":         one(files("20260101000000_items.down.sql", "x")),
 		"up file":           one(files("20260101000000_items.up.sql", "x")),
 		"empty repeatable":  one(files("R_.sql", "x")),
