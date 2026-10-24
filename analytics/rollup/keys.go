@@ -34,8 +34,8 @@ func DefaultKeys() Keys {
 	}
 }
 
-// orDefault fills the functions k leaves nil from DefaultKeys.
-func (k Keys) orDefault() Keys {
+// WithDefaults returns k with the functions it leaves nil taken from DefaultKeys.
+func (k Keys) WithDefaults() Keys {
 	d := DefaultKeys()
 	if k.Entity == nil {
 		k.Entity = d.Entity

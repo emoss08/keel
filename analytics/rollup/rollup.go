@@ -385,3 +385,22 @@ func (r *Rollup) Dimensions() []*schema.Column {
 	}
 	return out
 }
+
+// Aggregate is a measure as declared: its aggregation and the source column it reads, nil for
+// Count.
+type Aggregate struct {
+	Agg    ir.Agg
+	Column *schema.Column
+}
+
+// Aggregates returns the declared measures, each once, in declaration order.
+func (r *Rollup) Aggregates() []Aggregate {
+	out := make([]Aggregate, len(r.measures))
+	for i, m := range r.measures {
+		out[i].Agg = m.agg
+		if m.col >= 0 {
+			out[i].Column = &r.source.Columns[m.col]
+		}
+	}
+	return out
+}

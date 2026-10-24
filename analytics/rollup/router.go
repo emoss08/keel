@@ -56,7 +56,7 @@ type indexed struct {
 
 // NewRouter returns a Router over rollups.
 func NewRouter(db *keel.DB, o RouterOptions, rollups ...*Rollup) (*Router, error) {
-	o.Keys = o.Keys.orDefault()
+	o.Keys = o.Keys.WithDefaults()
 	if o.Now == nil {
 		o.Now = time.Now
 	}
