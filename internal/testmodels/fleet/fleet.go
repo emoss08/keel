@@ -271,6 +271,16 @@ type Plant struct {
 	Name string `keel:"name"`
 }
 
+// Depot is a business unit's depot, shared by every organization of the business unit: its tenant
+// key holds only the business unit, which is not a prefix of the scope's organization-first key.
+type Depot struct {
+	keel.Table `keel:"depots"`
+
+	ID             ids.ID `keel:"id,pk,autoid:dep_"`
+	BusinessUnitID ids.ID `keel:"business_unit_id,pk,tenant"`
+	Name           string `keel:"name"`
+}
+
 // AuditEntry records a tool call. Its arguments and result keep every digit of a large integer:
 // their JSON numbers decode as json.Number (jsonnumber).
 type AuditEntry struct {

@@ -371,3 +371,31 @@ func TestDataVersionsConcurrentWriters(t *testing.T) {
 		}
 	}
 }
+
+func TestDataVersionsSystemScopeBulkWriteToATableKeyedByPartOfTheTenant(t *testing.T) {
+	d := versionsDB(t, time.Hour, nil)
+	a, b := newTenant(), newTenant()
+	_, buA := tenantOf(a)
+	_, buB := tenantOf(b)
+	sys := systemCtx("data versions test")
+	dp := fleetdb.Depots
+	ok(t, dp.CreateMany(sys, d, []*fleet.Depot{
+		{BusinessUnitID: buA, Name: "North"},
+		{BusinessUnitID: buB, Name: "South"},
+	}))
+
+	created := versionOf(t, d, a, "depots")
+
+	both := dp.BusinessUnitID.In(buA, buB)
+	n := must(dp.Where(both).AllTenants().Update(sys, d, dp.Name.To("renamed")))(t)
+	eq(t, n, int64(2))
+	if v := versionOf(t, d, a, "depots"); v <= created {
+		t.Fatalf("the update is not visible to the first business unit: version %d after %d", v, created)
+	}
+	if v := versionOf(t, d, b, "depots"); v <= created {
+		t.Fatalf("the update is not visible to the second business unit: version %d after %d", v, created)
+	}
+
+	n = must(dp.Where(both).AllTenants().Delete(sys, d))(t)
+	eq(t, n, int64(2))
+}

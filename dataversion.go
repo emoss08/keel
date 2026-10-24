@@ -490,9 +490,11 @@ func (r *runner) touchRow(t *schema.Table, row unsafe.Pointer) {
 }
 
 // tenantsReturned reports whether a statement writing t under the runner's scope must return the
-// tenants it wrote: a system-scope bulk write to a tenant table, when data versions are on.
+// tenants it wrote: a system-scope bulk write to a tenant table whose tenant columns start the
+// scope's tenant key, when data versions are on. A write to a table keyed by a later part of the
+// key alone (business unit only) changes it for every tenant, as a table without tenant columns.
 func (r *runner) tenantsReturned(t *schema.Table) bool {
-	return r.db.versions != nil && r.sc.system && t.HasTenant()
+	return r.db.versions != nil && r.sc.system && t.HasTenant() && len(r.sc.tenantPrefix(t)) > 0
 }
 
 // returnTenants wraps a bulk write so that it returns, instead of rows, the distinct tenants it

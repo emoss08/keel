@@ -647,6 +647,107 @@ func valueCustomer(p unsafe.Pointer, c int32) any {
 	return nil
 }
 
+// depotsTable is the schema of fleet.Depot.
+var depotsTable = schema.Table{
+	Name:   "depots",
+	Quoted: `"depots"`,
+	Alias:  "d",
+	Model:  "fleet.Depot",
+	Label:  `Depot`,
+	Plural: `Depots`,
+	Doc:    `Depot is a business unit's depot, shared by every organization of the business unit: its tenant key holds only the business unit, which is not a prefix of the scope's organization-first key.`,
+	Columns: []schema.Column{
+		{Name: "id", Quoted: `"id"`, Field: "ID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagAutoID, Label: `ID`},
+		{Name: "business_unit_id", Quoted: `"business_unit_id"`, Field: "BusinessUnitID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagTenant, Label: `Business Unit ID`},
+		{Name: "name", Quoted: `"name"`, Field: "Name", Kind: schema.KindString, Flags: 0, Label: `Name`},
+	},
+	PK:         []int32{0, 1},
+	Tenant:     []int32{1},
+	Select:     []int32{0, 1, 2},
+	Insert:     []int32{0, 1, 2},
+	Update:     []int32{2},
+	Returning:  nil,
+	Version:    -1,
+	AutoID:     0,
+	AutoCreate: -1,
+	AutoUpdate: -1,
+	IDPrefix:   "dep_",
+	New:        newDepot,
+	NewN:       newNDepot,
+	Size:       unsafe.Sizeof(fleet.Depot{}),
+	Ptr:        ptrDepot,
+	Value:      valueDepot,
+}
+
+var depotsRef = keel.Ref{Table: &depotsTable}
+
+// DepotsTable is the table of fleet.Depot.
+type DepotsTable struct {
+	keel.Handle[fleet.Depot]
+	ID             keelkinds.IdsIDCol
+	BusinessUnitID keelkinds.IdsIDCol
+	Name           keel.StringCol
+}
+
+// Depots references the depots table.
+var Depots = &DepotsTable{
+	Handle:         keel.Handle[fleet.Depot]{Ref: &depotsRef},
+	ID:             keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: &depotsRef, Index: 0}}},
+	BusinessUnitID: keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: &depotsRef, Index: 1}}},
+	Name:           keel.StringCol{Col: keel.Col{Ref: &depotsRef, Index: 2}},
+}
+
+// BuildDepots builds the handle of depots for ref. Generated relation and alias methods call it.
+func BuildDepots(r *keel.Ref) *DepotsTable {
+	return &DepotsTable{
+		Handle:         keel.Handle[fleet.Depot]{Ref: r},
+		ID:             keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: r, Index: 0}}},
+		BusinessUnitID: keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: r, Index: 1}}},
+		Name:           keel.StringCol{Col: keel.Col{Ref: r, Index: 2}},
+	}
+}
+
+// DepotsSchema returns the schema of depots.
+func DepotsSchema() *schema.Table { return &depotsTable }
+
+// As returns a handle that references depots under its own alias.
+func (t *DepotsTable) As(alias string) *DepotsTable { return keel.Alias(t.Ref, alias, BuildDepots) }
+
+// Get returns the depots row with the given key, or keel.ErrNotFound.
+func (t *DepotsTable) Get(ctx context.Context, db *keel.DB, key ids.ID) (*fleet.Depot, error) {
+	return t.Where(t.ID.Eq(key)).One(ctx, db)
+}
+
+func newDepot() unsafe.Pointer { return unsafe.Pointer(new(fleet.Depot)) }
+
+func newNDepot(n int) unsafe.Pointer { return unsafe.Pointer(unsafe.SliceData(make([]fleet.Depot, n))) }
+
+func ptrDepot(p unsafe.Pointer, c int32) any {
+	r := (*fleet.Depot)(p)
+	switch c {
+	case 0:
+		return (*string)(unsafe.Pointer(&r.ID))
+	case 1:
+		return (*string)(unsafe.Pointer(&r.BusinessUnitID))
+	case 2:
+		return &r.Name
+	}
+	return nil
+}
+
+func valueDepot(p unsafe.Pointer, c int32) any {
+	r := (*fleet.Depot)(p)
+	switch c {
+	case 0:
+		return string(r.ID)
+	case 1:
+		return string(r.BusinessUnitID)
+	case 2:
+		return r.Name
+	}
+	return nil
+}
+
 // leavesTable is the schema of fleet.Leave.
 var leavesTable = schema.Table{
 	Name:   "leaves",
