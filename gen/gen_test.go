@@ -147,6 +147,8 @@ func oneA(fieldSrc string) string {
 
 func TestGenerateErrors(t *testing.T) {
 	runErrors(t, []errorCase{
+		{"every model's error", oneA(`M map[string]any ~keel:"m"~`) + "type B struct {\n\tkeel.Table ~keel:\"b\"~\n\tN map[string]any ~keel:\"n\"~\n}\n",
+			field(3) + ": A.M: map[string]any needs the jsonb option…" + field(7) + ": B.N: map[string]any needs the jsonb option"},
 		{"int version", oneA(`V int ~keel:"v,version"~`), field(3) + ": A.V: version columns must be int64"},
 		{"int timestamp", oneA(`V int ~keel:"v,autoupdate"~`), field(3) + ": A.V: timestamp columns"},
 		{"struct needs jsonb", oneA(`M map[string]any ~keel:"m"~`), field(3) + ": A.M: map[string]any needs the jsonb option"},

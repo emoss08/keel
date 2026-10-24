@@ -96,6 +96,7 @@ func Generate(o Options) ([]File, error) {
 	byPath := map[string]*pkgModels{}
 	all := map[*types.Named]*model{}
 	var modRoot, modPath string
+	var modelErrs []error
 	for _, p := range pkgs {
 		if p.Module == nil {
 			return nil, fmt.Errorf("%s is not in a module", p.PkgPath)
@@ -117,7 +118,8 @@ func Generate(o Options) ([]File, error) {
 			}
 			m, err := rd.readModel(pm, tn)
 			if err != nil {
-				return nil, err
+				modelErrs = append(modelErrs, err)
+				continue
 			}
 			if m != nil {
 				pm.models = append(pm.models, m)
@@ -137,6 +139,9 @@ func Generate(o Options) ([]File, error) {
 		pm.outPath = modPath + "/" + rel
 		pm.outName = filepath.Base(rel)
 		byPath[p.PkgPath] = pm
+	}
+	if len(modelErrs) > 0 {
+		return nil, errors.Join(modelErrs...)
 	}
 	if len(byPath) == 0 {
 		return nil, fmt.Errorf("no models found in %s", strings.Join(o.Patterns, " "))
