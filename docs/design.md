@@ -37,7 +37,7 @@ soft delete, an identity map or a session cache.
 | Package | Role |
 |---|---|
 | `keel` | the public API: `DB`, transactions, scope, `Handle[T]`, `Query[T]`, expressions, columns, writes, hooks, errors |
-| `keel/schema` | runtime table metadata, written as static literals by the generator; the `db` tag parser |
+| `keel/schema` | runtime table metadata, written as static literals by the generator: storage facts, labels, docs, enum values, report facts; the `keel` tag parser |
 | `keel/gen`, `cmd/keel` | the generator: loads packages with `go/packages`, finds models, writes one `<pkg>db` package per model package |
 | `keel/migrate` | the SQL-file migration runner |
 | `bench` | a separate module comparing keel with Bun and raw pgx |
@@ -46,25 +46,32 @@ The wire layer is pgx v5 (`pgxpool`, `pgx.Batch`, pgx scan plans). keel never us
 
 ## Models
 
-A model is a plain struct that embeds `keel.Table`, an empty marker whose `db` tag names the table.
-Every stored field carries a `db` tag.
+A model is a plain struct that embeds `keel.Table`, an empty marker whose `keel` tag names the
+table. Every stored field carries a `keel` tag. keel owns the tag key, so it validates every option:
+an unknown option or a malformed value fails `keel gen` with the field's position. Tags under other
+keys (`db`, `json`) are ignored.
 
 ```go
+// Shipment is a customer's freight moving from origin to destination.
 type Shipment struct {
-    keel.Table `db:"shipments"`
+    keel.Table `keel:"shipments,report=Operations"`
 
-    ID             pulid.ID  `db:"id,pk,autoid:shp_"`
-    OrganizationID pulid.ID  `db:"organization_id,pk,tenant"`
-    BusinessUnitID pulid.ID  `db:"business_unit_id,pk,tenant"`
-    CustomerID     pulid.ID  `db:"customer_id"`
-    Status         Status    `db:"status"`
-    SearchVector   string    `db:"search_vector,noselect,readonly,tsvector"`
-    Version        int64     `db:"version,version"`
-    CreatedAt      int64     `db:"created_at,autocreate"`
-    UpdatedAt      int64     `db:"updated_at,autoupdate"`
+    ID             pulid.ID `keel:"id,pk,autoid:shp_"`
+    OrganizationID pulid.ID `keel:"organization_id,pk,tenant"`
+    BusinessUnitID pulid.ID `keel:"business_unit_id,pk,tenant"`
+    CustomerID     pulid.ID `keel:"customer_id"`
+    // ProNumber is the carrier's progressive number.
+    ProNumber    string       `keel:"pro_number"`
+    Status       Status       `keel:"status"`
+    TotalCharge  money.Amount `keel:"total_charge_amount"`
+    SearchVector string       `keel:"search_vector,noselect,readonly,tsvector"`
+    Version      int64        `keel:"version,version"`
+    CreatedAt    int64        `keel:"created_at,autocreate"`
+    UpdatedAt    int64        `keel:"updated_at,autoupdate"`
 
-    Customer *customer.Customer `db:"belongs:customer_id"`
-    Moves    []*ShipmentMove    `db:"many:shipment_id"`
+    Customer   *customer.Customer `keel:"belongs:customer_id"`
+    Moves      []*ShipmentMove    `keel:"many:shipment_id"`
+    OriginStop *Stop              `keel:"pick:moves.stops,first=moves.sequence|stops.sequence"`
 }
 ```
 
@@ -87,11 +94,17 @@ reference to a table, under that alias, for self-joins.
 | `noselect` | not selected by default (a `tsvector`); usable in predicates. A generated `noselect` column must also be tagged `readonly` |
 | `jsonb` | the value is encoded as JSON; a nil map or slice in a non-pointer field is written as `{}` or `[]` |
 | `tsvector` | the column gets the full-text operators |
+| `label=` | the column's label, instead of the one derived from the field name |
+| `noreport`, `report`, `dimension`, `measure`, `agg=`, `format=`, `type=epoch\|date\|decimal` | report facts that differ from the derived ones (see Derived metadata); only on models tagged `report` |
 
-There is no `default:`, `type:` or `notnull`. The SQL migrations own the schema; nullability follows
-the Go type (a pointer, or a `sql.Scanner` named `Null…`). The value in the struct is the value
-written: keel never substitutes `DEFAULT` for a zero value. A nil slice in a non-pointer array field
-is written as an empty array.
+The table tag takes `report[=Category]`, `label=` and `plural=`. Options that exclude each other
+(`readonly` and the write options, `jsonb` and `tsvector`, `report` and `noreport`, `dimension` and
+`measure`) are refused.
+
+There is no `default:` or `notnull`, and `type=` names a report value type, not a SQL type. The SQL
+migrations own the schema; nullability follows the Go type (a pointer, or a `sql.Scanner` named
+`Null…`). The value in the struct is the value written: keel never substitutes `DEFAULT` for a zero
+value. A nil slice in a non-pointer array field is written as an empty array.
 
 Column kinds follow the Go type: strings, `int64`, `int32`, `int16`, `float64`, `float32` (a
 `Float64Col`), `bool`, `[]byte`, `time.Time`, `[]string`, `[]int64`, named types with those
@@ -106,11 +119,47 @@ refused: its width is not portable.
 | `one:<fk>` | the target's `<fk>` references this table's primary key, at most one row |
 | `many:<fk>` | the target's `<fk>` references this table's primary key |
 | `m2m:<join_table>.<local_fk>.<remote_fk>` | rows linked through a join table |
+| `pick:<rel>.<rel>…,first=<seg>.<col>\|…` (or `last=`) | one row along a path that crosses a to-many relation, the first (last) in a total order |
+
+Relation tags take `label=` and `noreport`; `first=` and `last=` only on `pick`.
 
 The primary key of a related table, besides its tenant columns, must be a single column, and the
 keys of to-many relations must be string or integer columns. When both sides have tenant columns,
 keel adds them to the join: as constants from the scope under a tenant scope, as column equalities
 under a system scope.
+
+### Pick relations
+
+A pick is a to-one relation whose row is the first (or last) row of a to-many path in an order:
+`schema.Relation{Kind: schema.Pick, Path, Order, Last}`, where `Path` holds one relation index per
+hop and `Order` one `schema.PickKey{Hop, Column}` per key. `keel gen` checks that the path walks
+real relations, crosses a to-many relation, ends at the field's model and does not walk through
+another pick, and makes the order total by appending the target's primary key; the parent key the
+path starts from must be a string or integer column. At run time the pick is a subquery that joins
+the path's tables hop by hop, each with its tenant predicate (constants under a tenant scope,
+equalities with the previous hop under a system scope) and its table's interceptors, ordered by the
+keys and limited to one row. It is a `LEFT JOIN LATERAL` when the statement filters through it or
+reads at most two rows without an order, a keyed `unnest(keys) CROSS JOIN LATERAL` statement per
+level otherwise, and the `FROM` item of `EXISTS` for `Any` and `None`. Bulk updates and deletes
+cannot join it.
+
+### Derived metadata
+
+`keel gen` derives, and writes into the static schema, everything about a model that the source
+already says, so nothing is declared twice:
+
+- `Table.Label`, `Table.Plural`, `Column.Label`, `Relation.Label`: from the names, split at case
+  changes and digits, with an acronym list (`-acronyms`, default ID, URL, API, JSON, UUID).
+- `Doc` on tables, columns, relations and enum values: from doc comments.
+- `Column.Enum []schema.EnumValue{Value, Label, Doc}`: the constants of a column's named string or
+  integer type, from any package, in declaration order.
+- `Table.Report` and `Column.Report *schema.ReportInfo{Included, Kind, Type, Aggs, Format}` for
+  models tagged `report`: inclusion, value type (epochs by the `_at`, `_date`, `_time` suffix on
+  `int64`), measure or dimension, aggregations and format (`KeelFormat() string` on the type),
+  resolved by the generator so readers only read them.
+
+Shared values (enum value arrays, each distinct `ReportInfo`) are package-level variables of the
+generated file, referenced by address or slice, so the schema remains static data.
 
 ### Model hooks
 
@@ -220,9 +269,11 @@ path to that table.
 ## Relation loading
 
 `Load` takes relation paths, optionally narrowed with `Where`, `Order`, `Pick` and `Limit`.
-Belongs-to and has-one segments are joined into the parent's statement. Has-many and many-to-many
-segments run one statement per relation per level, filtered by `= ANY($1)` over the parent keys
-plus the scope's tenant columns; statements of one level share a round trip. A to-many load with a
+Belongs-to and has-one segments are joined into the parent's statement, and so are picks when the
+statement reads at most two rows without an order; other picks load with the level's to-many
+relations, one keyed lateral statement per pick. Has-many and many-to-many segments run one
+statement per relation per level, filtered by `= ANY($1)` over the parent keys plus the scope's
+tenant columns; statements of one level share a round trip. A to-many load with a
 `Limit` loads at most that many rows per parent through `unnest … CROSS JOIN LATERAL`; many-to-many
 loads take no `Limit`. On a to-one load, `Where` becomes part of the join condition, so a row that
 does not match leaves the relation nil without filtering the parent.

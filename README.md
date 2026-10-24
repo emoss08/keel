@@ -61,47 +61,56 @@ README and in [docs/guide.md](docs/guide.md) have compiled counterparts in
 
 ### 1. Write a model
 
-A model embeds `keel.Table` and tags every stored field with `db`. Abridged from
+A model embeds `keel.Table` and tags every stored field with `keel`. Abridged from
 [fleet.go](internal/testmodels/fleet/fleet.go):
 
 ```go
 package fleet
 
+// Customer is a tenant's customer.
 type Customer struct {
-    keel.Table `db:"customers"`
+    keel.Table `keel:"customers,report=Sales"`
 
-    ID             ids.ID `db:"id,pk,autoid:cus_"`
-    OrganizationID ids.ID `db:"organization_id,pk,tenant"`
-    BusinessUnitID ids.ID `db:"business_unit_id,pk,tenant"`
-    Name           string `db:"name"`
-    Code           string `db:"code"`
-    Version        int64  `db:"version,version"`
-    CreatedAt      int64  `db:"created_at,autocreate"`
-    UpdatedAt      int64  `db:"updated_at,autoupdate"`
+    ID             ids.ID `keel:"id,pk,autoid:cus_"`
+    OrganizationID ids.ID `keel:"organization_id,pk,tenant"`
+    BusinessUnitID ids.ID `keel:"business_unit_id,pk,tenant"`
+    // Name is the customer's trading name.
+    Name      string `keel:"name"`
+    Code      string `keel:"code"`
+    Version   int64  `keel:"version,version"`
+    CreatedAt int64  `keel:"created_at,autocreate"`
+    UpdatedAt int64  `keel:"updated_at,autoupdate"`
 }
 
+// Shipment is a load moved for a customer.
 type Shipment struct {
-    keel.Table `db:"shipments"`
+    keel.Table `keel:"shipments,report=Operations"`
 
-    ID             ids.ID  `db:"id,pk,autoid:shp_"`
-    OrganizationID ids.ID  `db:"organization_id,pk,tenant"`
-    BusinessUnitID ids.ID  `db:"business_unit_id,pk,tenant"`
-    CustomerID     ids.ID  `db:"customer_id"`
-    ProNumber      string  `db:"pro_number"`
-    Status         Status  `db:"status"`
-    Weight         *int64  `db:"weight"`
-    Version        int64   `db:"version,version"`
-    CreatedAt      int64   `db:"created_at,autocreate"`
-    UpdatedAt      int64   `db:"updated_at,autoupdate"`
+    ID             ids.ID `keel:"id,pk,autoid:shp_"`
+    OrganizationID ids.ID `keel:"organization_id,pk,tenant"`
+    BusinessUnitID ids.ID `keel:"business_unit_id,pk,tenant"`
+    CustomerID     ids.ID `keel:"customer_id"`
+    // ProNumber is the carrier's progressive number, unique per tenant.
+    ProNumber string `keel:"pro_number"`
+    Status    Status `keel:"status"`
+    Weight    *int64 `keel:"weight,format=weight"`
+    Version   int64  `keel:"version,version"`
+    CreatedAt int64  `keel:"created_at,autocreate"`
+    UpdatedAt int64  `keel:"updated_at,autoupdate"`
 
-    Customer *Customer `db:"belongs:customer_id"`
-    Moves    []*Move   `db:"many:shipment_id"`
+    Customer   *Customer `keel:"belongs:customer_id"`
+    Moves      []*Move   `keel:"many:shipment_id"`
+    OriginStop *Stop     `keel:"pick:moves.stops,first=moves.sequence|stops.sequence"`
 }
 ```
 
 `autoid` fills the key from your ID generator, `tenant` columns come from the scope, `autocreate`
-and `autoupdate` are stamped, and `version` gives `Save` optimistic locking. The schema itself lives
-in SQL migrations.
+and `autoupdate` are stamped, and `version` gives `Save` optimistic locking. `OriginStop` picks the
+first stop of the first move, and keel loads and filters it like any to-one relation. The schema
+itself lives in SQL migrations. Every tag option is checked by `keel gen`, which also derives labels
+(`CustomerID` → "Customer ID", `ProNumber` → "PRO Number" with `-acronyms PRO`), descriptions from doc comments, `Status`'s enum values and, for models tagged
+`report`, how reports present each column; see the
+[tag reference](docs/guide.md#tag-reference).
 
 ### 2. Generate
 
