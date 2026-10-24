@@ -25,7 +25,16 @@ func replicaDSN(t *testing.T) string {
 	if dsn == "" {
 		t.Skip("KEEL_TEST_REPLICA_DSN is not set; start a replica with testdata/replica/replica.sh up")
 	}
-	return replaceDB(dsn, dbName)
+	cfg, err := pgx.ParseConfig(testDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rcfg, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable", rcfg.User, rcfg.Password, rcfg.Host,
+		rcfg.Port, cfg.Database)
 }
 
 // replicaDB opens a DB on the test database with the replica, its configuration changed by edit,
