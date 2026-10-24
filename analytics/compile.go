@@ -17,11 +17,17 @@ type Strategy uint8
 
 // The strategies.
 const (
-	// StrategyAuto pre-aggregates in a CTE, and in a lateral subquery per parent when the report's
-	// filters pin the entity's key to at most CompileOptions.LateralParents values.
+	// StrategyAuto pre-aggregates in a lateral subquery per parent when the report's filters pin
+	// the entity's key to at most CompileOptions.LateralParents values, and in a CTE otherwise;
+	// a Runner then picks, by the planner's estimates, between restricting the CTE to the parents
+	// the filters select (StrategyCTE) and aggregating every parent (StrategyCTEAll).
 	StrategyAuto Strategy = iota
-	// StrategyCTE pre-aggregates the related rows in one grouped pass, keyed by the parent.
+	// StrategyCTE pre-aggregates the related rows in one grouped pass, keyed by the parent and
+	// restricted to the parents the report's filters select: best when the filters keep few.
 	StrategyCTE
+	// StrategyCTEAll pre-aggregates the related rows of every parent in one grouped pass, without
+	// the semi-join that restricts them: best when the filters keep most parents.
+	StrategyCTEAll
 	// StrategyLateral pre-aggregates each parent's related rows in a lateral subquery.
 	StrategyLateral
 )
@@ -84,12 +90,13 @@ type Compiled struct {
 	// Params are the bound parameter values.
 	Params map[string]any
 
-	dec    *decisions
-	levels map[int64]table.Level
-	slots  []int
-	level  int
-	opts   CompileOptions
-	cat    *Catalog
+	dec       *decisions
+	levels    map[int64]table.Level
+	slots     []int
+	level     int
+	opts      CompileOptions
+	cat       *Catalog
+	choosable bool
 }
 
 // Complexity counts what a report's statements do.
@@ -170,6 +177,18 @@ func (c *Compiled) WithPivotValues(ctx context.Context, values []string) (*Compi
 	if opts.PivotValues == nil {
 		opts.PivotValues = []string{}
 	}
+	out, err := compileWith(ctx, c.cat, c.dec, c.Resolved, c.Params, opts)
+	if err != nil {
+		return nil, err
+	}
+	out.Discovery = c.Discovery
+	return out, nil
+}
+
+// withStrategy compiles the report again with another pre-aggregation strategy.
+func (c *Compiled) withStrategy(ctx context.Context, s Strategy) (*Compiled, error) {
+	opts := c.opts
+	opts.Strategy = s
 	out, err := compileWith(ctx, c.cat, c.dec, c.Resolved, c.Params, opts)
 	if err != nil {
 		return nil, err
@@ -304,6 +323,8 @@ func (c *compiler) compile() (*Compiled, error) {
 		return nil, err
 	}
 	out.Query = q
+	out.choosable = c.opts.Strategy == StrategyAuto && c.strategy() == keel.PreAggCTE &&
+		len(c.preaggKeys) > 0 && !c.def.Filters.Empty()
 	out.Columns = c.outputColumns()
 	out.levels = c.levelMasks()
 	out.slots, out.level = c.slots()

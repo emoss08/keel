@@ -148,6 +148,9 @@ func (f *frame) preagg(fp fieldPath) *keel.DynPreAgg {
 		return p
 	}
 	p := f.q.Rel(relNames(fp.via[:fp.many+1])...).PreAggregate(f.c.strategy())
+	if f.c.opts.Strategy == StrategyCTEAll {
+		p.AllParents()
+	}
 	f.preaggs[key] = p
 	f.c.notePreagg(key)
 	return p
@@ -267,7 +270,7 @@ func distinctByParent(fp fieldPath) bool {
 // strategy returns how this compilation pre-aggregates to-many paths.
 func (c *compiler) strategy() keel.PreAggStrategy {
 	switch c.opts.Strategy {
-	case StrategyCTE:
+	case StrategyCTE, StrategyCTEAll:
 		return keel.PreAggCTE
 	case StrategyLateral:
 		return keel.PreAggLateral

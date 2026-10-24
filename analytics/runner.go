@@ -335,6 +335,9 @@ func (r *Runner) execute(ctx context.Context, req Request, comp *Compiled, timeo
 		if err != nil {
 			return err
 		}
+		if comp, err = r.choosePreAgg(ctx, comp); err != nil {
+			return err
+		}
 		if err := r.checkCost(ctx, comp.Query); err != nil {
 			return err
 		}

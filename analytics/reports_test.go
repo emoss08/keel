@@ -136,7 +136,7 @@ func TestToManyMeasuresGiveTheSameResultWithEveryStrategy(t *testing.T) {
 		"Globex | 570.75 | 5 | 5 | 3 | 10 | 1.5 | 15 | 5",
 		"Initech | 882.5 | 4 | 4 | 2 | 8 | 1.5 | 12 | 4"}
 	cat := catalog(t)
-	for _, s := range []analytics.Strategy{analytics.StrategyAuto, analytics.StrategyCTE, analytics.StrategyLateral} {
+	for _, s := range []analytics.Strategy{analytics.StrategyAuto, analytics.StrategyCTE, analytics.StrategyCTEAll, analytics.StrategyLateral} {
 		r := runner(t, analytics.RunnerOptions{Strategy: s})
 		res, err := r.Preview(w.ctx, analytics.Request{Definition: d})
 		if err != nil {
@@ -152,6 +152,17 @@ func TestToManyMeasuresGiveTheSameResultWithEveryStrategy(t *testing.T) {
 		if lateral != (s == analytics.StrategyLateral) || strings.Contains(sql, "keel_cte") {
 			t.Fatalf("strategy %d:\n%s", s, sql)
 		}
+		filtered := def(t, strings.Replace(manyMeasures, `"sort"`, `"filters": {"field": "status", "op": "ne", "value": "Canceled"}, "sort"`, 1))
+		comp = must[*analytics.Compiled](t)(analytics.Compile(w.ctx, cat, nil, filtered, nil, analytics.CompileOptions{Strategy: s}))
+		sql, _, _ = comp.ToSQL(w.ctx, db(t))
+		if restricted := strings.Contains(sql, `") IN (SELECT`); restricted != (s == analytics.StrategyAuto || s == analytics.StrategyCTE) {
+			t.Fatalf("strategy %d restricts the parents: %v\n%s", s, restricted, sql)
+		}
+		res, err = r.Preview(w.ctx, analytics.Request{Definition: filtered})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want(t, rows(t, res), expect[0], "Globex | 570.75 | 4 | 4 | 3 | 8 | 1.5 | 12 | 4", expect[2])
 	}
 	pinned := def(t, `{"entity": "shipment", "columns": [{"id": "pro", "dimension": {"field": "proNumber"}},
 		{"id": "stops", "measure": {"field": "moves.stops.id", "agg": "count"}}],

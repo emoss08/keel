@@ -188,13 +188,19 @@ func (c *compiler) columnLabel(p *colPlan) string {
 	return p.def.ID
 }
 
-// fieldLabel returns a field path's translated label.
+// fieldLabel returns a field path's translated label, after the label of the edge that reaches
+// the field's entity ("Customer Name").
 func (c *compiler) fieldLabel(path string) string {
-	_, f, ok := c.cat.Resolve(c.def.Entity, path)
+	via, f, ok := c.cat.Resolve(c.def.Entity, path)
 	if !ok {
 		return path
 	}
-	return c.cat.Label(c.ctx, f.LabelKey, f.Label)
+	l := c.cat.Label(c.ctx, f.LabelKey, f.Label)
+	if len(via) == 0 {
+		return l
+	}
+	e := via[len(via)-1]
+	return c.cat.Label(c.ctx, e.LabelKey, e.Label) + " " + l
 }
 
 // aggLabels are the derived names of the aggregations.

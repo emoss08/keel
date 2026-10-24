@@ -54,9 +54,10 @@ type planCache struct {
 	entries map[string]planEntry
 }
 
-// planEntry is one remembered estimate.
+// planEntry is one remembered estimate, or one remembered pre-aggregation choice (all).
 type planEntry struct {
 	cost, rows float64
+	all        bool
 	expires    time.Time
 }
 
@@ -100,21 +101,9 @@ func (r *Runner) checkCost(ctx context.Context, q *keel.DynQuery) error {
 	if r.opts.MaxCost <= 0 && r.opts.MaxPlanRows <= 0 {
 		return nil
 	}
-	sql, _, err := q.ToSQL(ctx, r.db)
+	e, err := r.plan(ctx, q)
 	if err != nil {
 		return err
-	}
-	sum := sha256.Sum256([]byte(r.db.TenantKey(ctx) + "\x00" + sql))
-	key := hex.EncodeToString(sum[:])
-	now := time.Now()
-	e, ok := r.plans.get(key, now)
-	if !ok {
-		plan, err := q.Explain(ctx, r.db, keel.ExplainOptions{})
-		if err != nil {
-			return err
-		}
-		e = planEntry{cost: plan.TotalCost, rows: plan.Rows, expires: now.Add(r.opts.ExplainTTL)}
-		r.plans.put(key, e, now)
 	}
 	if r.opts.MaxCost > 0 && e.cost > r.opts.MaxCost {
 		return fail(CodeTooCostly, "", "the report would cost %.0f to run; the most is %.0f; add filters or remove columns", e.cost, r.opts.MaxCost)
@@ -123,6 +112,75 @@ func (r *Runner) checkCost(ctx context.Context, q *keel.DynQuery) error {
 		return fail(CodeTooCostly, "", "the report would return about %.0f rows; the most is %.0f; add filters", e.rows, r.opts.MaxPlanRows)
 	}
 	return nil
+}
+
+// plan returns EXPLAIN's estimates for a statement, from the plan cache when the tenant ran its
+// shape within ExplainTTL.
+func (r *Runner) plan(ctx context.Context, q *keel.DynQuery) (planEntry, error) {
+	key, err := r.planKey(ctx, q)
+	if err != nil {
+		return planEntry{}, err
+	}
+	now := time.Now()
+	if e, ok := r.plans.get(key, now); ok {
+		return e, nil
+	}
+	p, err := q.Explain(ctx, r.db, keel.ExplainOptions{})
+	if err != nil {
+		return planEntry{}, err
+	}
+	e := planEntry{cost: p.TotalCost, rows: p.Rows, expires: now.Add(r.opts.ExplainTTL)}
+	r.plans.put(key, e, now)
+	return e, nil
+}
+
+// planKey identifies a statement shape for a tenant: its text, without its values.
+func (r *Runner) planKey(ctx context.Context, q *keel.DynQuery) (string, error) {
+	sql, _, err := q.ToSQL(ctx, r.db)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256([]byte(r.db.TenantKey(ctx) + "\x00" + sql))
+	return hex.EncodeToString(sum[:]), nil
+}
+
+// choosePreAgg picks how a report whose to-many measures are pre-aggregated in CTEs under its
+// filters reads them: restricted to the parents the filters select, or every parent in one pass,
+// whichever the planner estimates cheaper. The choice is remembered with the plan estimates, per
+// tenant and statement shape, so a busy dashboard pays for the two EXPLAINs once.
+func (r *Runner) choosePreAgg(ctx context.Context, comp *Compiled) (*Compiled, error) {
+	if !comp.choosable {
+		return comp, nil
+	}
+	key, err := r.planKey(ctx, comp.Query)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	if e, ok := r.plans.get("choice/"+key, now); ok {
+		if e.all {
+			return comp.withStrategy(ctx, StrategyCTEAll)
+		}
+		return comp, nil
+	}
+	all, err := comp.withStrategy(ctx, StrategyCTEAll)
+	if err != nil {
+		return nil, err
+	}
+	restricted, err := r.plan(ctx, comp.Query)
+	if err != nil {
+		return nil, err
+	}
+	every, err := r.plan(ctx, all.Query)
+	if err != nil {
+		return nil, err
+	}
+	pick := every.cost < restricted.cost
+	r.plans.put("choice/"+key, planEntry{all: pick, expires: now.Add(r.opts.ExplainTTL)}, now)
+	if pick {
+		return all, nil
+	}
+	return comp, nil
 }
 
 // tenantLock is the first key of a tenant's advisory locks: a hash of its data-versions tenant key.

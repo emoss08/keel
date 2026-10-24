@@ -126,9 +126,9 @@ func setup() error {
 	return err
 }
 
-// replicaDB opens a DB with the test server's streaming replica, skipping the test when
-// KEEL_TEST_REPLICA_DSN is not set.
-func replicaDB(t *testing.T) *keel.DB {
+// replicaConfig returns the test Config with the test server's streaming replica, skipping the
+// test when KEEL_TEST_REPLICA_DSN is not set.
+func replicaConfig(t *testing.T) keel.Config {
 	t.Helper()
 	db(t)
 	dsn := os.Getenv("KEEL_TEST_REPLICA_DSN")
@@ -147,6 +147,12 @@ func replicaDB(t *testing.T) *keel.DB {
 	c.Replicas = []keel.ReplicaConfig{{DSN: fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable",
 		rcfg.User, rcfg.Password, rcfg.Host, rcfg.Port, cfg.Database)}}
 	c.MaxReplicaLag = 5 * time.Second
+	return c
+}
+
+// openHealthy opens a DB and waits until its replicas are healthy.
+func openHealthy(t *testing.T, c keel.Config) *keel.DB {
+	t.Helper()
 	d, err := keel.Open(context.Background(), c)
 	if err != nil {
 		t.Fatal(err)
@@ -154,7 +160,11 @@ func replicaDB(t *testing.T) *keel.DB {
 	t.Cleanup(d.Close)
 	deadline := time.Now().Add(20 * time.Second)
 	for time.Now().Before(deadline) {
-		if st := d.Replicas(); len(st) == 1 && st[0].Healthy {
+		healthy := true
+		for _, st := range d.Replicas() {
+			healthy = healthy && st.Healthy
+		}
+		if healthy {
 			return d
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -188,5 +198,13 @@ func must[T any](t testing.TB) func(T, error) T {
 			t.Fatal(err)
 		}
 		return v
+	}
+}
+
+// ok fails the test on an error.
+func ok(t testing.TB, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatal(err)
 	}
 }
