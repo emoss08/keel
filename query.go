@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"time"
+	"unsafe"
 )
 
 // Handle is embedded in every generated table type. It starts queries and runs writes for model T.
@@ -408,6 +409,24 @@ func (q *Query[T]) Exists(ctx context.Context, db *DB) (bool, error) {
 // autoupdate column is stamped and the version column incremented unless sets name them.
 func (q *Query[T]) Update(ctx context.Context, db *DB, sets ...Assignment) (int64, error) {
 	return q.q.update(ctx, db, sets)
+}
+
+// UpdateReturning sets columns on every matching row, as Update does, and returns the updated rows
+// read in the same statement (WITH keel_upd AS (UPDATE … RETURNING …) SELECT …): their values
+// after the update, readonly columns included, with the autoupdate stamp and the incremented
+// version. The query's Load paths are read too, to-one relations joined into the statement and
+// to-many relations loaded after it, both as of the statement's snapshot (before the update);
+// Order orders the rows; Pick and Omit narrow the columns read back (the primary key and tenant
+// columns are always read, every default column when the table has update hooks, which receive
+// the same rows). The update's tenant predicate and interceptors choose the rows; read
+// interceptors do not apply to them. Limit, Offset, Lock, Group and DistinctOn are refused.
+func (q *Query[T]) UpdateReturning(ctx context.Context, db *DB, sets ...Assignment) ([]*T, error) {
+	var rows []*T
+	err := q.q.updateReturning(ctx, db, sets, func(row unsafe.Pointer) { rows = append(rows, (*T)(row)) })
+	if err != nil {
+		return nil, err
+	}
+	return rows, nil
 }
 
 // Delete deletes every matching row and returns the number of rows deleted.

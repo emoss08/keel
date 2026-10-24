@@ -296,6 +296,7 @@ Builders are mutable and chainable; `Clone` copies one. `ToSQL` renders the main
 | `Count`, `CountUpTo`, `Exists` | scalars |
 | `Each` | keyset batches at constant memory |
 | `Update`, `Delete` | bulk writes over the query's filter; rows affected. A query without `Where` is refused |
+| `UpdateReturning` | a bulk update that returns the updated rows, with their loads, from one statement |
 | `keel.Into[R]`, `keel.IntoOne[R]` | projections: the picked expressions fill `R`'s exported fields in order |
 | `keel.Batch(ctx, db, items...)` | independent reads in one round trip: `ListInto`, `AllInto`, `OneInto`, `FirstInto`, `PageInto`, `CountInto`, `CountUpToInto`, `ExistsInto`, `IntoSlice`, `IntoValue` each pair a query with a typed destination and keep their terminal's checks; the relation loads of all items share one round trip per level; destinations are filled only when every item succeeded. The terminals above are one-item batches |
 | `Explain(ctx, db, opts)` | the main statement's plan: total cost, estimated rows and EXPLAIN's JSON; with `Analyze`, actual rows and timings from `EXPLAIN (ANALYZE, BUFFERS)` run in a transaction (or savepoint) that is rolled back |
@@ -436,6 +437,7 @@ err = s.Save(ctx, db, sh, s.Status, s.CanceledAt)  // only these columns (and th
 err = s.SaveExcept(ctx, db, sh, s.Token)           // every updatable column but these
 err = s.DeleteRow(ctx, db, sh)                     // ErrNotFound when nothing was deleted
 n, err := s.Where(...).Update(ctx, db, s.Status.To(shipment.StatusCanceled))
+rows, err := s.Where(...).Load(s.Customer()).UpdateReturning(ctx, db, s.Status.To(shipment.StatusCanceled))
 out := keel.Unnest("outcome", []string{"id", "status"}, ids, statuses) // a CTE over Go slices
 n, err = s.With(out).Join(out, out.Col("id").EqCol(s.ID)).Where(...).Update(ctx, db, s.Status.ToExpr(out.Col("status")))
 n, err = s.Where(...).Delete(ctx, db)
@@ -445,6 +447,15 @@ n, err = s.CreateOrSkip(ctx, db, rows, s.OrganizationID, s.BusinessUnitID, s.Pro
 n, err = s.InsertFrom(ctx, db, src.Pick(...), s.Name, s.Code)
 n, err = s.Copy(ctx, db, rows)                     // binary COPY; prepared as Create, nothing read back
 ```
+
+`UpdateReturning` renders the same `UPDATE` as `Update` (`writeUpdate`) inside a data-modifying
+CTE, `WITH keel_upd AS (UPDATE … RETURNING alias.*[, old.c AS keel_old_N]) SELECT … FROM keel_upd
+alias`, and reads it with the select renderer: the outer `SELECT` is the query without its filter,
+joins and CTEs, over the CTE as a prefiltered `FROM` item, so its to-one loads join, its order
+applies, its scan plan decodes the rows (the previous values of hooked columns as hidden values
+after them) and its to-many loads follow in the write's transaction. The rows feed the update
+hooks and the data versions (`touchRows`), so a system-scope write needs no `returnTenants`
+wrapper.
 
 After a write keel reads back only what Postgres may have changed: `readonly` columns, and the
 version where it changed it. `Upsert` reports per row whether it inserted (`xmax = 0`); a row that

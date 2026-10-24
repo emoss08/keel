@@ -2367,6 +2367,37 @@ included) of equal length; it is also a CTE for reads. `LeftJoin` and lateral jo
 an `UPDATE`'s `FROM` list cannot outer-join the updated table. Bulk writes run no model hooks and no
 `BeforeWrite` hooks; see [which hooks run](#which-hooks-run).
 
+
+`UpdateReturning` is `Update` that returns the updated rows, read in the same statement, instead of
+a count: an API that answers a bulk change with the changed records needs no second read.
+
+```go
+rows, err := s.
+    Where(s.ID.In(ids...), s.Status.Eq(fleet.StatusNew)).
+    Load(s.Customer(), s.Moves()).
+    Order(s.ProNumber.Asc()).
+    UpdateReturning(ctx, db, s.Status.To(fleet.StatusCanceled))
+// WITH keel_upd AS (UPDATE "shipments" s SET … WHERE … RETURNING s.*)
+// SELECT s."id", …, c."id", … FROM keel_upd s LEFT JOIN "customers" c ON … ORDER BY s."pro_number" ASC
+```
+
+- The rows hold the values after the update: the assignments, the `autoupdate` stamp, the
+  incremented `version` and the `readonly` columns Postgres computed (generated columns, values set
+  by `BEFORE` triggers).
+- The update chooses the rows exactly as `Update` does: its filter, the tenant predicate, the
+  update interceptors, `With` and inner `Join`s. Read interceptors and read filters do not apply to
+  the returned rows; they are the rows the update changed.
+- `Load` works: to-one relations are joined into the statement, to-many relations load after it in
+  the same transaction, one round trip per level. They read the database as of the statement's
+  snapshot, before the update, which matters only when a relation reads the table being updated.
+  `AfterLoad` hooks run on the rows.
+- `Order` orders the rows. `Pick` (columns of the table) and `Omit` narrow what is read back; the
+  primary key and the tenant columns are always read, and every default column when the table has
+  update hooks, which receive the same rows (with `Mutation.Old` from `RETURNING old.…` for the
+  columns they declared with `Needs`).
+- `Limit`, `Offset`, `Lock`, `Group` and `DistinctOn` are refused: an `UPDATE` changes every row it
+  matches. A query without `Where` is refused as `Update` refuses it.
+
 ### Upsert
 
 `Upsert` inserts rows and updates the existing row on conflict. It reports, per row, whether the row
@@ -2453,7 +2484,7 @@ those values in the query.
 
 After a write keel reads back only what Postgres may have changed: `readonly` columns, and the
 version where it changed it. The values keel filled (IDs, tenant columns, timestamps) are already in
-the struct.
+the struct. `Update` reads nothing back; `UpdateReturning` reads the updated rows whole.
 
 ## Transactions
 
