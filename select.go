@@ -343,7 +343,7 @@ func (q *query) renderSelect(r *render, sn *lnode, o selectOpts) *selectPlan {
 					}
 					continue
 				}
-				r.s(j.ref.Table.Quoted)
+				r.s(r.tableName(j.ref))
 				r.b(' ')
 				r.s(lateral[i])
 				r.s(" ON ")
@@ -362,7 +362,7 @@ func (q *query) renderSelect(r *render, sn *lnode, o selectOpts) *selectPlan {
 		if o.from != nil {
 			o.from(r, alias)
 		} else {
-			r.s(sn.table.Quoted)
+			r.s(r.tableName(sn.ref))
 			r.b(' ')
 			r.s(alias)
 		}

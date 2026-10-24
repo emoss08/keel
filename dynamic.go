@@ -69,7 +69,6 @@ type DynQuery struct {
 	derived []string
 	refs    map[dynRefKey]*Ref
 	preaggs []*DynPreAgg
-	userCTE int
 	err     error
 }
 
@@ -146,7 +145,7 @@ func dynDerived(name string, parts []*DynQuery, body subquery) *DynQuery {
 	if err != nil {
 		return &DynQuery{err: err}
 	}
-	t := CTE(name, positional("c", len(labels)), body)
+	t := numberedCTE(name, positional("c", len(labels)), body)
 	return &DynQuery{q: query{ref: t.ref, ctes: []*CTETable{t}}, derived: labels}
 }
 
@@ -425,8 +424,10 @@ func (q *DynQuery) CustomPlan() *DynQuery {
 	return q
 }
 
-// DynCTE is a dynamic query declared on another with With: WITH keel_cte_n (…) AS (sub). Its
-// columns are sub's selected expressions, addressed by label.
+// DynCTE is a dynamic query declared on another with With: WITH keel_cte (…) AS (sub). A
+// statement names its CTEs keel_cte, keel_cte_2, … in the order it uses them, across every query
+// nested in it, so no name shadows another. Its columns are sub's selected expressions, addressed
+// by label.
 type DynCTE struct {
 	t      *CTETable
 	labels []string
@@ -445,8 +446,7 @@ func (q *DynQuery) With(sub *DynQuery) *DynCTE {
 	for i, o := range outs {
 		labels[i] = o.Label()
 	}
-	q.userCTE++
-	t := CTE("keel_cte_"+strconv.Itoa(q.userCTE), positional("c", len(labels)), sub)
+	t := numberedCTE("keel_cte", positional("c", len(labels)), sub)
 	q.q.ctes = append(q.q.ctes, t)
 	return &DynCTE{t: t, labels: labels}
 }

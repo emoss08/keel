@@ -869,3 +869,49 @@ func TestDynamicRefusesUnknownColumnsAtRun(t *testing.T) {
 		t.Fatal("a relation without a target resolved")
 	}
 }
+
+func TestDynamicCTENamesArePerStatement(t *testing.T) {
+	d := db(t)
+	w := seed(t, 20)
+	reg := registry(t)
+
+	perCustomer := func() *keel.DynQuery {
+		q := reg.Query("shipments")
+		return q.Select(q.Path("customer_id").As("customer"), q.Path("total").Sum().As("revenue")).
+			Group(q.Path("customer_id"))
+	}
+	inner := reg.Query("customers")
+	totals := inner.With(perCustomer())
+	inner.Join(totals, totals.Col("customer").Eq(inner.Path("id"))).
+		Select(inner.Path("id").As("id"), totals.Col("revenue").As("revenue"))
+	outer := reg.Query("customers")
+	nested := outer.With(inner)
+	again := outer.With(perCustomer())
+	outer.Join(nested, nested.Col("id").Eq(outer.Path("id"))).
+		Join(again, again.Col("customer").Eq(outer.Path("id"))).
+		Select(outer.Path("code"), nested.Col("revenue").As("nested"), again.Col("revenue").As("direct")).
+		Order(outer.Path("code").Asc())
+	sql, _, err := outer.ToSQL(w.ctx, d)
+	ok(t, err)
+	for _, name := range []string{`"keel_cte"`, `"keel_cte_2"`, `"keel_cte_3"`} {
+		if strings.Count(sql, name+" (") != 1 {
+			t.Fatalf("%s is not declared exactly once:\n%s", name, sql)
+		}
+	}
+	if strings.Contains(sql, `"keel_cte_4"`) {
+		t.Fatalf("more CTEs than the statement declares:\n%s", sql)
+	}
+	res := must(outer.Run(w.ctx, d))(t)
+	eq(t, res.Rows, 3)
+	for i := range res.Rows {
+		eq(t, res.Column("nested").Numeric[i], res.Column("direct").Numeric[i])
+	}
+	derived := keel.DynFromQuery(keel.DynFromQuery(perCustomer()))
+	derived.Select(derived.Path("revenue").Sum().As("revenue"))
+	sql, _, err = derived.ToSQL(w.ctx, d)
+	ok(t, err)
+	if strings.Count(sql, `"keel_sub" (`) != 1 || strings.Count(sql, `"keel_sub_2" (`) != 1 {
+		t.Fatalf("nested derived tables share a name:\n%s", sql)
+	}
+	eq(t, must(derived.Run(w.ctx, d))(t).Column("revenue").Numeric[0], keel.Decimal("2190.0000"))
+}
