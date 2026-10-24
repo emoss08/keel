@@ -2331,8 +2331,10 @@ if err := fleetdb.Stops.DeleteRow(ctx, db, st); errors.Is(err, keel.ErrNotFound)
 ```
 
 Interceptors apply as they do to `Save` (with `USING` for the relations they reference). The row
-passed needs only its primary key and tenant columns; delete hooks that declared `Needs` get the
-stored values of those columns in `Mutation.Old`.
+passed needs only its primary key: under a tenant scope keel fills its empty tenant columns from
+the scope, as `Create` does, and refuses a row of another tenant, so `DeleteRow(ctx, db, &Stop{ID:
+id})` is enough. Delete hooks that declared `Needs` get the stored values of those columns in
+`Mutation.Old`.
 
 ### Bulk updates and deletes
 

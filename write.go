@@ -998,7 +998,7 @@ func (db *DB) deleteRow(ctx context.Context, ref *Ref, row unsafe.Pointer) error
 	if err != nil {
 		return err
 	}
-	if err := checkTenant(run.sc, t, row); err != nil {
+	if err := fillTenant(run.sc, t, row); err != nil {
 		return run.close(ctx, err)
 	}
 	hctx := run.hookCtx(ctx)

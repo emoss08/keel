@@ -159,6 +159,19 @@ func TestDeleteRow(t *testing.T) {
 	}
 }
 
+func TestDeleteRowFillsTheTenantFromTheScope(t *testing.T) {
+	d := db(t)
+	ctx := newTenant()
+	c := newCustomer(t, ctx, "D2")
+	ok(t, fleetdb.Customers.DeleteRow(ctx, d, &fleet.Customer{ID: c.ID}))
+	if _, err := fleetdb.Customers.Get(ctx, d, c.ID); !errors.Is(err, keel.ErrNotFound) {
+		t.Fatalf("got %v, want ErrNotFound", err)
+	}
+	if err := fleetdb.Customers.DeleteRow(systemCtx("delete by id"), d, &fleet.Customer{ID: c.ID}); err == nil {
+		t.Fatal("a system scope deleted a row without its tenant columns")
+	}
+}
+
 func TestTenantIsolation(t *testing.T) {
 	d := db(t)
 	a, b := newTenant(), newTenant()
