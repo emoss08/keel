@@ -57,33 +57,52 @@ func database(t *testing.T) string {
 	return u.String()
 }
 
-// keel runs the command line and returns its exit code and output.
-func keel(t *testing.T, args ...string) (int, string, string) {
+// cli runs the command line without a terminal and returns its exit code and output.
+func cli(t *testing.T, args ...string) (int, string, string) {
 	t.Helper()
 	var out, errOut bytes.Buffer
-	code := run(context.Background(), args, &out, &errOut)
+	code := run(context.Background(), args, strings.NewReader(""), &out, &errOut)
 	return code, out.String(), errOut.String()
 }
 
 // ok runs the command line and fails the test on a non-zero exit.
 func ok(t *testing.T, args ...string) string {
 	t.Helper()
-	code, out, errOut := keel(t, args...)
+	code, out, errOut := cli(t, args...)
 	if code != 0 {
 		t.Fatalf("keel %s: exit %d\n%s%s", strings.Join(args, " "), code, out, errOut)
 	}
 	return out
 }
 
+// contains fails the test unless out holds every want.
+func contains(t *testing.T, what, out string, wants ...string) {
+	t.Helper()
+	for _, w := range wants {
+		if !strings.Contains(out, w) {
+			t.Fatalf("%s lacks %q:\n%s", what, w, out)
+		}
+	}
+}
+
 func TestUsage(t *testing.T) {
+	t.Setenv("KEEL_DSN", "")
 	for _, args := range [][]string{nil, {"nope"}, {"migrate"}, {"migrate", "nope"}, {"migrate", "status", "extra"}, {"migrate", "repair"}} {
-		if code, _, errOut := keel(t, args...); code != 2 || !strings.Contains(errOut, "usage:") {
+		if code, _, errOut := cli(t, args...); code != 2 || !strings.Contains(errOut, "keelcli: ") {
 			t.Errorf("%v: exit %d %s", args, code, errOut)
 		}
 	}
-	if code, _, errOut := keel(t, "migrate", "status", "-dsn", "", "-dir", t.TempDir()); code != 1 || !strings.Contains(errOut, "KEEL_DSN") {
+	code, _, errOut := cli(t, "migrate", "status", "-dir", t.TempDir())
+	if code != 1 || !strings.Contains(errOut, "pass -dsn or set KEEL_DSN") {
 		t.Errorf("no dsn: exit %d %s", code, errOut)
 	}
+	out := ok(t, "help")
+	contains(t, "help", out, "gen ", "migrate up", "doctor", "-dsn string", "-dir [name=]path", "-lock-timeout duration",
+		"-retries int", "-allow-out-of-order", "-after statement", "-schema schema", "-json")
+	if strings.Contains(out, "seed apply") {
+		t.Fatalf("help lists seed commands without seeds:\n%s", out)
+	}
+	contains(t, "help gen", ok(t, "help", "gen"), "Usage: keel gen [-out {dir}/{name}db]")
 }
 
 func TestMigrateCommands(t *testing.T) {
@@ -91,130 +110,113 @@ func TestMigrateCommands(t *testing.T) {
 	dir := t.TempDir()
 	d := "core=" + dir
 
-	out := ok(t, "migrate", "create", "items", "-dir", d)
-	items := strings.TrimSpace(strings.TrimPrefix(out, "created "))
+	items := strings.TrimSpace(strings.TrimPrefix(ok(t, "migrate", "create", "items", "-dir", d), "Created "))
 	write(t, items, "CREATE TABLE items (id int PRIMARY KEY, name text);")
-	out = ok(t, "migrate", "create", "items_name", "-notx", "-dir", d, "-json")
-	var created map[string]string
-	if err := json.Unmarshal([]byte(out), &created); err != nil {
+	var created struct{ Path string }
+	if err := json.Unmarshal([]byte(ok(t, "migrate", "create", "-kind", "notx", "-dir", d, "-json", "items_name")), &created); err != nil {
 		t.Fatal(err)
 	}
-	write(t, created["path"], "--keel:notx\nCREATE INDEX CONCURRENTLY items_name ON items (name);")
-	view := strings.TrimSpace(strings.TrimPrefix(ok(t, "migrate", "create", "views", "-repeatable", "-dir", d), "created "))
+	write(t, created.Path, "--keel:notx\nCREATE INDEX CONCURRENTLY items_name ON items (name);")
+	view := strings.TrimSpace(strings.TrimPrefix(ok(t, "migrate", "create", "views", "-kind", "repeatable", "-dir", d), "Created "))
 	write(t, view, "CREATE OR REPLACE VIEW item_names AS SELECT name FROM items;")
 	itemsVersion := strings.SplitN(filepath.Base(items), "_", 2)[0]
 
-	out = ok(t, "migrate", "plan", "-dsn", dsn, "-dir", d, "-after", "SELECT 1")
-	if !strings.Contains(out, "apply   R_views (core)") || !strings.Contains(out, "after   SELECT 1") || !strings.Contains(out, "3 migrations to apply") {
-		t.Fatalf("plan:\n%s", out)
-	}
-	out = ok(t, "migrate", "up", "-dry-run", "-dsn", dsn, "-dir", d)
-	if !strings.Contains(out, "        CREATE TABLE items") {
-		t.Fatalf("dry run:\n%s", out)
-	}
-	out = ok(t, "migrate", "up", "-dsn", dsn, "-dir", d, "-to", itemsVersion)
-	if !strings.Contains(out, "[1/1] applied "+itemsVersion+"_items (core)") || !strings.Contains(out, "applied 1 migration in") {
-		t.Fatalf("up -to:\n%s", out)
-	}
+	contains(t, "plan", ok(t, "migrate", "plan", "-dsn", dsn, "-dir", d, "-after", "SELECT 1"),
+		"Would apply 3 migrations:", "R               views", "Then, in the last migration's transaction:", "SELECT 1")
+	contains(t, "dry run", ok(t, "migrate", "up", "-dry-run", "-dsn", dsn, "-dir", d), "CREATE TABLE items")
+	contains(t, "up -to", ok(t, "migrate", "up", "-dsn", dsn, "-dir", d, "-to", itemsVersion),
+		"[1/1] "+itemsVersion+"_items  applied in", "done: 1 migration applied in")
 
-	out = ok(t, "migrate", "up", "-json", "-dsn", dsn, "-dir", d, "-after", "SELECT 1")
+	out := ok(t, "up", "-json", "-dsn", dsn, "-dir", d, "-after", "SELECT 1")
 	var kinds []string
 	sc := bufio.NewScanner(strings.NewReader(out))
 	for sc.Scan() {
 		var e struct {
-			Event     string
-			Migration *struct{ Name, Kind string }
-			Total     int
+			Kind  string
+			Index int
+			Total int
 		}
 		if err := json.Unmarshal(sc.Bytes(), &e); err != nil {
 			t.Fatalf("%s: %v", sc.Text(), err)
 		}
-		kinds = append(kinds, e.Event)
+		kinds = append(kinds, e.Kind)
 	}
-	if strings.Join(kinds, ",") != "lock_acquired,migration_start,statement,migration_end,migration_start,after,migration_end,run_end" {
+	want := "lock_acquired,migration_start,statement,migration_end,migration_start,after,migration_end,run_end"
+	if strings.Join(kinds, ",") != want {
 		t.Fatalf("events %v\n%s", kinds, out)
 	}
+	if !strings.Contains(out, `"kind":"run_end","total":2`) {
+		t.Fatalf("run_end does not count the migrations applied:\n%s", out)
+	}
 
-	out = ok(t, "migrate", "status", "-json", "-dsn", dsn, "-dir", d)
-	var st []struct{ Name, State, Kind string }
-	if err := json.Unmarshal([]byte(out), &st); err != nil {
+	var st struct {
+		Migrations []struct{ Name, State, Kind string }
+	}
+	if err := json.Unmarshal([]byte(ok(t, "migrate", "status", "-json", "-dsn", dsn, "-dir", d)), &st); err != nil {
 		t.Fatal(err)
 	}
-	if len(st) != 3 || st[0].State != "applied" || st[2].Kind != "repeatable" || st[2].State != "applied" {
+	if len(st.Migrations) != 3 || st.Migrations[0].State != "applied" || st.Migrations[2].Kind != "repeatable" || st.Migrations[2].State != "applied" {
 		t.Fatalf("status %+v", st)
 	}
-	if out := ok(t, "migrate", "status", "-dsn", dsn, "-dir", d); !strings.Contains(out, "applied  R ") {
-		t.Fatalf("status:\n%s", out)
-	}
+	contains(t, "status", ok(t, "migrate", "status", "-dsn", dsn, "-dir", d), "R               views", "3 applied")
 	if out := ok(t, "migrate", "history", "-dsn", dsn, "-dir", d); strings.Count(out, "\n") != 4 {
 		t.Fatalf("history:\n%s", out)
 	}
-	if out := ok(t, "migrate", "plan", "-dsn", dsn, "-dir", d); out != "nothing to apply\n" {
-		t.Fatalf("plan:\n%s", out)
-	}
-	if out := ok(t, "migrate", "check", "-dsn", dsn, "-dir", d); !strings.HasPrefix(out, "ok:") {
-		t.Fatalf("check:\n%s", out)
-	}
+	contains(t, "plan", ok(t, "migrate", "plan", "-dsn", dsn, "-dir", d), "Nothing to apply")
+	contains(t, "check", ok(t, "migrate", "check", "-dsn", dsn, "-dir", d), "No problems")
 
 	write(t, items, "-- the items\nCREATE TABLE items (id int PRIMARY KEY, name text);")
-	code, out, errOut := keel(t, "migrate", "check", "-dsn", dsn, "-dir", d)
-	if code != 1 || !strings.Contains(out, "changed       "+itemsVersion+"_items") || !strings.Contains(errOut, "1 problem") {
+	code, out, errOut := cli(t, "migrate", "check", "-dsn", dsn, "-dir", d)
+	if code != 3 || !strings.Contains(out, itemsVersion+"_items") || !strings.Contains(errOut, "1 problem") {
 		t.Fatalf("check changed: %d\n%s%s", code, out, errOut)
 	}
-	code, out, _ = keel(t, "migrate", "check", "-json", "-dsn", dsn, "-dir", d)
+	code, out, _ = cli(t, "migrate", "check", "-json", "-dsn", dsn, "-dir", d)
 	var rep struct {
-		OK      bool
-		Changed []struct{ Name string }
+		Problems []struct{ Kind string }
 	}
-	if err := json.Unmarshal([]byte(out), &rep); err != nil || code != 1 || rep.OK || len(rep.Changed) != 1 {
-		t.Fatalf("check json %d %+v %v", code, rep, err)
+	if err := json.Unmarshal([]byte(out), &rep); err != nil || code != 3 || len(rep.Problems) != 1 || rep.Problems[0].Kind != "changed" {
+		t.Fatalf("check json %d %s %v", code, out, err)
 	}
-	if out := ok(t, "migrate", "repair", itemsVersion, "-dsn", dsn, "-dir", d); !strings.Contains(out, "repaired "+itemsVersion+"_items (core): checksum") {
-		t.Fatalf("repair:\n%s", out)
-	}
+	contains(t, "repair", ok(t, "migrate", "repair", itemsVersion, "-yes", "-dsn", dsn, "-dir", d), "Repaired "+itemsVersion+"_items: checksum")
 	ok(t, "migrate", "check", "-dsn", dsn, "-dir", d)
 
 	lint := filepath.Join(dir, "20991231000000_risky.sql")
 	write(t, lint, "CREATE INDEX items_id ON items (id);")
-	code, out, _ = keel(t, "migrate", "lint", "-dsn", dsn, "-dir", d)
-	if code != 0 || !strings.Contains(out, "core/20991231000000_risky.sql:1: warning: index-concurrently") || !strings.Contains(out, "1 migration linted") {
+	code, out, _ = cli(t, "migrate", "lint", "-dsn", dsn, "-dir", d)
+	if code != 0 || !strings.Contains(out, "index-concurrently") || !strings.Contains(out, "20991231000000_risky:1") {
 		t.Fatalf("lint: %d\n%s", code, out)
 	}
 	write(t, lint, "ALTER TABLE items ADD COLUMN code text NOT NULL;")
-	code, out, _ = keel(t, "migrate", "lint", "-json", "-dir", d)
-	var findings []struct{ Rule, Severity string }
-	if err := json.Unmarshal([]byte(out), &findings); err != nil || code != 1 || len(findings) != 1 || findings[0].Rule != "not-null-default" {
-		t.Fatalf("lint json %d %s %v", code, out, err)
+	t.Setenv("KEEL_DSN", "")
+	code, out, _ = cli(t, "migrate", "lint", "-json", "-dir", d)
+	var found struct {
+		Findings []struct{ Rule, Severity string }
+	}
+	if err := json.Unmarshal([]byte(out), &found); err != nil || code != 3 || len(found.Findings) != 1 || found.Findings[0].Rule != "not-null-default" {
+		t.Fatalf("lint without a database %d %s %v", code, out, err)
 	}
 	if err := os.Remove(lint); err != nil {
 		t.Fatal(err)
 	}
 
 	fresh := database(t)
-	out = ok(t, "migrate", "baseline", itemsVersion, "-dsn", fresh, "-dir", d)
-	if !strings.Contains(out, "1 migration marked as applied") {
-		t.Fatalf("baseline:\n%s", out)
-	}
-	if out := ok(t, "migrate", "plan", "-json", "-dsn", fresh, "-dir", d); !strings.Contains(out, `"items_name"`) || strings.Contains(out, `"name": "items"`) {
+	contains(t, "baseline", ok(t, "migrate", "baseline", itemsVersion, "-yes", "-dsn", fresh, "-dir", d), "Recorded 1 migration as applied")
+	if out := ok(t, "migrate", "plan", "-json", "-dsn", fresh, "-dir", d); !strings.Contains(out, `"items_name"`) || strings.Contains(out, `"name":"items"`) {
 		t.Fatalf("plan after baseline:\n%s", out)
 	}
 
-	stamp := filepath.Join(t.TempDir(), "version_gen.go")
-	if out := ok(t, "migrate", "stamp", "-dir", d, "-package", "schema", "-out", stamp); !strings.Contains(out, "wrote "+stamp) {
-		t.Fatalf("stamp:\n%s", out)
+	stamp := filepath.Join(t.TempDir(), "schema", "version_gen.go")
+	contains(t, "stamp", ok(t, "migrate", "stamp", "-dir", d, "-out", stamp), "Wrote "+stamp)
+	if src, err := os.ReadFile(stamp); err != nil || !strings.Contains(string(src), "package schema") {
+		t.Fatalf("stamp file %v:\n%s", err, src)
 	}
-	if out := ok(t, "migrate", "stamp", "-dir", d, "-out", stamp, "-check"); !strings.Contains(out, "up to date") {
-		t.Fatalf("stamp -check:\n%s", out)
-	}
+	contains(t, "stamp -check", ok(t, "migrate", "stamp", "-dir", d, "-out", stamp, "-check"), "matches the migrations")
 	ok(t, "migrate", "create", "more", "-dir", d)
-	if code, _, errOut := keel(t, "migrate", "stamp", "-dir", d, "-out", stamp, "-check"); code != 1 || !strings.Contains(errOut, "out of date") {
-		t.Fatalf("stale stamp -check: %d %s", code, errOut)
+	if code, out, _ := cli(t, "migrate", "stamp", "-dir", d, "-out", stamp, "-check"); code != 3 || !strings.Contains(out, "is stale") {
+		t.Fatalf("stale stamp -check: %d %s", code, out)
 	}
 
-	if out := ok(t, "migrate", "templates", "-json", "-dsn", dsn); !strings.HasPrefix(out, "[") {
-		t.Fatalf("templates:\n%s", out)
-	}
-	if out := ok(t, "migrate", "templates", "-dsn", dsn); !strings.HasPrefix(out, "NAME") {
+	if out := ok(t, "template", "-json", "-dsn", dsn, "-dir", d); !strings.HasPrefix(out, `{"templates":`) {
 		t.Fatalf("templates:\n%s", out)
 	}
 }
@@ -224,17 +226,14 @@ func TestCheckAgainstBase(t *testing.T) {
 	write(t, filepath.Join(base, "20260102000000_b.sql"), "SELECT 1;")
 	write(t, filepath.Join(head, "20260102000000_b.sql"), "SELECT 1;")
 	write(t, filepath.Join(head, "20260101000000_a.sql"), "SELECT 1;")
-	code, out, _ := keel(t, "migrate", "check", "-dir", "core="+head, "-base-dir", "core="+base)
-	if code != 1 || !strings.Contains(out, "out of order  20260101000000_a (core)") {
+	code, out, _ := cli(t, "migrate", "check", "-dir", "core="+head, "-base-dir", "core="+base)
+	if code != 3 || !strings.Contains(out, "out-of-order") || !strings.Contains(out, "20260101000000_a") {
 		t.Fatalf("check: %d\n%s", code, out)
 	}
-	write(t, filepath.Join(head, "20260101000000_a.sql"), "")
 	if err := os.Rename(filepath.Join(head, "20260101000000_a.sql"), filepath.Join(head, "20260103000000_a.sql")); err != nil {
 		t.Fatal(err)
 	}
-	if out := ok(t, "migrate", "check", "-dir", "core="+head, "-base-dir", "core="+base); !strings.Contains(out, "ok: 1 migration pending") {
-		t.Fatalf("check:\n%s", out)
-	}
+	contains(t, "check", ok(t, "migrate", "check", "-dir", "core="+head, "-base-dir", "core="+base), "No problems")
 }
 
 // write writes a file.
