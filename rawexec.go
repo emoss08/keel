@@ -12,14 +12,15 @@ import (
 // Postgres refuses a statement that writes.
 //
 // Observers see the statement with the Op "exec". keel cannot see what the statement touches, so it
-// bypasses scope checks, interceptors and hooks. Bind values as $1, $2, … arguments; never format
-// them into sql.
+// bypasses scope checks, interceptors and hooks, always runs on the primary, records no commit
+// position for OnReplica outside a Write, and changes no data version: call MarkChanged with the
+// tables it writes. Bind values as $1, $2, … arguments; never format them into sql.
 func Exec(ctx context.Context, db *DB, sql string, args ...any) (int64, error) {
-	write := true
-	if tx := txFrom(ctx, db); tx != nil {
-		write = !tx.readOnly
+	mode := modeExec
+	if tx := txFrom(ctx, db); tx != nil && tx.readOnly {
+		mode = modePrimaryRead
 	}
-	run, err := db.newRunner(ctx, write)
+	run, err := db.runnerFor(ctx, mode)
 	if err != nil {
 		return 0, err
 	}

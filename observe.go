@@ -6,12 +6,14 @@ import (
 )
 
 // QueryEvent describes one statement. SQL never contains values; Args is the number of bound
-// parameters.
+// parameters. Replica names the replica the statement ran on (ReplicaStats.Name), and is empty
+// for the primary.
 type QueryEvent struct {
 	Op       string
 	Table    string
 	SQL      string
 	Args     int
+	Replica  string
 	Start    time.Time
 	Duration time.Duration
 	Rows     int64
@@ -41,17 +43,21 @@ type observed struct {
 	ctx context.Context
 }
 
-// startEvents runs the observers' BeforeQuery for each statement, each starting from ctx. It
-// returns the events and the context the round trip runs under: the statement's own context when
-// there is one statement, else ctx.
-func (db *DB) startEvents(ctx context.Context, stmts []*stmt) ([]observed, context.Context) {
+// startEvents runs the observers' BeforeQuery for each statement, each starting from ctx, for a
+// round trip to rep, or to the primary when rep is nil. It returns the events and the context the
+// round trip runs under: the statement's own context when there is one statement, else ctx.
+func (db *DB) startEvents(ctx context.Context, rep *replica, stmts []*stmt) ([]observed, context.Context) {
 	if len(db.cfg.Observers) == 0 {
 		return nil, ctx
 	}
 	now := time.Now()
+	server := ""
+	if rep != nil {
+		server = rep.name
+	}
 	events := make([]observed, len(stmts))
 	for i, s := range stmts {
-		e := &QueryEvent{Op: s.op, Table: s.table, SQL: s.sql, Args: len(s.args), Start: now}
+		e := &QueryEvent{Op: s.op, Table: s.table, SQL: s.sql, Args: len(s.args), Replica: server, Start: now}
 		sctx := ctx
 		for _, o := range db.cfg.Observers {
 			sctx = o.BeforeQuery(sctx, e)
@@ -62,6 +68,14 @@ func (db *DB) startEvents(ctx context.Context, stmts []*stmt) ([]observed, conte
 		return events, events[0].ctx
 	}
 	return events, ctx
+}
+
+// retarget marks events as run on the primary, for a round trip retried there after its replica
+// failed its guard.
+func retarget(events []observed) {
+	for _, ev := range events {
+		ev.e.Replica = ""
+	}
 }
 
 // endEvents completes the events of one round trip and runs the observers' AfterQuery, each

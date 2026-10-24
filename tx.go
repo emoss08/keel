@@ -28,12 +28,18 @@ type txState struct {
 	savepoints int
 
 	afterCommit []func(context.Context)
+
+	rep         *replica
+	route       *route
+	changes     versionSet
+	commitTried bool
 }
 
 type txOptions struct {
 	lockTimeout time.Duration
 	isolation   string
 	retries     int
+	replica     bool
 }
 
 // TxOption configures Read and Write.
@@ -52,13 +58,15 @@ func RepeatableRead() TxOption { return func(o *txOptions) { o.isolation = "REPE
 // deadlock. fn must be safe to repeat.
 func Retry(n int) TxOption { return func(o *txOptions) { o.retries = n } }
 
-// Read runs fn in a read-only transaction. A Read or Write already on the context is joined.
+// Read runs fn in a read-only transaction, on the primary unless ReplicaTx is given. A Read or
+// Write already on the context is joined.
 func Read(ctx context.Context, db *DB, fn func(ctx context.Context) error, opts ...TxOption) error {
 	return db.runTx(ctx, true, fn, opts)
 }
 
-// Write runs fn in a read-write transaction. A Write already on the context is joined; a Read is
-// not, and returns ErrReadOnly.
+// Write runs fn in a read-write transaction on the primary. A Write already on the context is
+// joined; a Read is not, and returns ErrReadOnly. On a context marked with OnReplica, COMMIT reads
+// the commit position in its round trip, for the context's replica reads.
 func Write(ctx context.Context, db *DB, fn func(ctx context.Context) error, opts ...TxOption) error {
 	return db.runTx(ctx, false, fn, opts)
 }
@@ -123,10 +131,26 @@ func (db *DB) runTx(ctx context.Context, readOnly bool, fn func(context.Context)
 	for _, opt := range opts {
 		opt(&o)
 	}
+	if o.replica && !readOnly {
+		return errf("ReplicaTx needs a Read")
+	}
+	if o.replica && o.isolation == "SERIALIZABLE" {
+		return errf("ReplicaTx cannot run Serializable: a hot standby refuses it")
+	}
 	for attempt := 0; ; attempt++ {
 		tx := &txState{db: db, readOnly: readOnly, opts: o, scopeCtx: ctx}
+		if db.replicas != nil {
+			if o.replica {
+				tx.rep = db.replicas.pick(routeFrom(ctx).mark(db), false)
+			} else if !readOnly {
+				tx.route = routeFrom(ctx)
+			}
+		}
 		err := fn(context.WithValue(ctx, txKey{}, tx))
 		err = tx.end(ctx, err)
+		if tx.rep != nil {
+			tx.rep.release()
+		}
 		if err != nil && attempt < o.retries && IsRetryable(err) {
 			continue
 		}
@@ -141,7 +165,11 @@ func (tx *txState) acquire(ctx context.Context) (*pgxpool.Conn, error) {
 	if tx.conn != nil {
 		return tx.conn, nil
 	}
-	conn, err := tx.db.pool.Acquire(ctx)
+	pool := tx.db.pool
+	if tx.rep != nil {
+		pool = tx.rep.pool
+	}
+	conn, err := pool.Acquire(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("keel: acquire connection: %w", err)
 	}
@@ -207,8 +235,19 @@ func (tx *txState) begin(ctx context.Context) error {
 }
 
 // end commits or rolls back and releases the connection. A transaction that never sent a
-// statement costs nothing.
+// statement costs nothing. The data versions the transaction changed go to the DB's versioner
+// once COMMIT was sent, even if it failed, since it may have committed.
 func (tx *txState) end(ctx context.Context, err error) error {
+	err = tx.finish(ctx, err)
+	if tx.changes != nil && (err == nil || tx.commitTried) {
+		tx.db.versions.add(tx.changes)
+		tx.changes = nil
+	}
+	return err
+}
+
+// finish commits, or rolls back when err is set, and releases the connection.
+func (tx *txState) finish(ctx context.Context, err error) error {
 	if tx.conn == nil {
 		return err
 	}
@@ -225,11 +264,47 @@ func (tx *txState) end(ctx context.Context, err error) error {
 		}
 		return err
 	}
-	if _, cerr := tx.conn.Exec(ctx, "COMMIT"); cerr != nil {
-		return fmt.Errorf("keel: commit: %w", cerr)
+	tx.commitTried = true
+	if err := tx.commit(ctx); err != nil {
+		return fmt.Errorf("keel: commit: %w", err)
 	}
 	tx.committed = true
 	return nil
+}
+
+// commit sends COMMIT. A write transaction on a context marked with OnReplica reads the primary's
+// WAL position after it, in the same round trip, so the context's replica reads see the commit.
+func (tx *txState) commit(ctx context.Context) error {
+	if tx.route == nil {
+		_, err := tx.conn.Exec(ctx, "COMMIT")
+		return err
+	}
+	b := &pgx.Batch{}
+	b.Queue("COMMIT")
+	b.Queue(commitPositionSQL)
+	br := tx.conn.SendBatch(ctx, b)
+	_, err := br.Exec()
+	var lsn int64
+	posErr := err
+	if err == nil {
+		posErr = br.QueryRow().Scan(&lsn)
+	}
+	if closeErr := br.Close(); posErr == nil {
+		posErr = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	tx.db.recordCommit(tx.route, lsn, posErr == nil)
+	return nil
+}
+
+// touch records a (tenant, table) pair the transaction changed.
+func (tx *txState) touch(k versionKey) {
+	if tx.changes == nil {
+		tx.changes = versionSet{}
+	}
+	tx.changes[k] = struct{}{}
 }
 
 func (tx *txState) runAfterCommit(ctx context.Context) {

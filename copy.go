@@ -22,7 +22,9 @@ import (
 // connection, which keel does unless Config.SkipEnums is set.
 //
 // Copy joins the transaction on the context. Outside one it runs in an implicit transaction when
-// Config.OnBegin is set, after the OnBegin statements, or when the table has AfterWrite hooks.
+// Config.OnBegin is set, after the OnBegin statements, when the table has AfterWrite hooks, or
+// when the context is marked with OnReplica on a DB with replicas, so that its commit position
+// is read with COMMIT.
 func (h Handle[T]) Copy(ctx context.Context, db *DB, rows []*T) (int64, error) {
 	if len(rows) == 0 {
 		return 0, nil
@@ -57,7 +59,8 @@ func (db *DB) copyRows(ctx context.Context, t *schema.Table, rows []unsafe.Point
 	s := &stmt{sql: copySQL(t), op: "copy", table: t.Name}
 	stmts := []*stmt{s}
 	src := &copySource{t: t, rows: rows, vals: make([]any, len(t.Insert))}
-	events, qctx := db.startEvents(ctx, stmts)
+	run.touchRows(t, rows)
+	events, qctx := db.startEvents(ctx, nil, stmts)
 	start := time.Now()
 	n, err := conn.CopyFrom(qctx, pgx.Identifier{t.Name}, names, src)
 	s.tag = pgconn.NewCommandTag("COPY " + strconv.FormatInt(n, 10))
