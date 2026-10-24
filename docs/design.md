@@ -196,6 +196,12 @@ tables of one package that reference each other would be an initialisation cycle
 Handles reached through relations (`s.Customer()`) are built on first use and memoised.
 `keel gen -check` fails when generated files are out of date.
 
+Packages that take columns in declarations (rollups, for one) read a handle with
+`keel.ColumnOf(e) (table, index, ok)`: the table and column index of a generated column of a
+table's own handle or alias, and false for anything else, including a column reached through a
+relation, which belongs to a related row. `db.TenantColumns()` returns `Config.TenantColumns`, the
+order of the values in a tenant and in a tenant key, so such packages never ask for it again.
+
 ## Queries
 
 A query starts from a handle and ends with a terminal method that takes `(ctx, db)`.
@@ -303,6 +309,11 @@ generated tables and is not generic.
   schema and written from its quoted names. Result columns are `c1…cN` in SQL and keep their labels
   in Go; CTEs and pre-aggregations get generated names; `DynFunc` calls an allow-list; `Cast` takes
   a `ValueType`. A name that does not resolve makes an expression that carries an error.
+- **CTE names per statement.** The CTEs keel names (`With`'s `keel_cte`, derived tables'
+  `keel_sub`, set operations' `keel_set`) are named when a statement renders, across every query
+  nested in it: the first use of a base keeps it, later ones are `base_2`, `base_3`, …, in the
+  order the statement uses them. Nested statements never shadow each other's names, and the names
+  depend only on the statement's shape, so equal shapes render equal text.
 - **To-many relations are read as the caller chooses**: `Any`/`None` (`EXISTS`, nested per to-many
   hop), or `PreAggregate`: a grouped CTE keyed by the parent and filtered to the parents the query
   selects (`PreAggCTE`: one pass over the child table), or a `LEFT JOIN LATERAL` (`PreAggLateral`:
@@ -384,8 +395,34 @@ v, err := keel.ReadValue(ctx, db, func(ctx context.Context) (T, error) { ... })
   outside one.
 - `keel.Retry(n)` retries serialization failures and deadlocks for a top-level transaction.
   `keel.Serializable()` and `keel.RepeatableRead()` set the isolation level.
-- `keel.Savepoint` runs a function inside a savepoint; `keel.LockKey` and `keel.TryLockKey` take
-  transaction-scoped advisory locks on string keys.
+- `keel.Savepoint` runs a function inside a savepoint; an error rolls back to it and drops the
+  `Committed` hooks and `AfterCommit` callbacks queued inside it. `keel.LockKey` and
+  `keel.TryLockKey` take transaction-scoped advisory locks on string keys.
+- Raw SQL joins the transaction on the context like any terminal: `Exec` (rows affected),
+  `ExecBatch` (several statements in one round trip), `QueryRows` (a callback per row),
+  `QueryAll[T]` (rows through a pgx row function) and `QueryValue[T]` (one value, `ErrNotFound`
+  without a row). Outside a transaction they run on the primary, in an implicit transaction when
+  `OnBegin` is set; inside a `Read` with `ReplicaTx` they run on its replica. Observers see them
+  (`exec`, `query`); scope checks, interceptors, read filters, hooks and data versions do not apply.
+
+### Joining another data layer's transaction
+
+`keel.JoinTx(ctx, db, conn) (context.Context, func(committed bool))` runs keel inside a transaction
+another library began on a pgx connection, so an application can move to keel while it still writes
+through, say, Bun on pgx's stdlib driver, with both in one transaction.
+
+- The returned context carries a transaction state that owns nothing: it uses `conn`, is marked as
+  begun, and has no replica or commit-position route. keel sends no `BEGIN`, `COMMIT`, `ROLLBACK`
+  or `OnBegin` statements; the owner began the transaction and set its scope. `Read` and `Write`
+  join it, `Savepoint` nests in it, and every terminal runs on `conn`, so scope checks, tenancy,
+  interceptors, read filters, hooks and observers behave as in a transaction keel began.
+- The state queues what keel queues for any transaction: `Committed` hooks, `AfterCommit`
+  callbacks and the (tenant, table) pairs its writes changed. The owner calls the returned function
+  after `COMMIT` (`true`: the pairs go to the versioner and the queued work runs) or `ROLLBACK`
+  (`false`: it is dropped). Only the first call counts; afterwards a terminal on the context is
+  refused rather than run outside the transaction.
+- `seed.Options.Transact` lets the application run every seed transaction this way, so a seed's
+  rows and its bookkeeping row commit or roll back with the application's own writes.
 
 ### Statement preparation
 
@@ -476,7 +513,9 @@ Table hook phases:
   `Copy`, `Save`, `Upsert`, `CreateOrSkip`, `DeleteRow`) and may change the row or abort.
 - `AfterWrite` runs inside the transaction after the statement, for entity and bulk writes; an
   error rolls back. A table with `AfterWrite` hooks for any operation a write can perform makes
-  that write transactional (an `Upsert` for create or update hooks).
+  that write transactional (an `Upsert` for create or update hooks), and the hooks of a write in
+  such an implicit transaction (`BeforeWrite` and `AfterWrite`) get a context that carries it, so
+  what they run through keel joins the write.
 - `Committed` runs after the transaction commits.
 
 Bulk writes on a table with `AfterWrite` or `Committed` hooks return their rows through `RETURNING`.

@@ -26,6 +26,7 @@ import (
 	"github.com/emoss08/keel/internal/testmodels/ids"
 	"github.com/emoss08/keel/migrate"
 	"github.com/emoss08/keel/schema"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -1093,6 +1094,60 @@ func ExampleLockKey() {
 		}
 		return nil
 	})
+	if err != nil {
+		log.Fatal(err)
+	}
+}
+
+func ExampleQueryRows() {
+	ctx, db := requestContext(), appDB
+
+	err := keel.Write(ctx, db, func(ctx context.Context) error {
+		n, err := keel.QueryValue[int64](ctx, db, "SELECT count(*) FROM keel_rollup_dirty WHERE rollup = $1", "shipments_daily")
+		if err != nil {
+			return err
+		}
+		fmt.Println("pending slices:", n)
+		return keel.QueryRows(ctx, db, func(row pgx.CollectableRow) error {
+			var code string
+			var loads int64
+			if err := row.Scan(&code, &loads); err != nil {
+				return err
+			}
+			fmt.Println(code, loads)
+			return nil
+		}, `SELECT c.code, count(*) FROM shipments s JOIN customers c ON c.id = s.customer_id
+			WHERE s.status = $1 GROUP BY c.code`, fleet.StatusDelivered)
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+}
+
+func ExampleJoinTx() {
+	ctx, db := requestContext(), appDB
+
+	conn, err := db.Pool().Acquire(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer conn.Release()
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
+	kctx, done := keel.JoinTx(ctx, db, conn.Conn())
+	err = fleetdb.Customers.Create(kctx, db, &fleet.Customer{Code: "ACME", Name: "Acme"})
+	if err == nil {
+		_, err = tx.Exec(ctx, "UPDATE plants SET name = upper(name)")
+	}
+	if err != nil {
+		_ = tx.Rollback(ctx)
+		done(false)
+		log.Fatal(err)
+	}
+	err = tx.Commit(ctx)
+	done(err == nil)
 	if err != nil {
 		log.Fatal(err)
 	}
