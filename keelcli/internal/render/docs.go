@@ -134,7 +134,7 @@ func PlanText(p migrateport.Plan, withSQL bool, pt Painter, width int) string {
 // FindingsText lists lint findings grouped by rule.
 func FindingsText(fs []migrateport.Finding, pt Painter, width int) string {
 	if len(fs) == 0 {
-		return pt.Paint(OK, "No findings in pending migrations.") + "\n"
+		return pt.Paint(OK, "No lint findings.") + "\n"
 	}
 	var b strings.Builder
 	for _, group := range GroupFindings(fs) {

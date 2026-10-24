@@ -1,0 +1,28 @@
+{"source":"migrate","kind":"lock_wait","attempt":1,"blockers":[{"pid":42,"application":"psql","state":"idle in transaction","mode":"AccessShareLock","age_ms":3000,"query":"SELECT *\n  FROM shipments"}]}
+{"source":"migrate","kind":"lock_wait","attempt":2,"blockers":[{"pid":42,"application":"psql","state":"idle in transaction","mode":"AccessShareLock","age_ms":3000,"query":"SELECT *\n  FROM shipments"}],"duration_ms":1000}
+{"source":"migrate","kind":"lock_acquired","duration_ms":1500}
+{"source":"migrate","kind":"baseline_marked","migration":{"version":"20251231000000","name":"baseline","source":"core","kind":"baseline"}}
+{"source":"migrate","kind":"migration_start","migration":{"version":"20260101000000","name":"index","source":"core","kind":"versioned","directives":{"notx":true,"no_lock_timeout":true}},"index":1,"total":2}
+{"source":"migrate","kind":"statement","migration":{"version":"20260101000000","name":"index","source":"core","kind":"versioned","directives":{"notx":true,"no_lock_timeout":true}},"index":1,"total":2,"statement":1,"statements":2}
+{"source":"migrate","kind":"retry","migration":{"version":"20260101000000","name":"index","source":"core","kind":"versioned","directives":{"notx":true,"no_lock_timeout":true}},"index":1,"total":2,"statement":1,"statements":2,"attempt":1,"blockers":[{"pid":42,"application":"psql","state":"idle in transaction","mode":"AccessShareLock","age_ms":3000,"query":"SELECT *\n  FROM shipments"}],"error":"ERROR: canceling statement due to lock timeout (SQLSTATE 55P03)"}
+{"source":"migrate","kind":"migration_end","migration":{"version":"20260101000000","name":"index","source":"core","kind":"versioned","directives":{"notx":true,"no_lock_timeout":true}},"index":1,"total":2,"duration_ms":20}
+{"source":"migrate","kind":"migration_start","migration":{"name":"views","source":"core","kind":"repeatable"},"index":2,"total":2}
+{"source":"migrate","kind":"migration_end","migration":{"name":"views","source":"core","kind":"repeatable"},"index":2,"total":2,"duration_ms":3}
+{"source":"migrate","kind":"retry","attempt":1,"blockers":[{"pid":42,"application":"psql","state":"idle in transaction","mode":"AccessShareLock","age_ms":3000,"query":"SELECT *\n  FROM shipments"}],"error":"ERROR: canceling statement due to lock timeout (SQLSTATE 55P03)"}
+{"source":"migrate","kind":"after","statement":1,"statements":1,"duration_ms":4}
+{"source":"migrate","kind":"run_end","total":2,"duration_ms":2000}
+{"source":"migrate","kind":"lock_acquired"}
+{"source":"migrate","kind":"run_end","duration_ms":1000,"error":"migrate: 20260101000000_index: boom"}
+{"source":"seed","kind":"lock_wait","duration_ms":1000}
+{"source":"seed","kind":"lock_acquired","duration_ms":1200}
+{"source":"seed","kind":"planned","seed":{"name":"states","kind":"reference"},"reason":{"kind":"input changed","runs":true,"inputs":["data/states.yaml"]},"index":1,"total":3}
+{"source":"seed","kind":"planned","seed":{"name":"settings","kind":"reference","per_tenant":true},"reason":{"kind":"up to date","runs":false},"index":2,"total":3}
+{"source":"seed","kind":"planned","seed":{"name":"demo","kind":"fixture"},"reason":{"kind":"refused","runs":false},"index":3,"total":3}
+{"source":"seed","kind":"seed_start","seed":{"name":"states","kind":"reference"},"reason":{"kind":"new","runs":true},"index":1,"total":2}
+{"source":"seed","kind":"seed_end","seed":{"name":"states","kind":"reference"},"index":1,"total":2,"rows":56,"duration_ms":30}
+{"source":"seed","kind":"seed_start","seed":{"name":"settings","kind":"reference","per_tenant":true},"reason":{"kind":"new","runs":true},"index":2,"total":2,"tenants":2}
+{"source":"seed","kind":"tenant_start","seed":{"name":"settings","kind":"reference","per_tenant":true},"index":2,"total":2,"tenant":"t1","tenants":2}
+{"source":"seed","kind":"tenant_end","seed":{"name":"settings","kind":"reference","per_tenant":true},"index":2,"total":2,"tenant":"t1","tenants":2,"tenants_done":1,"rows":4}
+{"source":"seed","kind":"tenant_end","seed":{"name":"settings","kind":"reference","per_tenant":true},"index":2,"total":2,"tenant":"t2","tenants":2,"tenants_done":1,"rows":4,"error":"boom"}
+{"source":"seed","kind":"seed_end","seed":{"name":"settings","kind":"reference","per_tenant":true},"index":2,"total":2,"tenants":2,"rows":4,"duration_ms":1000,"error":"seed: settings: tenant \"t2\": boom"}
+{"source":"seed","kind":"run_end","total":1,"duration_ms":2000,"error":"seed: settings: tenant \"t2\": boom"}

@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/colorprofile"
 	xterm "github.com/charmbracelet/x/term"
 
+	"github.com/emoss08/keel/keelcli/internal/adapt"
 	"github.com/emoss08/keel/keelcli/internal/guard"
 	"github.com/emoss08/keel/keelcli/internal/render"
 	"github.com/emoss08/keel/keelcli/internal/term"
@@ -30,14 +31,23 @@ type globals struct {
 }
 
 type session struct {
-	app   *App
-	st    streams
-	g     globals
-	theme *theme.Theme
+	app      *App
+	st       streams
+	g        globals
+	theme    *theme.Theme
+	appFlags *flag.FlagSet
+	admin    string
+	ready    bool
+	db       *adapt.Database
+	eng      *engines
 }
 
 func newSession(app *App, st streams) *session {
-	return &session{app: app, st: st}
+	s := &session{app: app, st: st, appFlags: flag.NewFlagSet(app.Name, flag.ContinueOnError)}
+	if app.Flags != nil {
+		app.Flags(s.appFlags)
+	}
+	return s
 }
 
 func (s *session) bindGlobals(fs *flag.FlagSet) {
@@ -52,10 +62,13 @@ func (s *session) flagSet(name string) *flag.FlagSet {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	s.bindGlobals(fs)
+	s.appFlags.VisitAll(func(f *flag.Flag) { fs.Var(f.Value, f.Name, f.Usage) })
 	return fs
 }
 
-func (s *session) parse(fs *flag.FlagSet, args []string) error {
+// parseHead parses the flags before the first argument, mapping -h to help and bad flags to a usage
+// error.
+func (s *session) parseHead(fs *flag.FlagSet, args []string) error {
 	err := fs.Parse(args)
 	switch {
 	case errors.Is(err, flag.ErrHelp):
@@ -64,6 +77,24 @@ func (s *session) parse(fs *flag.FlagSet, args []string) error {
 		return Usagef("keelcli: %s: %v", fs.Name(), err)
 	}
 	return nil
+}
+
+// parse parses flags anywhere among the arguments, as in "migrate create name -kind notx"; after
+// "--" every argument is positional.
+func (s *session) parse(fs *flag.FlagSet, args []string) error {
+	var pos []string
+	for {
+		if err := s.parseHead(fs, args); err != nil {
+			return err
+		}
+		rest := fs.Args()
+		if n := len(args) - len(rest); len(rest) == 0 || n > 0 && args[n-1] == "--" {
+			pos = append(pos, rest...)
+			break
+		}
+		pos, args = append(pos, rest[0]), rest[1:]
+	}
+	return fs.Parse(append([]string{"--"}, pos...))
 }
 
 var errHelp = errors.New("keelcli: help")
@@ -172,11 +203,7 @@ func (s *session) say(tone render.Tone, format string, args ...any) error {
 }
 
 func (s *session) target(ctx context.Context) (guard.Target, error) {
-	src := guard.Sources{Facts: s.app.Facts}
-	if s.app.Seeds != nil {
-		src.Seeds = s.app.Seeds
-	}
-	return guard.Read(ctx, src)
+	return guard.Read(ctx, guard.Sources{Facts: s.facts(), Seeds: s.environments()})
 }
 
 func (s *session) confirm(ctx context.Context, a guard.Action) error {

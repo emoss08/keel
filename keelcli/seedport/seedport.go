@@ -150,7 +150,8 @@ type ApplyOptions struct {
 // EventKind is what an Event reports.
 type EventKind uint8
 
-// The event kinds, in the order a run emits them.
+// The event kinds. A run reports waiting for the seed lock first and its plan once it holds the
+// lock, so a run that never gets the lock reports no plan.
 const (
 	Planned EventKind = iota
 	LockWait
@@ -186,8 +187,8 @@ func (k EventKind) String() string {
 
 // Event is one step of a run.
 //
-// Planned: Seed, Reason, Index (1-based) of Total, once per seed. LockWait and LockAcquired:
-// Duration waited. SeedStart: Seed, Index of Total, Tenants for a per-tenant seed. TenantStart
+// Planned: Seed, Reason, Index (1-based) of Total, once per seed. LockWait: Duration waited so
+// far. LockAcquired: Duration waited, zero when the lock was free. SeedStart: Seed, Index of Total, Tenants for a per-tenant seed. TenantStart
 // and TenantEnd: Tenant, TenantsDone of Tenants, Rows so far, Err. SeedEnd: Rows, Duration, Err.
 // RunEnd: Total seeds applied, Duration, Err.
 type Event struct {

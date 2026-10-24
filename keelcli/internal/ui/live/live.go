@@ -34,6 +34,7 @@ const (
 )
 
 type row struct {
+	id           string
 	key          string
 	name         string
 	detail       string
@@ -66,9 +67,9 @@ type section struct {
 	waiting bool
 }
 
-func (s *section) find(key string) int {
+func (s *section) find(id string) int {
 	for i := range s.rows {
-		if s.rows[i].key == key {
+		if s.rows[i].id == id {
 			return i
 		}
 	}
@@ -76,7 +77,10 @@ func (s *section) find(key string) int {
 }
 
 func (s *section) upsert(r row) int {
-	if i := s.find(r.key); i >= 0 {
+	if r.id == "" {
+		r.id = r.key
+	}
+	if i := s.find(r.id); i >= 0 {
 		return i
 	}
 	s.rows = append(s.rows, r)
@@ -293,7 +297,7 @@ func migrationRow(mig migrateport.Migration) row {
 	if d := render.MigrationDetail(mig); d != "" {
 		detail += " · " + d
 	}
-	return row{key: key, name: mig.Name, detail: detail}
+	return row{id: mig.ID(), key: key, name: mig.Name, detail: detail}
 }
 
 func (m *Model) migration(e migrateport.Event) {
@@ -320,9 +324,12 @@ func (m *Model) migration(e migrateport.Event) {
 	case migrateport.Statement:
 		r.statement, r.statements = e.Statement, e.Statements
 	case migrateport.Retry:
-		r.retries = e.Attempt
-		m.lock = &lockState{title: r.name + " waits on a lock", detail: fmt.Sprintf("lock timeout · retry %d", e.Attempt),
-			since: r.started, blockers: e.Blockers}
+		m.lock = &lockState{title: "After statements wait on a lock", detail: fmt.Sprintf("lock timeout · retry %d", e.Attempt),
+			since: now, blockers: e.Blockers}
+		if r != nil {
+			r.retries = e.Attempt
+			m.lock.title, m.lock.since = r.name+" waits on a lock", r.started
+		}
 	case migrateport.MigrationEnd:
 		m.lock = nil
 		r.took, r.err = e.Duration, e.Err

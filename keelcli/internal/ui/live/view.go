@@ -169,13 +169,6 @@ func (m Model) rowStatus(r row) (render.Cell, render.Cell) {
 	}
 }
 
-func rowID(r row) string {
-	if r.key == r.name {
-		return r.name
-	}
-	return r.key + "_" + r.name
-}
-
 func glyphCell(g render.Glyph) render.Cell { return render.C(g.Symbol, g.Tone) }
 
 func runningStatus(r row) string {
@@ -322,7 +315,7 @@ func (m Model) renderSummary() string {
 		var left []string
 		for _, r := range s.rows {
 			if r.state == notRun || r.state == cancelled {
-				left = append(left, rowID(r))
+				left = append(left, r.id)
 			}
 		}
 		if len(left) > 0 {

@@ -85,8 +85,11 @@ func Directives(d migrateport.Directives) []string {
 	if d.NoTx {
 		out = append(out, "notx")
 	}
-	if d.LockTimeout > 0 {
+	switch {
+	case d.LockTimeout > 0:
 		out = append(out, "lock_timeout "+d.LockTimeout.String())
+	case d.LockTimeout < 0:
+		out = append(out, "lock_timeout 0")
 	}
 	if d.StatementTimeout > 0 {
 		out = append(out, "statement_timeout "+d.StatementTimeout.String())
@@ -115,6 +118,9 @@ func StateDetail(s migrateport.Status) string {
 	case migrateport.Missing:
 		return "no file in any source"
 	case migrateport.RepeatableDue:
+		if s.AppliedChecksum == "" {
+			return "never applied"
+		}
 		return "checksum changed"
 	default:
 		return MigrationDetail(s.Migration)

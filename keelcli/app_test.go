@@ -45,9 +45,7 @@ func newHarness(opts fake.Options) harness {
 		Name:        "trenova-db",
 		Description: "Trenova's database: migrations and reference seeds.",
 		Version:     "1.4.0",
-		Migrations:  e.Migrations(),
-		Seeds:       e.Seeds(),
-		Facts:       e.Facts(),
+		Engines:     Engines{Migrations: e.Migrations(), Seeds: e.Seeds(), Facts: e.Facts()},
 		Extensions:  []string{"pg_trgm", "pgcrypto"},
 	}}
 }
@@ -343,7 +341,7 @@ func TestApplicationCommand(t *testing.T) {
 
 func TestWithoutSeedsOrFacts(t *testing.T) {
 	h := newHarness(fake.Options{})
-	h.app.Seeds, h.app.Facts = nil, nil
+	h.app.Engines.Seeds, h.app.Engines.Facts = nil, nil
 	if r := h.run(t, "seed", "status"); r.code != ExitUsage {
 		t.Fatalf("seed status without seeds: exit %d", r.code)
 	}
@@ -357,7 +355,7 @@ func TestWithoutSeedsOrFacts(t *testing.T) {
 	if r := h.run(t, "up", "-env", "production"); r.code != ExitUsage {
 		t.Fatalf("-env without seeds: exit %d", r.code)
 	}
-	h.app.Migrations = nil
+	h.app.Engines.Migrations = nil
 	if r := h.run(t, "version"); r.code != ExitFailure {
 		t.Fatalf("no migrations: exit %d", r.code)
 	}

@@ -116,7 +116,7 @@ func (m Model) loadTemplates() tea.Cmd {
 func (m Model) loadLint() tea.Cmd {
 	ctx, eng := m.ctx, m.opts.Migrations
 	return func() tea.Msg {
-		fs, err := eng.Lint(ctx)
+		fs, err := eng.Lint(ctx, migrateport.LintOptions{})
 		return lintMsg{findings: fs, err: err}
 	}
 }

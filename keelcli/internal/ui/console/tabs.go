@@ -258,10 +258,7 @@ func (m Model) doctorKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) doctorView(h int) string {
 	t := m.theme
-	switch {
-	case m.opts.Facts == nil:
-		return block([]string{m.note("This application provides no database facts, so there is nothing to check.")}, m.width, h)
-	case !m.doctor.ready:
+	if !m.doctor.ready {
 		return block([]string{m.spinner.View() + " " + m.note("Running checks…")}, m.width, h)
 	}
 	text := doctor.Text(m.doctor.report, t, m.width, true)

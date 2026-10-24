@@ -176,9 +176,6 @@ func (m Model) seedListHeight(body int) int {
 }
 
 func (m Model) seedsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	if m.opts.Seeds == nil {
-		return m, nil
-	}
 	k := m.keys
 	st := &m.seeds
 	n := len(st.visible())
@@ -230,8 +227,6 @@ func (m Model) seedsView(h int) string {
 	t := m.theme
 	st := m.seeds
 	switch {
-	case m.opts.Seeds == nil:
-		return block([]string{m.note("This application has no seeds.")}, m.width, h)
 	case st.err != nil:
 		return block([]string{t.Fail.Render(st.err.Error())}, m.width, h)
 	case !st.ready:

@@ -38,7 +38,7 @@ const (
 
 var tabNames = []string{"Migrations", "Seeds", "Templates", "Lint", "Doctor"}
 
-// Options configures the console. Seeds and Facts may be nil; their tabs then say so.
+// Options configures the console. Seeds and Facts may be nil; their tabs are then left out.
 type Options struct {
 	Name          string
 	Version       string
@@ -287,13 +287,13 @@ func (m Model) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.showHelp = !m.showHelp
 		return m.resized(), nil
 	case key.Matches(msg, k.next):
-		m.tab = (m.tab + 1) % tab(len(tabNames))
-		return m.enterTab()
+		return m.step(1)
 	case key.Matches(msg, k.prev):
-		m.tab = (m.tab + tab(len(tabNames)) - 1) % tab(len(tabNames))
-		return m.enterTab()
+		return m.step(-1)
 	case key.Matches(msg, k.tab1, k.tab2, k.tab3, k.tab4, k.tab5):
-		m.tab = tab(msg.String()[0] - '1')
+		if i := int(msg.String()[0] - '1'); i < len(m.tabList()) {
+			m.tab = m.tabList()[i]
+		}
 		return m.enterTab()
 	case key.Matches(msg, k.refresh):
 		m.flash = nil
@@ -312,6 +312,32 @@ func (m Model) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.doctorKey(msg)
 	}
 	return m, nil
+}
+
+// tabList lists the tabs the console shows, leaving out those without an engine behind them.
+func (m Model) tabList() []tab {
+	out := []tab{tabMigrations}
+	if m.opts.Seeds != nil {
+		out = append(out, tabSeeds)
+	}
+	out = append(out, tabTemplates, tabLint)
+	if m.opts.Facts != nil {
+		out = append(out, tabDoctor)
+	}
+	return out
+}
+
+// step moves to the next or previous tab.
+func (m Model) step(delta int) (tea.Model, tea.Cmd) {
+	tabs := m.tabList()
+	at := 0
+	for i, t := range tabs {
+		if t == m.tab {
+			at = i
+		}
+	}
+	m.tab = tabs[(at+delta+len(tabs))%len(tabs)]
+	return m.enterTab()
 }
 
 func (m Model) enterTab() (tea.Model, tea.Cmd) {
@@ -554,12 +580,12 @@ func (m Model) header() string {
 func (m Model) tabs() string {
 	t := m.theme
 	var out []string
-	for i, name := range tabNames {
-		label := fmt.Sprintf("%d %s", i+1, name)
-		if badge := m.tabBadge(tab(i)); badge != "" {
+	for i, tb := range m.tabList() {
+		label := fmt.Sprintf("%d %s", i+1, tabNames[tb])
+		if badge := m.tabBadge(tb); badge != "" {
 			label += " " + badge
 		}
-		if tab(i) == m.tab {
+		if tb == m.tab {
 			out = append(out, t.ActiveTab.Render(label))
 		} else {
 			out = append(out, t.Tab.Render(label))
