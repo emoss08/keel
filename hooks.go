@@ -19,7 +19,9 @@ const (
 	BeforeWrite Phase = iota
 	// AfterWrite runs inside the transaction after the statement, for entity and bulk writes. An error
 	// rolls the transaction back: outside a transaction, a write that may run AfterWrite hooks runs in
-	// an implicit one.
+	// an implicit one, and the hook's context carries it, so what the hook runs through keel (Exec,
+	// QueryRows, reads and writes) joins the write and rolls back with it. BeforeWrite hooks get the
+	// same context when the write runs in an implicit transaction.
 	AfterWrite
 	// Committed runs after the transaction commits. Errors are not returned to the caller;
 	// report them from the hook.

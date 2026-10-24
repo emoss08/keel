@@ -265,6 +265,16 @@ func (h Handle[T]) InsertFrom(ctx context.Context, db *DB, src subquery,
 	return db.insertFrom(ctx, h.Ref, src, cols)
 }
 
+// hookCtx returns the context a write's hooks run with: ctx carrying the runner's implicit
+// transaction, so a hook's own statements through keel (Exec, reads, writes) join the write and
+// roll back with it, or ctx itself when the runner owns no transaction.
+func (r *runner) hookCtx(ctx context.Context) context.Context {
+	if !r.own || r.tx == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, txKey{}, r.tx)
+}
+
 // writeRunner returns the runner of a write. With tx, set when the write may run AfterWrite hooks,
 // it opens an implicit transaction outside one, so a failing hook rolls the write back.
 func (db *DB) writeRunner(ctx context.Context, tx bool) (*runner, error) {
@@ -363,8 +373,9 @@ func (db *DB) insert(ctx context.Context, t *schema.Table, rows []unsafe.Pointer
 		return err
 	}
 	st := db.stampsFor(t)
+	hctx := run.hookCtx(ctx)
 	for _, row := range rows {
-		if err := db.prepareInsert(ctx, run.sc, t, th, row, st); err != nil {
+		if err := db.prepareInsert(hctx, run.sc, t, th, row, st); err != nil {
 			return run.close(ctx, err)
 		}
 	}
@@ -611,8 +622,9 @@ func (db *DB) upsert(ctx context.Context, ref *Ref, rows []unsafe.Pointer, c Con
 		return nil, err
 	}
 	st := db.stampsFor(t)
+	hctx := run.hookCtx(ctx)
 	for _, row := range rows {
-		if err := db.prepareInsert(ctx, run.sc, t, th, row, st); err != nil {
+		if err := db.prepareInsert(hctx, run.sc, t, th, row, st); err != nil {
 			return nil, run.close(ctx, err)
 		}
 	}
@@ -683,7 +695,7 @@ func (db *DB) save(ctx context.Context, ref *Ref, row unsafe.Pointer, cols []int
 	if err != nil {
 		return err
 	}
-	if err := db.prepareSave(ctx, run.sc, t, th, row, update); err != nil {
+	if err := db.prepareSave(run.hookCtx(ctx), run.sc, t, th, row, update); err != nil {
 		return run.close(ctx, err)
 	}
 
@@ -932,12 +944,13 @@ func (db *DB) deleteRow(ctx context.Context, ref *Ref, row unsafe.Pointer) error
 	if err := checkTenant(run.sc, t, row); err != nil {
 		return run.close(ctx, err)
 	}
+	hctx := run.hookCtx(ctx)
 	if t.BeforeDelete != nil {
-		if err := t.BeforeDelete(ctx, row); err != nil {
+		if err := t.BeforeDelete(hctx, row); err != nil {
 			return run.close(ctx, err)
 		}
 	}
-	if err := th.run(ctx, OpDelete, BeforeWrite, &mutation{op: OpDelete, row: row}); err != nil {
+	if err := th.run(hctx, OpDelete, BeforeWrite, &mutation{op: OpDelete, row: row}); err != nil {
 		return run.close(ctx, err)
 	}
 	r := newRender(run.sc, ctx, db)
@@ -1062,19 +1075,20 @@ func (db *DB) insertFrom(ctx context.Context, ref *Ref, src subquery,
 	return n, run.close(ctx, err)
 }
 
-// afterWrite runs the After hooks now and queues the Committed hooks.
+// afterWrite runs the After hooks now, in the write's transaction, and queues the Committed hooks.
 func (db *DB) afterWrite(ctx context.Context, run *runner, th *tableHooks, op Op,
 	rows, olds []unsafe.Pointer, changed []int32,
 ) error {
 	if th == nil || len(rows) == 0 {
 		return nil
 	}
+	hctx := run.hookCtx(ctx)
 	for i, row := range rows {
 		m := &mutation{op: op, row: row, changed: changed}
 		if i < len(olds) {
 			m.old = olds[i]
 		}
-		if err := th.run(ctx, op, AfterWrite, m); err != nil {
+		if err := th.run(hctx, op, AfterWrite, m); err != nil {
 			return err
 		}
 	}
