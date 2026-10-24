@@ -40,7 +40,14 @@ func (h Handle[T]) CreateMany(ctx context.Context, db *DB, rows []*T) error {
 // Interceptors' predicates join the primary key in the WHERE clause: a row they exclude is not
 // written, and Save reports it as ErrConflict on a table with a version column, else ErrNotFound.
 func (h Handle[T]) Save(ctx context.Context, db *DB, row *T, cols ...interface{ column() Col }) error {
-	return db.save(ctx, h.Ref, unsafe.Pointer(row), cols)
+	return db.save(ctx, h.Ref, unsafe.Pointer(row), cols, false)
+}
+
+// SaveExcept is Save writing every updatable column except cols: the columns a caller must never
+// overwrite from a row it read (secrets, columns another process maintains). The autoupdate column
+// is always written.
+func (h Handle[T]) SaveExcept(ctx context.Context, db *DB, row *T, cols ...interface{ column() Col }) error {
+	return db.save(ctx, h.Ref, unsafe.Pointer(row), cols, true)
 }
 
 // DeleteRow deletes row by its primary key. Interceptors' predicates join the primary key in the
@@ -698,25 +705,16 @@ func (db *DB) upsert(ctx context.Context, ref *Ref, rows []unsafe.Pointer, c Con
 	return inserted, run.close(ctx, err)
 }
 
-func (db *DB) save(ctx context.Context, ref *Ref, row unsafe.Pointer, cols []interface{ column() Col }) error {
+func (db *DB) save(ctx context.Context, ref *Ref, row unsafe.Pointer, cols []interface{ column() Col },
+	except bool,
+) error {
 	t := ref.Table
 	if len(t.PK) == 0 {
 		return errf("%s has no primary key; Save needs one", t.Name)
 	}
-	update := t.Update
-	if len(cols) > 0 {
-		update = make([]int32, 0, len(cols)+1)
-		for _, c := range cols {
-			col := c.column()
-			if col.Ref.Table != t || !slices.Contains(t.Update, col.Index) {
-				return errf("Save cannot write %s.%s", col.Ref.Table.Name,
-					col.Ref.Table.Columns[col.Index].Name)
-			}
-			update = append(update, col.Index)
-		}
-		if t.AutoUpdate >= 0 && !slices.Contains(update, t.AutoUpdate) {
-			update = append(update, t.AutoUpdate)
-		}
+	update, err := saveColumns(t, cols, except)
+	if err != nil {
+		return err
 	}
 	th := db.hooks.forTable(t)
 	run, err := db.writeRunner(ctx, th.has(OpUpdate, AfterWrite))
@@ -847,6 +845,35 @@ func (db *DB) save(ctx context.Context, ref *Ref, row unsafe.Pointer, cols []int
 		err = db.afterWrite(ctx, run, th, OpUpdate, []unsafe.Pointer{row}, olds, update)
 	}
 	return run.close(ctx, err)
+}
+
+// saveColumns returns the columns a Save writes: every updatable column, the named ones, or with
+// except every updatable column but the named ones, with the autoupdate column always included.
+func saveColumns(t *schema.Table, cols []interface{ column() Col }, except bool) ([]int32, error) {
+	if len(cols) == 0 {
+		return t.Update, nil
+	}
+	named := make([]int32, 0, len(cols))
+	for _, c := range cols {
+		col := c.column()
+		if col.Ref.Table != t || !slices.Contains(t.Update, col.Index) {
+			return nil, errf("Save cannot write %s.%s", col.Ref.Table.Name, col.Ref.Table.Columns[col.Index].Name)
+		}
+		named = append(named, col.Index)
+	}
+	update := named
+	if except {
+		update = make([]int32, 0, len(t.Update))
+		for _, c := range t.Update {
+			if !slices.Contains(named, c) || c == t.AutoUpdate {
+				update = append(update, c)
+			}
+		}
+	}
+	if t.AutoUpdate >= 0 && !slices.Contains(update, t.AutoUpdate) {
+		update = append(update, t.AutoUpdate)
+	}
+	return update, nil
 }
 
 func (db *DB) prepareSave(ctx context.Context, sc *scopeState, t *schema.Table, th *tableHooks,

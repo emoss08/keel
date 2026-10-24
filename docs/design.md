@@ -261,7 +261,7 @@ page, err := s.
 
 ### Builder methods
 
-`Where`, `Pick`, `Compute`, `Load`, `Order`, `Group`, `GroupingSets`, `Rollup`, `Cube`, `Having`, `Window`,
+`Where`, `Pick`, `Omit`, `Compute`, `Load`, `Order`, `Group`, `GroupingSets`, `Rollup`, `Cube`, `Having`, `Window`,
 `Limit`, `Offset`, `Lock`, `Join`, `LeftJoin`, `JoinLateral`, `LeftJoinLateral`, `DistinctOn`,
 `With`, `AllTenants`, `Timeout`, `CustomPlan`; `Any` and `None` turn a query into a predicate.
 Builders are mutable and chainable; `Clone` copies one. `ToSQL` renders the main statement and
@@ -394,6 +394,7 @@ err := s.Create(ctx, db, sh)                       // autoid, timestamps, tenant
 err = s.CreateMany(ctx, db, rows)                  // unnest of one array per column, 10,000 rows per statement, one round trip
 err = s.Save(ctx, db, sh)                          // compare-and-increment version, ErrConflict on mismatch
 err = s.Save(ctx, db, sh, s.Status, s.CanceledAt)  // only these columns (and the autoupdate column)
+err = s.SaveExcept(ctx, db, sh, s.Token)           // every updatable column but these
 err = s.DeleteRow(ctx, db, sh)                     // ErrNotFound when nothing was deleted
 n, err := s.Where(...).Update(ctx, db, s.Status.To(shipment.StatusCanceled))
 n, err = s.Where(...).Delete(ctx, db)

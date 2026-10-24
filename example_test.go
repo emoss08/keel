@@ -1893,6 +1893,29 @@ func Example_relationKeys() {
 	}
 }
 
+func ExampleQuery_Omit() {
+	ctx, db := requestContext(), appDB
+	c := fleetdb.Contacts
+	contacts, err := c.Omit(c.Avatar, c.Prefs).Order(c.Name.Asc()).Limit(50).List(ctx, db)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(len(contacts))
+}
+
+func ExampleHandle_SaveExcept() {
+	ctx, db := requestContext(), appDB
+	c := fleetdb.Contacts
+	contact, err := c.Where(c.Name.Eq("Dana")).One(ctx, db)
+	if err != nil {
+		log.Fatal(err)
+	}
+	contact.Phone = "555-0100"
+	if err := c.SaveExcept(ctx, db, contact, c.Balance); err != nil { // never overwrite the balance
+		log.Fatal(err)
+	}
+}
+
 func ExampleDynQuery_Compute() {
 	ctx, db := requestContext(), appDB
 	c, s := fleetdb.Contacts, fleetdb.Shipments

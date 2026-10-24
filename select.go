@@ -133,6 +133,11 @@ func (n *lnode) selectedColumns(extra []int32) []int32 {
 	} else {
 		cols = append(cols, n.table.Select...)
 	}
+	if n.spec != nil && len(n.spec.omit) > 0 {
+		cols = slices.DeleteFunc(cols, func(c int32) bool {
+			return slices.ContainsFunc(n.spec.omit, func(o Col) bool { return o.Index == c })
+		})
+	}
 	need := func(c int32) {
 		if !slices.Contains(cols, c) {
 			cols = append(cols, c)
@@ -298,6 +303,7 @@ func (q *query) renderSelect(r *render, sn *lnode, o selectOpts) *selectPlan {
 			if ni == 0 {
 				extra = o.extraCols
 			}
+			r.checkOmit(n)
 			n.cols = n.selectedColumns(extra)
 			na := r.alias(n.ref)
 			for _, c := range n.cols {
@@ -454,6 +460,18 @@ func (q *query) renderSelect(r *render, sn *lnode, o selectOpts) *selectPlan {
 	}
 	r.release(with, sel, explicit, from, where, group, having, windows, order)
 	return plan
+}
+
+// checkOmit fails the statement when node n's query omits a column of another table.
+func (r *render) checkOmit(n *lnode) {
+	if n.spec == nil {
+		return
+	}
+	for _, o := range n.spec.omit {
+		if o.Ref == nil || o.Ref.Table != n.table {
+			r.fail(errf("Omit names a column of %s on a query of %s", tableName(o.Ref), n.table.Name))
+		}
+	}
 }
 
 // single reports whether the statement reads at most two rows in no particular order, so a pick

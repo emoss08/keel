@@ -917,6 +917,15 @@ column of another table) makes the query a projection, which needs `keel.Into`.
 sh, err := s.Pick(s.ProNumber, s.Status).Where(s.ID.Eq(id)).One(ctx, db) // sh.Total is zero
 ```
 
+`Omit` is the other way round: the default columns except the ones named, for a heavy or secret
+column (a transcript, a file's contents, a token). The primary key and the columns relation loads
+need are read anyway, and loads take it too:
+
+```go
+runs, err := r.Omit(r.Transcript).Where(r.ThreadID.Eq(id)).Limit(50).List(ctx, db)
+rows, err := s.Load(s.Customer().Omit(s.Customer().Email)).Limit(50).List(ctx, db)
+```
+
 ### Operators
 
 Every clause takes expressions, never strings, and each column offers the operators of its Go
@@ -1826,7 +1835,8 @@ res, err := q.Run(ctx, db)
 ```
 
 Each selected expression becomes a result column named by its label: the path
-(`"customer.name"`), or the name given with `As(label)`. Labels stay in Go and never reach the SQL,
+(`"customer.name"`), or the name given with `As(label)`. `q.Omit(names...)` leaves columns out of
+the default columns a query without `Select` returns. Labels stay in Go and never reach the SQL,
 where result columns are `c1`, `c2`, …; a label selected twice is an error. Without `Select`, a
 table query returns the table's default columns.
 
@@ -2158,7 +2168,12 @@ err := s.Save(ctx, db, sh, s.Status, s.CanceledAt)
 ```
 
 Only updatable columns can be named: not primary key, tenant, `autocreate`, `version` or `readonly`
-columns.
+columns. `SaveExcept` writes every updatable column but the named ones, for columns a row read
+earlier must never overwrite (tokens another process refreshes, counters a trigger maintains):
+
+```go
+err := conns.SaveExcept(ctx, db, conn, conns.AccessToken, conns.RefreshToken)
+```
 
 [Interceptors](#interceptors) apply to `Save`: their predicates join the primary key in the
 `WHERE` clause (with `FROM` for the relations they reference), so a row they exclude is not
@@ -3507,6 +3522,8 @@ The same pattern works for an application:
 | `.Returning("*")` | nothing; keel reads back `readonly` columns and the version |
 | `db.NewUpdate().Model(sh).WherePK().Exec(ctx)` | `s.Save(ctx, db, sh)` |
 | `db.NewUpdate().Model(sh).Column("status").WherePK()` | `s.Save(ctx, db, sh, s.Status)` |
+| `db.NewUpdate().Model(sh).WherePK().ExcludeColumn("token")` | `s.SaveExcept(ctx, db, sh, s.Token)`; `created_at` needs nothing, `Save` never writes `autocreate` |
+| `db.NewSelect().Model(&rows).ExcludeColumn("transcript")` | `s.Omit(s.Transcript)` |
 | `db.NewUpdate().Model((*T)(nil)).Set("status = ?", v).Where(...)` | `s.Where(...).Update(ctx, db, s.Status.To(v))` |
 | `db.NewDelete().Model(sh).WherePK().Exec(ctx)` | `s.DeleteRow(ctx, db, sh)` |
 | `db.NewDelete().Model((*T)(nil)).Where(...)` | `s.Where(...).Delete(ctx, db)` |
