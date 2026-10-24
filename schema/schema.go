@@ -64,6 +64,9 @@ type Column struct {
 	Enum []EnumValue
 	// Report is how reports present the column; nil when the model is not reportable.
 	Report *ReportInfo
+	// TSConfig is the text search configuration a tsvector column is searched with by default,
+	// from the tag's tsvector=<config> option; empty means the database's default.
+	TSConfig string
 }
 
 // Stored reports whether the column is a column of the table, as opposed to a computed field that

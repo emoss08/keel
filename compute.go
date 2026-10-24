@@ -145,6 +145,9 @@ func dynKind(d DynExpr) (schema.Kind, bool) {
 	case d.n.agg != nil:
 		return aggKind(*d.n.agg)
 	}
+	if a, ok := d.n.e.(Agg); ok {
+		return aggKind(a)
+	}
 	return 0, false
 }
 

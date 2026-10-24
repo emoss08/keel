@@ -129,7 +129,7 @@ func TestOperators(t *testing.T) {
 		{"jsonb text", s.Attributes.Text("index").Eq("7"), 1},
 		{"array has", s.Labels.Has("lane-1"), 10},
 		{"array overlaps", s.Labels.Overlaps("lane-0", "lane-9"), 10},
-		{"tsvector", s.SearchVector.Matches("PRO-0003"), 1},
+		{"tsvector", s.SearchVector.Match("PRO-0003"), 1},
 		{"custom scanner", s.Total.Gte(fleet.Money{Cents: 11000}), 10},
 		{"readonly column", s.StageRank.Eq(4), 5},
 		{"raw", keel.Raw("length(?) = ?", s.ProNumber, 8), 20},

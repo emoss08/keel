@@ -460,7 +460,7 @@ func Example_operators() {
 		s.Labels.Has("expedite"),
 		s.Attributes.Contains(map[string]any{"temperature": "frozen"}),
 		s.Attributes.Text("trailer", "type").Eq("reefer"),
-		s.SearchVector.Matches("dallas reefer"),
+		s.SearchVector.Match("dallas reefer"),
 		keel.Or(s.CanceledAt.IsNull(), s.CanceledAt.Gt(since.Unix())),
 		keel.Not(s.Customer().Name.ContainsFold("test")),
 	).Count(ctx, db)
@@ -766,7 +766,7 @@ func ExampleQuery_Timeout() {
 	ctx, db := requestContext(), appDB
 	s := fleetdb.Shipments
 
-	n, err := s.Where(s.SearchVector.Matches("reefer")).Timeout(2*time.Second).Count(ctx, db)
+	n, err := s.Where(s.SearchVector.Match("reefer")).Timeout(2*time.Second).Count(ctx, db)
 	if errors.Is(err, context.DeadlineExceeded) {
 		fmt.Println("search took too long")
 	} else if err != nil {
@@ -1853,6 +1853,25 @@ func ExampleQuery_Compute() {
 	}
 	for _, r := range rows {
 		fmt.Println(r.Name, r.CustomerName, r.Loads)
+	}
+}
+
+func ExampleTSVectorCol_Match() {
+	ctx, db := requestContext(), appDB
+	n := fleetdb.Notes
+	q := "dallas ree"
+	rows, err := n.
+		Compute(n.Rank, n.SearchVector.Rank(q)).
+		Where(n.SearchVector.Match(q, keel.SearchConfig("simple", "english"),
+			keel.SearchModes(keel.WebSearch, keel.Prefix))).
+		Order(n.Rank.Desc()).
+		Limit(20).
+		List(ctx, db)
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, r := range rows {
+		fmt.Println(r.Body, r.Rank)
 	}
 }
 

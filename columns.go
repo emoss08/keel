@@ -477,39 +477,5 @@ func (c Int64ArrayCol) ContainsAll(vs ...int64) Pred { return cmp(c.Col, " @> ",
 func (c Int64ArrayCol) ContainedBy(vs ...int64) Pred { return cmp(c.Col, " <@ ", vs) }
 func (c Int64ArrayCol) To(vs []int64) Assignment     { return set(c.Col, vs) }
 
-// TSVectorCol is a tsvector column.
+// TSVectorCol is a tsvector column. Match, Rank and RankCD search it.
 type TSVectorCol struct{ Col }
-
-// Matches is col @@ websearch_to_tsquery(q) with the database's default text search
-// configuration.
-func (c TSVectorCol) Matches(q string) Pred {
-	return predExpr{e: func(r *render) {
-		r.col(c.Col)
-		r.s(" @@ websearch_to_tsquery(")
-		r.argCol(q, c.Col, "tsquery")
-		r.b(')')
-	}}
-}
-
-// MatchesConfig is col @@ websearch_to_tsquery(config, q).
-func (c TSVectorCol) MatchesConfig(config, q string) Pred {
-	return predExpr{e: func(r *render) {
-		r.col(c.Col)
-		r.s(" @@ websearch_to_tsquery(")
-		r.argTyped(config, "regconfig")
-		r.s("::regconfig, ")
-		r.argCol(q, c.Col, "tsquery")
-		r.b(')')
-	}}
-}
-
-// Rank is ts_rank(col, websearch_to_tsquery(q)).
-func (c TSVectorCol) Rank(q string) Agg {
-	return Agg{fn: "ts_rank", custom: func(r *render) {
-		r.s("ts_rank(")
-		r.col(c.Col)
-		r.s(", websearch_to_tsquery(")
-		r.argCol(q, c.Col, "tsquery")
-		r.s("))")
-	}}
-}

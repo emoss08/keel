@@ -477,7 +477,7 @@ Shipment.Weight: keel tag "weight,fromat=weight": unknown option "fromat"`).
 | `readonly` | never written (generated or trigger-maintained columns); read back after inserts and saves | `keel:"stage_rank,readonly"` |
 | `noselect` | not selected by default; usable in predicates. Mark a generated `noselect` column `readonly` too | `keel:"search_vector,noselect,readonly,tsvector"` |
 | `jsonb` | the value is encoded as JSON; a nil map or slice in a non-pointer field is written as `{}` or `[]` | `keel:"attributes,jsonb"` |
-| `tsvector` | the column gets the full-text operators | see `noselect` |
+| `tsvector` / `tsvector=<config>` | the column gets the full-text operators (see [Full-text search](#full-text-search)); `<config>` is the text search configuration its searches use by default, an identifier, optionally schema-qualified | `keel:"search_vector,noselect,readonly,tsvector=english"` |
 | `nullzero` | the field's zero value is stored as NULL and NULL reads back as the zero value; see [Nullzero columns](#nullzero-columns) | `keel:"customer_id,nullzero"` |
 | `computed` | not a column of the table: never inserted, updated or selected by default; a query fills it with `Compute`; see [Computed fields](#computed-fields). The name is how dynamic queries address it | `keel:"rank,computed"` |
 | `label=<text>` | the column's label instead of the derived one | `keel:"pro_number,label=PRO Number"` |
@@ -863,7 +863,7 @@ n, err := s.Where(
     s.Labels.Has("expedite"),
     s.Attributes.Contains(map[string]any{"temperature": "frozen"}),
     s.Attributes.Text("trailer", "type").Eq("reefer"),
-    s.SearchVector.Matches("dallas reefer"),
+    s.SearchVector.Match("dallas reefer"),
     keel.Or(s.CanceledAt.IsNull(), s.CanceledAt.Gt(since.Unix())),
     keel.Not(s.Customer().Name.ContainsFold("test")),
 ).Count(ctx, db)
@@ -886,7 +886,7 @@ late, err := st.Where(st.ArrivedAt.Gte(since), st.Kind.Eq("delivery")).Count(ctx
 | `JSONBCol` | `Contains(v)` (`@>`, `v` encoded as JSON), `HasKey`, `HasAnyKey`, `HasAllKeys`, `Text(path...)` (`#>>`, a `StringExpr`), `To` |
 | `StringArrayCol` | `Has`, `Overlaps`, `ContainsAll`, `ContainedBy`, `Len`, `To` |
 | `Int64ArrayCol` | `Has`, `Overlaps`, `ContainsAll`, `ContainedBy`, `To` |
-| `TSVectorCol` | `Matches(q)` (`@@ websearch_to_tsquery(q)`), `MatchesConfig(config, q)`, `Rank(q)` |
+| `TSVectorCol` | `Match(q, opts...)` (`@@ websearch_to_tsquery(…)`), `Rank(q, opts...)` (`ts_rank`), `RankCD(q, opts...)` (`ts_rank_cd`); see [Full-text search](#full-text-search) |
 
 Generated wrappers (`StatusCol`, `IdsIDCol`) take the named type in `Eq`, `Ne`, `Gt`, `Gte`, `Lt`,
 `Lte`, `IsDistinctFrom`, `Between`, `To`, and for string, integer and scanner kinds `In` and
@@ -900,6 +900,54 @@ valid only inside `Conflict.Set` (see [Upsert](#upsert)) and fails the statement
 Combinators: `keel.And(ps...)` and `keel.Or(ps...)` skip nil predicates (`And` of nothing is
 `TRUE`, `Or` of nothing `FALSE`), `keel.Not(p)`, `keel.True()`. `Where` joins its arguments with
 `AND`.
+
+### Full-text search
+
+A `tsvector` column (`TSVectorCol`) is searched with `Match` and ranked with `Rank` and `RankCD`. The
+search string is always a bound parameter, so user input goes in as it is typed:
+
+```go
+n := fleetdb.Notes // SearchVector string `keel:"search_vector,noselect,readonly,tsvector=english"`
+q := "dallas reefer"
+rows, err := n.
+    Compute(n.Rank, n.SearchVector.Rank(q)).
+    Where(n.SearchVector.Match(q)).
+    Order(n.Rank.Desc()).
+    Limit(20).
+    List(ctx, db)
+// … WHERE n."search_vector" @@ websearch_to_tsquery('english'::regconfig, $3)
+//   ORDER BY (ts_rank(n."search_vector", websearch_to_tsquery('english'::regconfig, $3))) DESC
+```
+
+Options shape the query:
+
+| Option | Query |
+|---|---|
+| none | `websearch_to_tsquery(config, q)`: words ANDed, `"quoted phrase"`, `or`, `-excluded` |
+| `keel.SearchModes(keel.Plain)` | `plainto_tsquery(config, q)`: the words ANDed, operators ignored |
+| `keel.SearchModes(keel.Phrase)` | `phraseto_tsquery(config, q)`: the words next to each other, in order |
+| `keel.SearchModes(keel.Prefix)` | `to_tsquery(config, 'dal':* & 'ree':*)`: every word as a prefix, for search as you type |
+| `keel.SearchModes(keel.AnyWord)` | `to_tsquery(config, 'dallas' \| 'reefer')`: any of the words |
+| `keel.SearchModes(keel.AnyPrefix)` | `to_tsquery(config, 'dal':* \| 'ree':*)`: any word as a prefix |
+| `keel.SearchModes(a, b, …)` | the queries of each mode ORed: `(websearch_to_tsquery(…) \|\| to_tsquery(…))` |
+| `keel.SearchConfig("simple", "english")` | the queries built with each configuration ORed, so a word matches stemmed or not |
+| `keel.RankNormalization(32)` | `ts_rank(vector, query, 32)`: the normalization bit mask of `Rank` and `RankCD` |
+
+The configuration is the column's `tsvector=<config>` unless `SearchConfig` names others, and the
+database's `default_text_search_config` when neither does. Names must be identifiers (optionally
+`schema.name`); they are written into the statement as `'name'::regconfig`, and Postgres refuses a
+configuration it does not have. The word modes split the string into runs of letters and digits,
+so punctuation and tsquery operators in user input are only separators; a string without words
+makes a query that matches nothing (`NULL::tsquery`). `Rank` and `RankCD` return a `real`, usable
+in `Order`, in `Pick` and to fill a computed field; a search string written twice in one statement
+(in `Match` and `Rank`) binds once. A GIN index on the vector serves every mode.
+
+The dynamic layer has the same methods on `DynExpr`: `q.Path("search_vector").Match(q, opts...)`,
+`.Rank(q, opts...)` and `.RankCD(q, opts...)`.
+
+Trigram similarity (`pg_trgm`'s `similarity()` and `%`) has no typed operator: a trigram GIN index
+serves `ContainsFold` and `ILike`, and `keel.Raw("similarity(?, ?)", col, text)` reaches the
+functions where a ranking needs them.
 
 ### Optional filters
 
@@ -1378,7 +1426,7 @@ pgx cancels the statement and the error matches `context.DeadlineExceeded`. Insi
 canceled statement aborts the transaction.
 
 ```go
-n, err := s.Where(s.SearchVector.Matches("reefer")).Timeout(2*time.Second).Count(ctx, db)
+n, err := s.Where(s.SearchVector.Match("reefer")).Timeout(2*time.Second).Count(ctx, db)
 if errors.Is(err, context.DeadlineExceeded) {
     // the search took too long
 }
@@ -1725,6 +1773,7 @@ A `keel.DynExpr` is an expression, and a predicate, so `Where`, `Having`, `keel.
 | CASE | `keel.DynCase().When(cond, then).Else(v)` or `.End()` |
 | functions | `keel.DynFunc(name, args...)` from an allow-list |
 | aggregates | `Sum`, `Avg`, `Min`, `Max`, `Count`, `CountDistinct`, `keel.DynCount()`, `Filter(pred)`, `Over(window)` |
+| full-text search | `Match(q, opts...)`, `Rank(q, opts...)`, `RankCD(q, opts...)` on a `tsvector` column or expression, as on `TSVectorCol` |
 | typed expressions | `keel.DynOf(e)`: a generated column, `keel.Rank()`, `keel.Lag(…)`, `keel.Grouping(…)`, a `Raw` |
 
 `DynFunc` calls only functions of keel's allow-list: `abs`, `ceil`, `floor`, `round`, `trunc`,
@@ -3356,6 +3405,9 @@ The same pattern works for an application:
 | `WhereGroup(" AND ", func(q) {... ScopeTenant ...})` | nothing; the scope applies the tenant |
 | `.WhereOr(...)` | `keel.Or(...)` |
 | `.Where("sp.pro_number ILIKE ?", "%"+q+"%")` | `s.ProNumber.ContainsFold(q)` (escaped) |
+| `Where("sv @@ websearch_to_tsquery('simple', ?) \|\| websearch_to_tsquery('english', ?)", q, q)` | `s.SearchVector.Match(q, keel.SearchConfig("simple", "english"))` |
+| `ColumnExpr("ts_rank(sv, …) AS rank")` | `Compute(s.Rank, s.SearchVector.Rank(q))` |
+| `to_tsquery('simple', 'word:*')` built by hand for search as you type | `keel.SearchModes(keel.WebSearch, keel.Prefix)` |
 | `bun.In(ids)` | `col.In(ids...)` |
 | `.Order("sp.created_at DESC")` | `.Order(s.CreatedAt.Desc())` |
 | `.Limit(n).Offset(m)`, `ScanAndCount` | `Page(ctx, db, keel.After(cursor, n).Total(cap))` (one round trip) |

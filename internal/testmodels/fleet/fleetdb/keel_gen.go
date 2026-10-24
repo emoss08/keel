@@ -781,6 +781,154 @@ func attachMove(p unsafe.Pointer, rel int32, child unsafe.Pointer) {
 	}
 }
 
+// notesTable is the schema of fleet.Note.
+var notesTable = schema.Table{
+	Name:   "notes",
+	Quoted: `"notes"`,
+	Alias:  "n",
+	Model:  "fleet.Note",
+	Label:  `Note`,
+	Plural: `Notes`,
+	Doc:    `Note is a free-text note about a customer, searched by its words.`,
+	Columns: []schema.Column{
+		{Name: "id", Quoted: `"id"`, Field: "ID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagAutoID, Label: `ID`},
+		{Name: "organization_id", Quoted: `"organization_id"`, Field: "OrganizationID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagTenant, Label: `Organization ID`},
+		{Name: "business_unit_id", Quoted: `"business_unit_id"`, Field: "BusinessUnitID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagTenant, Label: `Business Unit ID`},
+		{Name: "customer_id", Quoted: `"customer_id"`, Field: "CustomerID", Kind: schema.KindString, Flags: 0, Label: `Customer ID`},
+		{Name: "body", Quoted: `"body"`, Field: "Body", Kind: schema.KindString, Flags: 0, Label: `Body`},
+		{Name: "search_vector", Quoted: `"search_vector"`, Field: "SearchVector", Kind: schema.KindTSVector, Flags: schema.FlagReadOnly | schema.FlagNoSelect, Label: `Search Vector`, Doc: `SearchVector is the note's body stemmed in English.`, TSConfig: `english`},
+		{Name: "rank", Quoted: `"rank"`, Field: "Rank", Kind: schema.KindFloat32, Flags: schema.FlagComputed, Label: `Rank`, Doc: `Rank is how well the note matches a search, filled by queries that compute it.`},
+	},
+	Relations: []schema.Relation{
+		{Name: "Customer", Alias: "c", Kind: schema.BelongsTo, Local: []int32{3}, Remote: []int32{0}, Label: `Customer`},
+	},
+	PK:         []int32{0, 1, 2},
+	Tenant:     []int32{1, 2},
+	Select:     []int32{0, 1, 2, 3, 4},
+	Insert:     []int32{0, 1, 2, 3, 4},
+	Update:     []int32{3, 4},
+	Returning:  nil,
+	Version:    -1,
+	AutoID:     0,
+	AutoCreate: -1,
+	AutoUpdate: -1,
+	IDPrefix:   "not_",
+	New:        newNote,
+	NewN:       newNNote,
+	Size:       unsafe.Sizeof(fleet.Note{}),
+	Ptr:        ptrNote,
+	Value:      valueNote,
+	Attach:     attachNote,
+}
+
+var notesRef = keel.Ref{Table: &notesTable}
+
+// NotesTable is the table of fleet.Note.
+type NotesTable struct {
+	keel.Handle[fleet.Note]
+	ID             keelkinds.IdsIDCol
+	OrganizationID keelkinds.IdsIDCol
+	BusinessUnitID keelkinds.IdsIDCol
+	CustomerID     keelkinds.IdsIDCol
+	Body           keel.StringCol
+	SearchVector   keel.TSVectorCol
+	Rank           keel.Float64Col
+}
+
+// Notes references the notes table.
+var Notes = &NotesTable{
+	Handle:         keel.Handle[fleet.Note]{Ref: &notesRef},
+	ID:             keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: &notesRef, Index: 0}}},
+	OrganizationID: keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: &notesRef, Index: 1}}},
+	BusinessUnitID: keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: &notesRef, Index: 2}}},
+	CustomerID:     keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: &notesRef, Index: 3}}},
+	Body:           keel.StringCol{Col: keel.Col{Ref: &notesRef, Index: 4}},
+	SearchVector:   keel.TSVectorCol{Col: keel.Col{Ref: &notesRef, Index: 5}},
+	Rank:           keel.Float64Col{Col: keel.Col{Ref: &notesRef, Index: 6}},
+}
+
+// BuildNotes builds the handle of notes for ref. Generated relation and alias methods call it.
+func BuildNotes(r *keel.Ref) *NotesTable {
+	return &NotesTable{
+		Handle:         keel.Handle[fleet.Note]{Ref: r},
+		ID:             keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: r, Index: 0}}},
+		OrganizationID: keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: r, Index: 1}}},
+		BusinessUnitID: keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: r, Index: 2}}},
+		CustomerID:     keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: r, Index: 3}}},
+		Body:           keel.StringCol{Col: keel.Col{Ref: r, Index: 4}},
+		SearchVector:   keel.TSVectorCol{Col: keel.Col{Ref: r, Index: 5}},
+		Rank:           keel.Float64Col{Col: keel.Col{Ref: r, Index: 6}},
+	}
+}
+
+// NotesSchema returns the schema of notes.
+func NotesSchema() *schema.Table { return &notesTable }
+
+// As returns a handle that references notes under its own alias.
+func (t *NotesTable) As(alias string) *NotesTable { return keel.Alias(t.Ref, alias, BuildNotes) }
+
+// Customer is the belongs relation.
+func (t *NotesTable) Customer() *CustomersTable { return keel.Path(t.Ref, 0, BuildCustomers) }
+
+// Get returns the notes row with the given key, or keel.ErrNotFound.
+func (t *NotesTable) Get(ctx context.Context, db *keel.DB, key ids.ID) (*fleet.Note, error) {
+	return t.Where(t.ID.Eq(key)).One(ctx, db)
+}
+
+func newNote() unsafe.Pointer { return unsafe.Pointer(new(fleet.Note)) }
+
+func newNNote(n int) unsafe.Pointer { return unsafe.Pointer(unsafe.SliceData(make([]fleet.Note, n))) }
+
+func ptrNote(p unsafe.Pointer, c int32) any {
+	r := (*fleet.Note)(p)
+	switch c {
+	case 0:
+		return (*string)(unsafe.Pointer(&r.ID))
+	case 1:
+		return (*string)(unsafe.Pointer(&r.OrganizationID))
+	case 2:
+		return (*string)(unsafe.Pointer(&r.BusinessUnitID))
+	case 3:
+		return (*string)(unsafe.Pointer(&r.CustomerID))
+	case 4:
+		return &r.Body
+	case 5:
+		return &r.SearchVector
+	case 6:
+		return &r.Rank
+	}
+	return nil
+}
+
+func valueNote(p unsafe.Pointer, c int32) any {
+	r := (*fleet.Note)(p)
+	switch c {
+	case 0:
+		return string(r.ID)
+	case 1:
+		return string(r.OrganizationID)
+	case 2:
+		return string(r.BusinessUnitID)
+	case 3:
+		return string(r.CustomerID)
+	case 4:
+		return r.Body
+	case 5:
+		return r.SearchVector
+	case 6:
+		return r.Rank
+	}
+	return nil
+}
+
+func attachNote(p unsafe.Pointer, rel int32, child unsafe.Pointer) {
+	r := (*fleet.Note)(p)
+	switch rel {
+	case 0:
+		r.Customer = (*fleet.Customer)(child)
+	}
+}
+
 // plantsTable is the schema of fleet.Plant.
 var plantsTable = schema.Table{
 	Name:   "plants",
@@ -1613,6 +1761,7 @@ func init() {
 	movesTable.Relations[0].Target = ShipmentsSchema()
 	movesTable.Relations[1].Target = StopsSchema()
 	movesTable.Relations[2].Target = StopsSchema()
+	notesTable.Relations[0].Target = CustomersSchema()
 	shipmentsTable.Relations[0].Target = CustomersSchema()
 	shipmentsTable.Relations[1].Target = CustomersSchema()
 	shipmentsTable.Relations[2].Target = MovesSchema()

@@ -186,6 +186,7 @@ func TestGenerateComputed(t *testing.T) {
 	ID   string  ~keel:"id,pk"~
 	Name string  ~keel:"name"~
 	Rank float32 ~keel:"rank,computed"~
+	Search string ~keel:"search,readonly,noselect,tsvector=simple"~
 }
 `)
 	if err != nil {
@@ -196,8 +197,10 @@ func TestGenerateComputed(t *testing.T) {
 		"Flags: schema.FlagComputed",
 		"Select:     []int32{0, 1},",
 		"Insert:     []int32{0, 1},",
-		"Rank keel.Float64Col",
+		"Rank   keel.Float64Col",
 		"Report: &reportMeasureFloatHidden",
+		"TSConfig: `simple`",
+		"Search keel.TSVectorCol",
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("generated code lacks %q", want)

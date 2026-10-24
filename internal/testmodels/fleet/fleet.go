@@ -213,6 +213,23 @@ type Contact struct {
 	Customer *Customer `keel:"belongs:customer_id"`
 }
 
+// Note is a free-text note about a customer, searched by its words.
+type Note struct {
+	keel.Table `keel:"notes"`
+
+	ID             ids.ID `keel:"id,pk,autoid:not_"`
+	OrganizationID ids.ID `keel:"organization_id,pk,tenant"`
+	BusinessUnitID ids.ID `keel:"business_unit_id,pk,tenant"`
+	CustomerID     ids.ID `keel:"customer_id"`
+	Body           string `keel:"body"`
+	// SearchVector is the note's body stemmed in English.
+	SearchVector string `keel:"search_vector,noselect,readonly,tsvector=english"`
+	// Rank is how well the note matches a search, filled by queries that compute it.
+	Rank float32 `keel:"rank,computed"`
+
+	Customer *Customer `keel:"belongs:customer_id"`
+}
+
 // Plant is a table without tenant columns, shared by every tenant.
 type Plant struct {
 	keel.Table `keel:"plants"`

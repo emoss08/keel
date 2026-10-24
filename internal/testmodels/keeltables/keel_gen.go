@@ -14,6 +14,7 @@ func All() []*schema.Table {
 		fleetdb.CustomersSchema(),
 		fleetdb.LocationsSchema(),
 		fleetdb.MovesSchema(),
+		fleetdb.NotesSchema(),
 		fleetdb.PlantsSchema(),
 		fleetdb.ShipmentsSchema(),
 		fleetdb.StopsSchema(),

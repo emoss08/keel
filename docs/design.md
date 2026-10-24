@@ -93,7 +93,7 @@ reference to a table, under that alias, for self-joins.
 | `readonly` | never written (generated or trigger-maintained columns); read back after writes |
 | `noselect` | not selected by default (a `tsvector`); usable in predicates. A generated `noselect` column must also be tagged `readonly` |
 | `jsonb` | the value is encoded as JSON; a nil map or slice in a non-pointer field is written as `{}` or `[]` |
-| `tsvector` | the column gets the full-text operators |
+| `tsvector` / `tsvector=<config>` | the column gets the full-text operators; `<config>` (`Column.TSConfig`) is the text search configuration its searches use by default |
 | `nullzero` | a non-pointer field's zero value is stored as NULL and NULL reads back as the zero value (see Nullzero columns) |
 | `computed` | not a column of the table: a field queries fill with `Compute(field, expr)` (see Computed fields) |
 | `label=` | the column's label, instead of the one derived from the field name |
@@ -287,7 +287,7 @@ Every clause takes expressions, never strings. Columns are typed by their Go kin
 | bytea | `Eq`, `To` |
 | jsonb | `Contains`, `HasKey`, `HasAnyKey`, `HasAllKeys`, `Text(path...)`, `To` |
 | array | `Has`, `Overlaps`, `ContainsAll`, `ContainedBy`, `To`; `Len` on text arrays |
-| tsvector | `Matches`, `MatchesConfig`, `Rank` |
+| tsvector | `Match(q, opts...)`, `Rank(q, opts...)`, `RankCD(q, opts...)`: the search string bound once, the tsquery built by `websearch_to_tsquery` (default), `plainto_tsquery`, `phraseto_tsquery` or `to_tsquery` over the string's words as lexemes or prefixes, for each configuration (`SearchConfig`, else the column's `TSConfig`, else the database default) and each mode (`SearchModes`), ORed |
 
 Combinators: `keel.And`, `keel.Or`, `keel.Not`, `keel.When`, `keel.Exists`, `keel.NotExists`,
 `keel.True`, `keel.Raw`, `keel.Val`. Aggregates: `keel.Count()`, `keel.CountOf`, `keel.Sum`,

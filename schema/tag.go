@@ -12,6 +12,7 @@ type FieldTag struct {
 	Flags    ColFlag
 	IDPrefix string
 	TSVector bool
+	TSConfig string
 	Label    string
 	Report   ReportTag
 
@@ -203,7 +204,15 @@ func (ft *FieldTag) columnOption(o option) error {
 	switch o.key {
 	case "tsvector":
 		ft.TSVector = true
-		return o.noValue()
+		if !o.hasValue {
+			return nil
+		}
+		v, err := o.needValue()
+		if err != nil {
+			return err
+		}
+		ft.TSConfig = v
+		return checkConfig(v)
 	case "autoid":
 		ft.Flags |= FlagAutoID
 		v, err := o.needValue()
@@ -444,6 +453,22 @@ func checkIdent(s string) error {
 	}
 	if s[0] >= '0' && s[0] <= '9' {
 		return fmt.Errorf("identifier %q must not start with a digit", s)
+	}
+	return nil
+}
+
+// checkConfig refuses a text search configuration name that is not an identifier, optionally
+// qualified by one schema.
+func checkConfig(name string) error {
+	schemaName, cfg, qualified := strings.Cut(name, ".")
+	if qualified {
+		if err := checkIdent(schemaName); err != nil {
+			return fmt.Errorf("tsvector=%s: %w", name, err)
+		}
+		name = cfg
+	}
+	if err := checkIdent(name); err != nil {
+		return fmt.Errorf("tsvector=%s: %w", name, err)
 	}
 	return nil
 }
