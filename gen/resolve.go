@@ -263,12 +263,12 @@ func checkColumns(src *source, m *model) error {
 func checkColumnType(c *column) error {
 	f := c.tag.Flags
 	switch {
-	case f.Has(schema.FlagVersion) && (c.kind != schema.KindInt64 || c.ptr):
+	case f.Has(schema.FlagVersion) && (c.kind != schema.KindInt64 || c.ptr || c.wide):
 		return fmt.Errorf("version columns must be int64")
 	case f.Has(schema.FlagAutoID) && (c.kind != schema.KindString || c.ptr):
 		return fmt.Errorf("autoid columns must be strings")
 	case (f.Has(schema.FlagAutoCreate) || f.Has(schema.FlagAutoUpdate)) &&
-		((c.kind != schema.KindInt64 && c.kind != schema.KindTime) || c.named != nil):
+		((c.kind != schema.KindInt64 && c.kind != schema.KindTime) || c.named != nil || c.wide):
 		return fmt.Errorf("timestamp columns must be int64 (Unix seconds) or time.Time")
 	}
 	return nil

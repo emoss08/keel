@@ -60,6 +60,7 @@ type column struct {
 	basic    string
 	scanner  bool
 	valuePtr bool
+	wide     bool
 	idx      int32
 
 	zero zeroTest
@@ -72,6 +73,22 @@ type column struct {
 	key     bool
 	exposed bool
 	report  *schema.ReportInfo
+}
+
+// converts reports whether generated code converts the field to its basic type: a named basic
+// type other than a scanner, or int, which is read and written as int64.
+func (c *column) converts() bool { return (c.named != nil && !c.scanner) || c.wide }
+
+// hasWide reports whether a model of the package has an int field.
+func (p *pkgModels) hasWide() bool {
+	for _, m := range p.models {
+		for _, c := range m.columns {
+			if c.wide {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // relation is one relation field.
@@ -341,11 +358,8 @@ func readColumn(f *types.Var, ft schema.FieldTag) (*column, error) {
 		default:
 			return nil, fmt.Errorf("unsupported type %s", f.Type())
 		}
-		if u.Kind() == types.Int && c.named != nil {
-			return nil, fmt.Errorf("use int64, not int, for named integer types")
-		}
 		if u.Kind() == types.Int {
-			return nil, fmt.Errorf("use int64, not int")
+			c.wide = true
 		}
 	case *types.Slice:
 		if c.ptr {

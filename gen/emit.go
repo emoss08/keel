@@ -442,6 +442,11 @@ func (e *emitter) emitPackage(p *pkgModels) ([]byte, error) {
 		w("}\n\n")
 	}
 
+	if p.hasWide() {
+		w("// intIs64 fails the build where int is not 64 bits: int fields are read through *int64.\n")
+		w("const intIs64 = %s.Sizeof(int(0)) - 8\n\n", unsafePkg)
+	}
+
 	sh.write(&body)
 	for _, wr := range e.sortedWrappers() {
 		if wr.outPath == p.outPath {
@@ -604,7 +609,7 @@ func (e *emitter) colLit(im *imports, c *column, ref string) string {
 
 func (e *emitter) ptrExpr(im *imports, c *column, unsafePkg string) string {
 	switch {
-	case c.named != nil && !c.scanner:
+	case c.converts():
 		if c.ptr {
 			return fmt.Sprintf("(**%s)(%s.Pointer(&r.%s))", c.basic, unsafePkg, c.field)
 		}
@@ -635,7 +640,7 @@ func (e *emitter) valueStmt(im *imports, c *column, keel string) string {
 				c.field, keel, c.field)
 		}
 		return fmt.Sprintf("\t\treturn r.%s\n", c.field)
-	case c.ptr && c.named != nil && !c.scanner:
+	case c.ptr && c.converts():
 		return fmt.Sprintf("\t\tif r.%s == nil {\n\t\t\treturn nil\n\t\t}\n\t\treturn %s(*r.%s)\n", c.field,
 			c.basic, c.field)
 	case c.ptr && c.valuePtr:
@@ -644,7 +649,7 @@ func (e *emitter) valueStmt(im *imports, c *column, keel string) string {
 		return fmt.Sprintf("\t\treturn &r.%s\n", c.field)
 	case c.ptr:
 		return fmt.Sprintf("\t\tif r.%s == nil {\n\t\t\treturn nil\n\t\t}\n\t\treturn *r.%s\n", c.field, c.field)
-	case c.named != nil && !c.scanner:
+	case c.converts():
 		return fmt.Sprintf("\t\treturn %s(r.%s)\n", c.basic, c.field)
 	case c.kind == schema.KindStringArray:
 		v := "r." + c.field
@@ -686,7 +691,7 @@ func (e *emitter) plainValue(c *column, keel string) string {
 	switch {
 	case c.valuePtr:
 		return "&" + f
-	case c.named != nil && !c.scanner:
+	case c.converts():
 		return c.basic + "(" + f + ")"
 	case c.elem != nil && c.kind == schema.KindStringArray:
 		return keel + ".Strings(" + f + ")"

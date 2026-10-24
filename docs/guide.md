@@ -553,7 +553,7 @@ array field is written as an empty array, unless the column is `nullzero`.
 | Go field type | Column type in the generated handle |
 |---|---|
 | `string` | `keel.StringCol` |
-| `int64`, `int32`, `int16` | `keel.Int64Col`, `keel.Int32Col`, `keel.Int16Col` |
+| `int64` or `int`, `int32`, `int16` | `keel.Int64Col`, `keel.Int32Col`, `keel.Int16Col` |
 | `float64`, `float32` | `keel.Float64Col` |
 | `bool` | `keel.BoolCol` |
 | `[]byte` | `keel.BytesCol` |
@@ -566,8 +566,10 @@ array field is written as an empty array, unless the column is `nullzero`.
 | a type implementing `sql.Scanner` (`Money`, a decimal, a PostGIS point) | a generated wrapper over `keel.AnyCol` (`MoneyCol`) whose methods take the type; when only the pointer implements `driver.Valuer`, the wrapper and the generated `Value` accessor bind a pointer |
 
 A pointer field (`*int64`, `*ids.ID`) or a `sql.Scanner` whose name starts with `Null` is nullable
-and has the same column type. Plain `int` is refused, because its width is not portable; use
-`int64`. Structs, maps and slices of other element types need the `jsonb` option.
+and has the same column type. An `int` field is a `bigint` value read and written as `int64`; the
+generated package fails to build where `int` is narrower than 64 bits. `version`, `autocreate` and
+`autoupdate` columns still need `int64`. Structs, maps and slices of other element types need the
+`jsonb` option.
 
 A named type over a basic type is stored as that basic type even when it implements `sql.Scanner`
 and `driver.Valuer`, as `ids.ID` here and Trenova's `pulid.ID` do: keel reads and writes the

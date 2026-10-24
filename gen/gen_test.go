@@ -147,7 +147,8 @@ func oneA(fieldSrc string) string {
 
 func TestGenerateErrors(t *testing.T) {
 	runErrors(t, []errorCase{
-		{"int field", oneA(`N int ~keel:"n"~`), field(3) + ": A.N: use int64"},
+		{"int version", oneA(`V int ~keel:"v,version"~`), field(3) + ": A.V: version columns must be int64"},
+		{"int timestamp", oneA(`V int ~keel:"v,autoupdate"~`), field(3) + ": A.V: timestamp columns"},
 		{"struct needs jsonb", oneA(`M map[string]any ~keel:"m"~`), field(3) + ": A.M: map[string]any needs the jsonb option"},
 		{"version type", oneA(`V string ~keel:"v,version"~`), field(3) + ": A.V: version columns must be int64"},
 		{"autoid type", oneA(`V int64 ~keel:"v,autoid:a_"~`), field(3) + ": A.V: autoid columns must be strings"},
@@ -254,6 +255,42 @@ type A struct {
 		"if r.Z == (models.Point{}) {\n\t\t\treturn nil\n\t\t}\n\t\treturn &r.Z\n",
 		"func (c PointCol) Eq(v models.Point) keel.Pred             { return c.AnyCol.Eq(&v) }",
 		"func (c PointCol) In(vs ...models.Point) keel.Pred         { return c.AnyCol.In(keel.Pointers(vs)) }",
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("generated code lacks %q", want)
+		}
+	}
+	if t.Failed() {
+		t.Log(src)
+	}
+}
+
+func TestGenerateInt(t *testing.T) {
+	files, err := generate(t, `type Count int
+
+type A struct {
+	keel.Table ~keel:"a"~
+
+	ID string ~keel:"id,pk"~
+	N  int    ~keel:"n"~
+	P  *int   ~keel:"p"~
+	Z  int    ~keel:"z,nullzero"~
+	C  Count  ~keel:"c"~
+}
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(files[0].Content)
+	for _, want := range []string{
+		"(*int64)(unsafe.Pointer(&r.N))",
+		"(**int64)(unsafe.Pointer(&r.P))",
+		"return int64(r.N)\n",
+		"if r.P == nil {\n\t\t\treturn nil\n\t\t}\n\t\treturn int64(*r.P)\n",
+		"if r.Z == 0 {\n\t\t\treturn nil\n\t\t}\n\t\treturn int64(r.Z)\n",
+		"return int64(r.C)\n",
+		"const intIs64 = unsafe.Sizeof(int(0)) - 8",
+		"N  keel.Int64Col",
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("generated code lacks %q", want)

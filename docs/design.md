@@ -113,7 +113,8 @@ Column kinds follow the Go type: strings, `int64`, `int32`, `int16`, `float64`, 
 underlying types (enums, IDs), and any other type implementing `sql.Scanner` (a decimal). A named
 type over a basic type is that basic kind even when it implements `sql.Scanner` and
 `driver.Valuer` (`pulid.ID`): keel accesses the underlying value directly and never calls those
-methods. Plain `int` is refused: its width is not portable. A custom type whose `driver.Valuer` has
+methods. `int` is the `int64` kind, read and written through `*int64`; the generated package
+carries a constant that fails the build where `int` is narrower than 64 bits. A custom type whose `driver.Valuer` has
 a pointer receiver is bound through a pointer by the generated `Value` accessor and wrappers. Bulk
 inserts send custom columns as text cast to the column's type, except an extension base type
 (OID past `FirstNormalObjectId`) whose codec and array codec the connections register: its column
