@@ -35,14 +35,18 @@ type stmt struct {
 // runner executes the statements of one terminal call. It joins the transaction on the context
 // (ErrScopeMismatch under another scope than the transaction's), opens an implicit one when
 // Config.OnBegin is set, or runs on a single pooled connection: a replica's for a read on a
-// context marked with OnReplica, else the primary's.
+// context marked with OnReplica, else the primary's. Outside a transaction it holds a tenant slot
+// (ownsSlot) or runs under one its context carries, when Config.TenantConcurrency is set.
 type runner struct {
-	db   *DB
-	sc   *scopeState
-	tx   *txState
-	own  bool
-	conn *pgxpool.Conn
-	rep  *replica
+	db       *DB
+	sc       *scopeState
+	tx       *txState
+	own      bool
+	conn     *pgxpool.Conn
+	rep      *replica
+	slot     *tenantSlot
+	ownsSlot bool
+	cache    *cacheRun
 }
 
 // runMode is what a runner runs: a read, which may go to a replica; a write, which records its
@@ -79,6 +83,13 @@ func (db *DB) runnerFor(ctx context.Context, mode runMode) (*runner, error) {
 		}
 		r.tx = tx
 		return r, nil
+	}
+	if db.tenants != nil {
+		slot, owned, err := db.tenants.enter(ctx, r.sc)
+		if err != nil {
+			return nil, err
+		}
+		r.slot, r.ownsSlot = slot, owned
 	}
 	var rt *route
 	if db.replicas != nil {
@@ -150,11 +161,32 @@ func (r *runner) started(ctx context.Context) (pgConn, error) {
 }
 
 // batch sends stmts in one round trip. last marks the runner's final batch: an implicit
-// transaction commits in the same round trip.
+// transaction commits in the same round trip. The round trip counts against the budgets on ctx,
+// whether it succeeded or not; a budget it takes over a limit, or one already over, fails it.
 func (r *runner) batch(ctx context.Context, stmts []*stmt, last bool) error {
 	if len(stmts) == 0 {
 		return nil
 	}
+	if r.cache != nil {
+		if done, err := r.cache.batch(stmts); done {
+			return err
+		}
+	}
+	if err := refuseBudgets(ctx); err != nil {
+		return err
+	}
+	trips, err := r.exchange(ctx, stmts, last)
+	if trips > 0 {
+		if berr := chargeBudgets(ctx, stmts, trips); err == nil {
+			err = berr
+		}
+	}
+	return err
+}
+
+// exchange sends stmts in one round trip, or two when a replica failed its guard and the
+// statements rerun on the primary, and returns the number of round trips it made.
+func (r *runner) exchange(ctx context.Context, stmts []*stmt, last bool) (int, error) {
 	custom := false
 	if r.db.cfg.PlanCache != PlanCacheOff {
 		for _, s := range stmts {
@@ -172,22 +204,24 @@ func (r *runner) batch(ctx context.Context, stmts []*stmt, last bool) error {
 	guard := r.replicaGuard(ctx)
 	conn, err := r.acquire(ctx)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if len(stmts) == 1 && guard == 0 && (r.tx == nil || r.tx.begun) && !(r.own && last) && !custom {
-		return r.direct(ctx, conn, stmts[0])
+		return 1, r.direct(ctx, conn, stmts[0])
 	}
 	events, qctx := r.db.startEvents(ctx, r.replica(), r.explicit(), stmts)
 	start := time.Now()
+	trips := 1
 	err = r.send(qctx, conn, stmts, last, custom, guard)
 	if err == errReplicaBehind {
 		r.toPrimary(ctx)
 		retarget(events)
 		if conn, err = r.acquire(ctx); err == nil {
+			trips++
 			err = r.send(qctx, conn, stmts, last, custom, 0)
 		}
 	}
-	return r.db.endEvents(events, stmts, time.Since(start), err)
+	return trips, r.db.endEvents(events, stmts, time.Since(start), err)
 }
 
 // explicit reports whether the runner runs inside a transaction its caller opened.
@@ -228,7 +262,8 @@ func (r *runner) toPrimary(ctx context.Context) {
 	if r.own {
 		old := r.tx
 		_ = old.end(ctx, errReplicaBehind)
-		r.tx = &txState{db: r.db, readOnly: old.readOnly, implicit: true, scopeCtx: old.scopeCtx}
+		r.tx = &txState{db: r.db, readOnly: old.readOnly, implicit: true, scopeCtx: old.scopeCtx,
+			scope: old.scope, opts: old.opts}
 	}
 	r.rep.release()
 	r.rep = nil
@@ -246,7 +281,7 @@ func (r *runner) send(ctx context.Context, conn pgConn, stmts []*stmt, last, cus
 	pre := 0
 	if beginning {
 		var err error
-		if pre, err = r.tx.queueBegin(b); err != nil {
+		if pre, err = r.tx.queueBegin(ctx, b); err != nil {
 			return err
 		}
 	}
@@ -381,7 +416,8 @@ func (r *runner) one(ctx context.Context, s *stmt, last bool) error {
 }
 
 // close ends an implicit transaction (committing when the last batch did not) and releases the
-// connection and the replica. It returns err, joined with any error from ending the transaction.
+// connection, the replica and the tenant slot, the slot before the implicit transaction's
+// AfterCommit callbacks run. It returns err, joined with any error from ending the transaction.
 // Outside a transaction the pairs the runner's write changed go to the versioner even when err is
 // set: a statement may commit before its error reaches keel, and a version bumped for nothing
 // costs only a cache miss.
@@ -399,11 +435,22 @@ func (r *runner) close(ctx context.Context, err error) error {
 		r.sc.changes = nil
 	}
 	if !r.own {
+		r.releaseSlot()
 		return err
 	}
 	err = r.tx.end(ctx, err)
+	r.releaseSlot()
 	if err == nil {
 		r.tx.runAfterCommit(ctx)
 	}
 	return err
+}
+
+// releaseSlot lets the runner's tenant slot go, once, if the runner took it.
+func (r *runner) releaseSlot() {
+	if r.ownsSlot {
+		r.ownsSlot = false
+		r.slot.release()
+	}
+	r.slot = nil
 }

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -32,6 +33,11 @@ type txState struct {
 
 	afterCommit []func(context.Context)
 
+	// slot is the tenant slot the transaction holds (ownsSlot) or runs under, an enclosing
+	// transaction's or write's, when Config.TenantConcurrency is set.
+	slot     *tenantSlot
+	ownsSlot bool
+
 	rep         *replica
 	route       *route
 	changes     versionSet
@@ -40,7 +46,7 @@ type txState struct {
 
 type txOptions struct {
 	lockTimeout time.Duration
-	isolation   string
+	isolation   Isolation
 	retries     int
 	replica     bool
 	detached    bool
@@ -50,11 +56,73 @@ type txOptions struct {
 
 type setting struct{ name, value string }
 
-// TxOption configures Read and Write.
-type TxOption func(*txOptions)
+// TxOption configures Read and Write. The isolation levels (ReadCommitted, RepeatableRead,
+// Serializable) are options themselves: keel.Read(ctx, db, fn, keel.RepeatableRead).
+type TxOption interface {
+	applyTx(o *txOptions)
+}
+
+// txOptionFunc is a TxOption that is a function.
+type txOptionFunc func(*txOptions)
+
+func (f txOptionFunc) applyTx(o *txOptions) { f(o) }
+
+// Isolation is a transaction isolation level. The zero value leaves the level to the server's
+// default_transaction_isolation, READ COMMITTED unless the server is configured otherwise. A level
+// is a TxOption, and Config.ReadIsolation sets the level of explicit Read transactions that do not
+// pass one.
+type Isolation uint8
+
+// The isolation levels keel begins transactions with.
+const (
+	// ReadCommitted runs the transaction at READ COMMITTED: each statement sees what was committed
+	// before it began.
+	ReadCommitted Isolation = iota + 1
+	// RepeatableRead runs the transaction at REPEATABLE READ: every statement sees the snapshot
+	// taken by the transaction's first statement. A read-only transaction at this level reads one
+	// consistent snapshot across all its statements.
+	RepeatableRead
+	// Serializable runs the transaction at SERIALIZABLE. Combine it with Retry: a serialization
+	// failure is expected under contention.
+	Serializable
+)
+
+// String returns the level as SQL names it, or "default" for the zero value.
+func (l Isolation) String() string {
+	switch l {
+	case 0:
+		return "default"
+	case ReadCommitted:
+		return "READ COMMITTED"
+	case RepeatableRead:
+		return "REPEATABLE READ"
+	case Serializable:
+		return "SERIALIZABLE"
+	}
+	return "Isolation(" + strconv.Itoa(int(l)) + ")"
+}
+
+func (l Isolation) applyTx(o *txOptions) {
+	if l > Serializable {
+		o.err = errf("unknown isolation level %d", uint8(l))
+		return
+	}
+	o.isolation = l
+}
+
+// beginSQL is the BEGIN statement of each isolation level, read-write and read-only, so beginning
+// a transaction builds no text.
+var beginSQL = [Serializable + 1][2]string{
+	{"BEGIN", "BEGIN READ ONLY"},
+	{"BEGIN ISOLATION LEVEL READ COMMITTED", "BEGIN ISOLATION LEVEL READ COMMITTED READ ONLY"},
+	{"BEGIN ISOLATION LEVEL REPEATABLE READ", "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY"},
+	{"BEGIN ISOLATION LEVEL SERIALIZABLE", "BEGIN ISOLATION LEVEL SERIALIZABLE READ ONLY"},
+}
 
 // LockTimeout bounds how long any statement of the transaction waits for a lock.
-func LockTimeout(d time.Duration) TxOption { return func(o *txOptions) { o.lockTimeout = d } }
+func LockTimeout(d time.Duration) TxOption {
+	return txOptionFunc(func(o *txOptions) { o.lockTimeout = d })
+}
 
 // Setting sets the run-time parameter name to value for the transaction, as SET LOCAL does:
 // set_config(name, value, true), for a planner or extension setting one query needs, such as
@@ -62,13 +130,13 @@ func LockTimeout(d time.Duration) TxOption { return func(o *txOptions) { o.lockT
 // A Read or Write that joins a transaction already on the context sets it for fn and restores the
 // joined transaction's value when fn returns.
 func Setting(name, value string) TxOption {
-	return func(o *txOptions) {
+	return txOptionFunc(func(o *txOptions) {
 		if !validSetting(name) {
 			o.err = errf("setting name %q must be letters, digits, _ and dots", name)
 			return
 		}
 		o.settings = append(o.settings, setting{name: name, value: value})
-	}
+	})
 }
 
 func validSetting(name string) bool {
@@ -84,15 +152,9 @@ func validSetting(name string) bool {
 	return true
 }
 
-// Serializable runs the transaction at the SERIALIZABLE isolation level.
-func Serializable() TxOption { return func(o *txOptions) { o.isolation = "SERIALIZABLE" } }
-
-// RepeatableRead runs the transaction at the REPEATABLE READ isolation level.
-func RepeatableRead() TxOption { return func(o *txOptions) { o.isolation = "REPEATABLE READ" } }
-
 // Retry runs a top-level transaction up to n more times after a serialization failure or a
 // deadlock. fn must be safe to repeat.
-func Retry(n int) TxOption { return func(o *txOptions) { o.retries = n } }
+func Retry(n int) TxOption { return txOptionFunc(func(o *txOptions) { o.retries = n }) }
 
 // Detached runs Read or Write in a new transaction on a connection of its own even when the
 // context carries a transaction, which it then neither joins nor waits for: it commits or rolls
@@ -108,11 +170,18 @@ func Retry(n int) TxOption { return func(o *txOptions) { o.retries = n } }
 // holds a second pool connection while the outer one holds its first: size the pool for it, and do
 // not wait inside it on locks the outer transaction holds, which never come free. Outside a
 // transaction it is a plain Read or Write.
-func Detached() TxOption { return func(o *txOptions) { o.detached = true } }
+func Detached() TxOption { return txOptionFunc(func(o *txOptions) { o.detached = true }) }
 
-// Read runs fn in a read-only transaction, on the primary unless ReplicaTx is given. A Read or
-// Write already on the context is joined, unless Detached is given; joining it under another scope
-// than the one it began with returns ErrScopeMismatch.
+// Read runs fn in a read-only transaction, on the primary unless ReplicaTx is given, at the
+// isolation level an option gives, else Config.ReadIsolation. A Read or Write already on the
+// context is joined, unless Detached is given; joining it under another scope than the one it
+// began with returns ErrScopeMismatch.
+//
+// When fn returns, keel sends COMMIT (ROLLBACK when fn failed) and returns without waiting for the
+// reply, which a goroutine reads before the connection goes back to the pool; a connection whose
+// reply fails is closed. A read-only transaction has nothing left to commit, so the reply carries
+// no information the caller needs. Serializable reads, whose COMMIT can report a serialization
+// failure, and Config.AwaitReadCommit wait as writes do.
 func Read(ctx context.Context, db *DB, fn func(ctx context.Context) error, opts ...TxOption) error {
 	return db.runTx(ctx, true, fn, opts)
 }
@@ -204,7 +273,9 @@ func (db *DB) runTx(ctx context.Context, readOnly bool, fn func(context.Context)
 ) error {
 	var o txOptions
 	for _, opt := range opts {
-		opt(&o)
+		if opt != nil {
+			opt.applyTx(&o)
+		}
 	}
 	if o.err != nil {
 		return o.err
@@ -224,11 +295,19 @@ func (db *DB) runTx(ctx context.Context, readOnly bool, fn func(context.Context)
 	if o.replica && !readOnly {
 		return errf("ReplicaTx needs a Read")
 	}
-	if o.replica && o.isolation == "SERIALIZABLE" {
+	if o.replica && o.isolation == Serializable {
 		return errf("ReplicaTx cannot run Serializable: a hot standby refuses it")
 	}
 	for attempt := 0; ; attempt++ {
 		tx := &txState{db: db, readOnly: readOnly, opts: o, scopeCtx: ctx}
+		if db.tenants != nil {
+			tx.scope = db.resolveScope(ctx)
+			slot, owned, err := db.tenants.enter(ctx, tx.scope)
+			if err != nil {
+				return err
+			}
+			tx.slot, tx.ownsSlot = slot, owned
+		}
 		if db.replicas != nil {
 			if o.replica {
 				tx.rep = db.replicas.pick(routeFrom(ctx).mark(db), false)
@@ -249,8 +328,9 @@ func (db *DB) runTx(ctx context.Context, readOnly bool, fn func(context.Context)
 
 // run calls fn with the transaction on its context and ends the transaction: it commits when fn
 // returns nil and rolls back when it returns an error. When fn panics, it rolls back and lets the
-// connection and replica go before the panic continues, so a recovered panic leaves no connection
-// checked out in an open transaction.
+// connection, replica and tenant slot go before the panic continues, so a recovered panic leaves
+// no connection checked out in an open transaction. The slot is let go before the caller runs the
+// AfterCommit callbacks, which may start work of their own for the tenant.
 func (tx *txState) run(ctx context.Context, fn func(context.Context) error) (err error) {
 	returned := false
 	defer func() {
@@ -260,8 +340,15 @@ func (tx *txState) run(ctx context.Context, fn func(context.Context) error) (err
 		if tx.rep != nil {
 			tx.rep.release()
 		}
+		if tx.ownsSlot {
+			tx.slot.release()
+		}
 	}()
-	err = fn(context.WithValue(ctx, txKey{}, tx))
+	fctx := context.WithValue(ctx, txKey{}, tx)
+	if tx.slot != nil {
+		fctx = context.WithValue(fctx, slotKey{}, tx.slot)
+	}
+	err = fn(fctx)
 	returned = true
 	return tx.end(ctx, err)
 }
@@ -311,21 +398,59 @@ func (db *DB) withSettings(ctx context.Context, settings []setting, fn func(cont
 	return nil
 }
 
-// queueBegin queues BEGIN, the transaction options and the OnBegin statements.
-func (tx *txState) queueBegin(b *pgx.Batch) (int, error) {
-	begin := "BEGIN"
-	if tx.opts.isolation != "" {
-		begin += " ISOLATION LEVEL " + tx.opts.isolation
+// level returns the isolation level the transaction begins with: its own option, else, for an
+// explicit Read, Config.ReadIsolation (REPEATABLE READ in place of SERIALIZABLE on a replica, which
+// refuses it), else zero, the server's default. A transaction another data layer began (JoinTx)
+// reports zero: keel does not know its level.
+func (tx *txState) level() Isolation {
+	if tx.joined {
+		return 0
 	}
+	if tx.opts.isolation != 0 {
+		return tx.opts.isolation
+	}
+	if !tx.readOnly || tx.implicit {
+		return 0
+	}
+	if l := tx.db.cfg.ReadIsolation; l != Serializable || tx.rep == nil {
+		return l
+	}
+	return RepeatableRead
+}
+
+// snapshot reports whether every statement of the transaction reads one snapshot: it runs at
+// REPEATABLE READ or SERIALIZABLE.
+func (tx *txState) snapshot() bool { return tx.level() >= RepeatableRead }
+
+// durationSetting formats d as a millisecond setting value, at least 1ms.
+func durationSetting(d time.Duration) string {
+	return strconv.FormatInt(max(d.Milliseconds(), 1), 10) + "ms"
+}
+
+// queueBegin queues BEGIN, the transaction options and the OnBegin statements. With
+// Config.DeadlineTimeouts it also sets statement_timeout to the time left before the deadline of
+// the transaction's context: Read's or Write's for an explicit transaction, ctx, the context of the
+// round trip that begins it, for an implicit one (a Query.Timeout is a deadline on it).
+func (tx *txState) queueBegin(ctx context.Context, b *pgx.Batch) (int, error) {
+	ro := 0
 	if tx.readOnly {
-		begin += " READ ONLY"
+		ro = 1
 	}
-	b.Queue(begin)
+	b.Queue(beginSQL[tx.level()][ro])
 	n := 1
 	if tx.opts.lockTimeout > 0 {
-		ms := max(tx.opts.lockTimeout.Milliseconds(), 1)
-		b.Queue("SELECT set_config('lock_timeout', $1, true)", strconv.FormatInt(ms, 10)+"ms")
+		b.Queue("SELECT set_config('lock_timeout', $1, true)", durationSetting(tx.opts.lockTimeout))
 		n++
+	}
+	if tx.db.cfg.DeadlineTimeouts {
+		dctx := ctx
+		if !tx.implicit && tx.scopeCtx != nil {
+			dctx = tx.scopeCtx
+		}
+		if deadline, ok := dctx.Deadline(); ok {
+			b.Queue("SELECT set_config('statement_timeout', $1, true)", durationSetting(time.Until(deadline)))
+			n++
+		}
 	}
 	for _, st := range tx.opts.settings {
 		b.Queue("SELECT set_config($1, $2, true)", st.name, st.value)
@@ -355,12 +480,13 @@ func (tx *txState) begin(ctx context.Context) error {
 		return err
 	}
 	b := &pgx.Batch{}
-	n, err := tx.queueBegin(b)
+	n, err := tx.queueBegin(ctx, b)
 	if err != nil {
 		return err
 	}
 	br := conn.SendBatch(ctx, b)
 	tx.begun = true
+	chargeErr := chargeBudgets(ctx, nil, 1)
 	for range n {
 		if _, err = br.Exec(); err != nil {
 			break
@@ -368,6 +494,9 @@ func (tx *txState) begin(ctx context.Context) error {
 	}
 	if closeErr := br.Close(); err == nil {
 		err = closeErr
+	}
+	if err == nil {
+		err = chargeErr
 	}
 	return err
 }
@@ -384,9 +513,20 @@ func (tx *txState) end(ctx context.Context, err error) error {
 	return err
 }
 
-// finish commits, or rolls back when err is set, and releases the connection.
+// finish commits, or rolls back when err is set, and releases the connection. A read-only
+// transaction on a connection of keel's own pools ends without waiting (see unawaited).
 func (tx *txState) finish(ctx context.Context, err error) error {
 	if tx.conn == nil {
+		return err
+	}
+	if tx.begun && !tx.committed && tx.unawaited() {
+		sql := "ROLLBACK"
+		if err == nil {
+			sql = "COMMIT"
+			tx.commitTried, tx.committed = true, true
+		}
+		tx.db.endUnawaited(tx.pooled, sql)
+		tx.conn, tx.pooled = nil, nil
 		return err
 	}
 	defer func() {
@@ -410,6 +550,49 @@ func (tx *txState) finish(ctx context.Context, err error) error {
 	}
 	tx.committed = true
 	return nil
+}
+
+// unawaited reports whether the transaction's COMMIT or ROLLBACK is sent without waiting for its
+// reply: a read-only transaction keel began on a connection of its own pools, below SERIALIZABLE
+// (whose COMMIT can fail a serialization check), unless Config.AwaitReadCommit is set.
+func (tx *txState) unawaited() bool {
+	return tx.readOnly && tx.pooled != nil && !tx.joined && !tx.db.cfg.AwaitReadCommit &&
+		tx.level() != Serializable
+}
+
+// drainTimeout bounds how long a connection may take to answer a COMMIT or ROLLBACK keel did not
+// wait for; one that has not answered by then is closed.
+const drainTimeout = 30 * time.Second
+
+// endUnawaited sends sql, COMMIT or ROLLBACK, on conn and returns once it is written. A goroutine
+// reads the reply and then releases conn to its pool, which would destroy a connection still
+// awaiting a reply; a failed reply closes the connection instead. Close waits for these
+// goroutines. A connection already closed (a statement whose context ended) is released at once.
+// The reply is read under a context of its own, so the end of the caller's context
+// (a request that returned) does not cancel it.
+func (db *DB) endUnawaited(conn *pgxpool.Conn, sql string) {
+	if conn.Conn().IsClosed() {
+		conn.Release()
+		return
+	}
+	dctx, cancel := context.WithTimeout(context.Background(), drainTimeout)
+	reply := conn.Conn().PgConn().Exec(dctx, sql)
+	db.drains.Add(1)
+	go db.drain(conn, reply, cancel)
+}
+
+// drain reads the reply of an unawaited COMMIT or ROLLBACK and lets conn go.
+func (db *DB) drain(conn *pgxpool.Conn, reply *pgconn.MultiResultReader, cancel context.CancelFunc) {
+	defer db.drains.Done()
+	err := reply.Close()
+	cancel()
+	if err != nil {
+		db.drainFailures.Add(1)
+		cctx, ccancel := context.WithTimeout(context.Background(), time.Second)
+		_ = conn.Conn().Close(cctx)
+		ccancel()
+	}
+	conn.Release()
 }
 
 // commit sends COMMIT. A write transaction on a context marked with OnReplica reads the primary's

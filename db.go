@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/emoss08/keel/schema"
@@ -84,6 +85,35 @@ type Config struct {
 	// DataVersions turns on the per-tenant, per-table change counters keel maintains from its own
 	// write path.
 	DataVersions DataVersionsConfig
+	// Cache configures the result cache; nil turns it off.
+	Cache *CacheConfig
+
+	// ReadIsolation is the isolation level of explicit Read transactions that pass none of their
+	// own. Zero leaves it to the server's default (READ COMMITTED unless the server says
+	// otherwise); RepeatableRead gives every statement of a Read one snapshot. A ReplicaTx Read
+	// runs REPEATABLE READ in place of Serializable, which a hot standby refuses.
+	ReadIsolation Isolation
+	// AwaitReadCommit makes read-only transactions wait for the reply to their COMMIT or ROLLBACK,
+	// as writes do. By default keel sends it and returns, and a goroutine reads the reply before the
+	// connection goes back to the pool.
+	AwaitReadCommit bool
+	// DeadlineTimeouts makes every transaction keel begins, explicit or implicit, set
+	// statement_timeout to the time left before its context's deadline, in its BEGIN round trip,
+	// so the server stops a statement the caller no longer waits for even when the cancel request
+	// does not reach it. Statements outside a transaction rely on the context's cancellation alone.
+	DeadlineTimeouts bool
+	// TenantConcurrency bounds how many terminals and transactions of one tenant run at once on
+	// the DB; zero turns the bound off. Work past it waits for a slot or for its context. A
+	// transaction holds one slot from its start to its end and its statements take none; work
+	// started under a context that carries a slot of the same tenant (a Detached transaction, a
+	// write's hooks) shares it. System scopes and unscoped work take none. DB.TenantWaits counts
+	// the waits.
+	TenantConcurrency int
+
+	// LoadStrategy is how a read loads its to-many relations when the query does not choose
+	// (Query.LoadStrategy). The default, LoadPipelined, sends the root statement and every level in
+	// one round trip where every level can read one snapshot; LoadPerLevel sends a round trip per level.
+	LoadStrategy LoadStrategy
 }
 
 // PlanCache chooses how keel prepares statements.
@@ -138,6 +168,13 @@ type DB struct {
 	types    columnTypes
 	replicas *replicaSet
 	versions *versioner
+	cache    *resultCache
+	tenants  *tenantLimiter
+
+	// drains counts the goroutines reading the reply to a COMMIT or ROLLBACK keel did not wait
+	// for; drainFailures counts the connections closed because that reply failed.
+	drains        sync.WaitGroup
+	drainFailures atomic.Int64
 
 	tablesOnce   sync.Once
 	tablesByName map[string]*schema.Table
@@ -166,12 +203,21 @@ func Open(ctx context.Context, cfg Config) (*DB, error) {
 	if cfg.DataVersions.Interval <= 0 {
 		cfg.DataVersions.Interval = defaultVersionInterval
 	}
+	if cfg.ReadIsolation > Serializable {
+		return nil, errf("Config.ReadIsolation %d is not an isolation level", uint8(cfg.ReadIsolation))
+	}
+	if cfg.TenantConcurrency < 0 {
+		return nil, errf("Config.TenantConcurrency must not be negative")
+	}
 	cfg.configure(pc)
 	pool, err := pgxpool.NewWithConfig(ctx, pc)
 	if err != nil {
 		return nil, fmt.Errorf("keel: open pool: %w", err)
 	}
 	db := &DB{pool: pool, cfg: cfg}
+	if cfg.TenantConcurrency > 0 {
+		db.tenants = newTenantLimiter(cfg.TenantConcurrency)
+	}
 	if len(cfg.Replicas) > 0 {
 		if db.replicas, err = openReplicas(ctx, &db.cfg); err != nil {
 			pool.Close()
@@ -182,6 +228,10 @@ func Open(ctx context.Context, cfg Config) (*DB, error) {
 	db.prefetchConstraints(ctx)
 	if cfg.DataVersions.Enabled {
 		db.versions = startVersioner(db)
+	}
+	if err := db.openCache(ctx); err != nil {
+		db.Close()
+		return nil, err
 	}
 	return db, nil
 }
@@ -264,16 +314,19 @@ func (cfg *Config) configure(pc *pgxpool.Config) {
 	}
 }
 
-// Close stops the replica lag tracker, writes the pending data versions and closes every
-// connection, the replicas' included. Calls after the first do nothing.
+// Close stops the replica lag tracker, writes the pending data versions, waits for the replies to
+// read-only COMMITs keel did not wait for, and closes every connection, the replicas' included.
+// Calls after the first do nothing.
 func (db *DB) Close() {
 	db.closeOnce.Do(func() {
+		db.closeCache()
 		if db.replicas != nil {
 			db.replicas.stop()
 		}
 		if db.versions != nil {
 			db.versions.close()
 		}
+		db.drains.Wait()
 		if db.replicas != nil {
 			db.replicas.close()
 		}
@@ -284,6 +337,19 @@ func (db *DB) Close() {
 // TenantColumns returns Config.TenantColumns: the tenant columns, in the order the values of a
 // tenant (Config.Tenant) and of a tenant key (TenantKey) come in. The slice is a copy.
 func (db *DB) TenantColumns() []string { return slices.Clone(db.cfg.TenantColumns) }
+
+// TenantWaits returns how many terminals and transactions have waited for a tenant slot
+// (Config.TenantConcurrency) since Open.
+func (db *DB) TenantWaits() int64 {
+	if db.tenants == nil {
+		return 0
+	}
+	return db.tenants.waits.Load()
+}
+
+// ReadCommitFailures returns how many connections keel closed since Open because the reply to a
+// read-only COMMIT or ROLLBACK it did not wait for failed.
+func (db *DB) ReadCommitFailures() int64 { return db.drainFailures.Load() }
 
 // Pool returns the underlying pgx pool, for work keel does not cover (LISTEN, COPY of foreign
 // data). Statements sent through it bypass scope checks and hooks.

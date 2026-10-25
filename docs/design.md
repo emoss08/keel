@@ -525,7 +525,13 @@ v, err := keel.ReadValue(ctx, db, func(ctx context.Context) (T, error) { ... })
 - `keel.AfterCommit(ctx, fn)` runs `fn` after the transaction on the context commits, or at once
   outside one.
 - `keel.Retry(n)` retries serialization failures and deadlocks for a top-level transaction.
-  `keel.Serializable()` and `keel.RepeatableRead()` set the isolation level.
+  `keel.Isolation` levels (`ReadCommitted`, `RepeatableRead`, `Serializable`) are `TxOption`s
+  themselves (`TxOption` is an interface with an unexported method); `Config.ReadIsolation` is the
+  level of an explicit `Read` without one (zero: the server's default; on a `ReplicaTx`,
+  `Serializable` becomes `RepeatableRead`). Implicit transactions and `Write` keep the server's
+  default unless keel or an option sets one. BEGIN texts are precomputed per level and access mode
+  (`beginSQL`). `txState.level()` is the effective level and `snapshot()` reports `REPEATABLE READ`
+  or above; a `JoinTx` transaction reports zero.
 - `keel.Savepoint` runs a function inside a savepoint; an error rolls back to it and drops the
   `Committed` hooks and `AfterCommit` callbacks queued inside it. `keel.LockKey` and
   `keel.TryLockKey` take transaction-scoped advisory locks on string keys.
@@ -535,6 +541,67 @@ v, err := keel.ReadValue(ctx, db, func(ctx context.Context) (T, error) { ... })
   without a row). Outside a transaction they run on the primary, in an implicit transaction when
   `OnBegin` is set; inside a `Read` with `ReplicaTx` they run on its replica. Observers see them
   (`exec`, `query`); scope checks, interceptors, read filters, hooks and data versions do not apply.
+
+### Ending read-only transactions
+
+A read-only transaction keel began on a connection of its own pools ends without waiting for the
+reply to its `COMMIT` (or `ROLLBACK`): `finish` writes it with the connection's `PgConn().Exec`
+under a context of its own (`drainTimeout`, 30s), returns, and a goroutine counted in `DB.drains`
+reads the reply and then releases the connection. pgxpool destroys a connection that is busy or in
+a transaction on `Release`, so the release waits for the reply; a failed reply closes the
+connection (`DB.ReadCommitFailures`), and a connection pgx already closed is released at once.
+`Close` waits for the goroutines before closing the pools. The caller's context does not reach the
+reply: a request context cancelled after `Read` returns would otherwise cancel the drain and
+destroy the connection.
+
+Writes wait, as do `SERIALIZABLE` reads (their `COMMIT` can fail a serialization check that `Retry`
+must see), `JoinTx` transactions (keel does not own the connection) and every read under
+`Config.AwaitReadCommit`. A `COMMIT` that rides in the pipeline of an implicit transaction's last
+statements is read with them: Postgres flushes the statements' results only at the pipeline's
+`Sync`, after `COMMIT`, so not reading it saves nothing and would leave the pipeline open under the
+caller's context. `AfterCommit` callbacks run when the transaction returns.
+
+### Deadlines and statement_timeout
+
+With `Config.DeadlineTimeouts`, `queueBegin` adds `SELECT set_config('statement_timeout', $1,
+true)` with the milliseconds left before a deadline (at least 1): the deadline of `Read`'s or
+`Write`'s context for an explicit transaction (a statement's own shorter deadline would wrongly bind
+the later statements), of the beginning round trip's context for an implicit one, which carries
+`Query.Timeout`. The text is constant; the value is a parameter. Statements outside transactions
+are bounded by pgx's cancel request only, since a transaction-local setting outside a transaction
+does nothing and a session setting would outlive the statement on a pooled connection.
+
+### Tenant concurrency
+
+`Config.TenantConcurrency` (`tenantLimiter`, `tenantlimit.go`) bounds the runners and transactions
+of one tenant key (`TenantKeyOf` of the scope's values) per `DB`. The limiter is 64 shards, each a
+mutex and a map from key to a `tenantSlot` (holder count and a FIFO of one-element channels for
+waiters); a releasing holder hands its slot to the first waiter, and a slot with no holder and no
+waiter leaves the map, so the map's size is the number of tenants active now. A waiter whose context
+ends removes itself, or, if it was handed the slot in that instant, passes it on.
+
+- `runnerFor` takes a slot for a runner outside a transaction and `runner.close` gives it back after
+  ending the implicit transaction and before its `AfterCommit` callbacks; `runTx` takes one per
+  attempt of a top-level transaction and `txState.run` gives it back after ending it. Statements of
+  a transaction take none.
+- A held slot rides on the transaction's function context and on a write's hook context
+  (`slotKey`); work started under a context carrying a slot of the same key shares it rather than
+  wait (a `Detached` transaction, a hook's query), which would deadlock at a bound of one.
+- System scopes and unscoped work are exempt; `DB.TenantWaits` counts acquisitions that waited.
+
+### Budgets
+
+`keel.Budget(ctx, opts...)` puts a `*budget` on the context (chained to an enclosing one). The
+runner counts in `batch`, around `exchange` (the old batch body: `direct`, `send` and the replica
+retry, which reports two round trips), so every terminal is covered without per-terminal code; `COPY`
+and the `BEGIN` round trip of `txState.begin` count themselves. Before a round trip, `refuseBudgets`
+fails it when a budget without `OnExceeded` is already over a limit; after it, `chargeBudgets` adds
+the round trips, the statements and one count per distinct text of the round trip to every budget in
+the chain, under each budget's mutex. The round trip that crosses a limit returns a `*BudgetError`
+after its statements ran, or calls `OnExceeded` once. A call site is captured (`runtime.Callers`,
+the first frame outside package keel and outside packages whose name ends in `db`) only for a text
+already seen, at most once per round trip and 8 sites per text, so statements that never repeat cost
+a map update. A cache hit returns before the budget code and counts nothing.
 
 ### Joining another data layer's transaction
 
@@ -712,7 +779,7 @@ before it ships, from the statements the application really sends:
 
 `ErrNotFound`, `ErrNotSingular`, `ErrConflict` (`*ConflictError`), `ErrNoScope`,
 `ErrAllTenantsRequired`, `ErrSystemScopeRequired`, `ErrTenantMismatch`, `ErrUnbounded`,
-`ErrReadOnly`; Postgres helpers `IsUnique`, `IsForeignKey`, `IsCheck`, `IsExclusion`, `IsNotNull`,
+`ErrReadOnly`, `ErrBudgetExceeded` (`*BudgetError`); Postgres helpers `IsUnique`, `IsForeignKey`, `IsCheck`, `IsExclusion`, `IsNotNull`,
 `IsRetryable`, `Code`, `Constraint`.
 
 ## Migrations

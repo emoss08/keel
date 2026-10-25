@@ -148,7 +148,7 @@ func CommitPosition(ctx context.Context, db *DB) Position {
 // in it runs there. It picks the replica as OnReplica does, among those the lag tracker has seen
 // replay the context's commit position, falls back to the primary when none qualifies, and is
 // refused on a Write and with Serializable, which a hot standby does not run.
-func ReplicaTx() TxOption { return func(o *txOptions) { o.replica = true } }
+func ReplicaTx() TxOption { return txOptionFunc(func(o *txOptions) { o.replica = true }) }
 
 // Replicas returns the state of db's replicas, in Config.Replicas order.
 func (db *DB) Replicas() []ReplicaStats {

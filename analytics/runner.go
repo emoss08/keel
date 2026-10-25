@@ -340,7 +340,7 @@ func (r *Runner) attempt(ctx context.Context, req Request, comp *Compiled, timeo
 		opts = append(opts, keel.ReplicaTx())
 	}
 	if comp.Discovery != nil {
-		opts = append(opts, keel.RepeatableRead())
+		opts = append(opts, keel.RepeatableRead)
 	}
 	err := keel.Read(run, r.db, func(ctx context.Context) error {
 		if err := r.prepare(ctx, timeout, tag); err != nil {

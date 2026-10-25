@@ -120,6 +120,10 @@ the request context.
 | `Replicas` | `[]keel.ReplicaConfig` | streaming replicas (`DSN` or `Pool`, and a `Weight`) that reads marked with `keel.OnReplica` run on; see [Read replicas](#read-replicas) |
 | `MaxReplicaLag` | `time.Duration` | how far behind the primary a replica may be and still serve reads; defaults to 2s |
 | `DataVersions` | `keel.DataVersionsConfig` | `Enabled`, `Interval` (default 1s) and `OnError` of the per-tenant, per-table change counters; off by default; see [Data versions](#data-versions) |
+| `ReadIsolation` | `keel.Isolation` | the isolation level of explicit `Read` transactions that pass none: zero leaves the server's default (read committed), `keel.RepeatableRead` gives every statement of a `Read` one snapshot; see [Isolation](#isolation) |
+| `AwaitReadCommit` | `bool` | makes read-only transactions wait for the reply to their `COMMIT`, as writes do; see [Read-only transactions end without waiting](#read-only-transactions-end-without-waiting) |
+| `DeadlineTimeouts` | `bool` | every transaction keel begins sets `statement_timeout` to the time left before its context's deadline; see [Plans and timeouts](#plans-and-timeouts) |
+| `TenantConcurrency` | `int` | at most this many terminals and transactions of one tenant run at once; zero (the default) is no bound; see [Tenant concurrency](#tenant-concurrency) |
 
 `keel.TxInfo` tells `OnBegin` whether the transaction is `ReadOnly` and whether it is `Implicit`
 (opened by keel for a single terminal). A `keel.Statement` is `SQL` plus `Args`.
@@ -395,7 +399,7 @@ past the context's position, falls back to the primary, and is refused on a `Wri
 ```go
 err := keel.Read(ctx, db, func(ctx context.Context) error {
     return s.Where(s.Status.Eq(fleet.StatusDelivered)).Each(ctx, db, 1000, exportBatch)
-}, keel.ReplicaTx(), keel.RepeatableRead())
+}, keel.ReplicaTx(), keel.RepeatableRead)
 ```
 
 **Watching replicas.** `db.Replicas()` returns, per replica, its `Name` (`host:port/database`),
@@ -1667,6 +1671,17 @@ if errors.Is(err, context.DeadlineExceeded) {
 }
 ```
 
+pgx cancels a statement by sending a cancel request over a second connection, which can be lost or
+arrive late. With `Config.DeadlineTimeouts` the server enforces the deadline too: every
+transaction keel begins, explicit or implicit, sends
+`SELECT set_config('statement_timeout', $1, true)` in its `BEGIN` round trip, with the time left
+before the deadline (at least 1ms). An explicit transaction takes the deadline of the context given
+to `Read` or `Write`; an implicit one the deadline of its terminal's context, `Timeout` included. A
+request context with a deadline is therefore bounded on the server for every terminal when
+`OnBegin` is set, since every terminal then runs in an implicit transaction. A statement outside any
+transaction relies on the cancel request alone: `set_config(…, true)` lasts only for a
+transaction. A statement the server stops fails with SQLSTATE `57014` (`query_canceled`).
+
 ### Debugging with ToSQL
 
 `ToSQL(ctx, db)` renders the query's main statement as it would run under `ctx`'s scope, with its
@@ -1974,7 +1989,7 @@ err := s.AllTenants().Where(s.Hazmat.IsTrue()).Each(ctx, db, 500,
 ```
 
 Each batch is a separate statement; rows written while `Each` runs may or may not be seen. Run it
-inside `keel.Read(…, keel.RepeatableRead())` to read one snapshot, at the cost of holding a
+inside `keel.Read(…, keel.RepeatableRead)` to read one snapshot, at the cost of holding a
 connection for the whole run.
 
 ### Offsets
@@ -2739,7 +2754,7 @@ id, err := keel.WriteValue(ctx, db, func(ctx context.Context) (ids.ID, error) {
         return "", err
     }
     return sh.ID, nil
-}, keel.Serializable(), keel.Retry(3))
+}, keel.Serializable, keel.Retry(3))
 ```
 
 How transactions run:
@@ -2750,6 +2765,8 @@ How transactions run:
   one goroutine at a time.
 - A panic in the function rolls the transaction back and returns its connection to the pool before
   it goes on up the stack, so a recovered panic leaks nothing.
+- A `Read` returns as soon as its `COMMIT` is written; see
+  [Read-only transactions end without waiting](#read-only-transactions-end-without-waiting).
 - A `Read` or `Write` inside a `Write` joins it; a `Read` inside a `Read` joins it; a `Write` inside
   a `Read`, and any write inside a `Read`, returns `ErrReadOnly`. Options of a joined call are
   ignored. `keel.Detached()` starts a transaction of its own instead; see
@@ -2777,8 +2794,7 @@ statement and `COMMIT` in one round trip; with relation loads, `BEGIN` goes with
 |---|---|
 | `keel.LockTimeout(d)` | any statement of the transaction waits at most `d` for a lock (`set_config('lock_timeout', …, true)`, sent with `BEGIN`) |
 | `keel.Setting(name, value)` | sets a run-time parameter for the transaction (`set_config(name, value, true)`, sent with `BEGIN`), such as `hnsw.ef_search`; a `Read` or `Write` that joins a transaction sets it for `fn` and restores the joined transaction's value after |
-| `keel.Serializable()` | `ISOLATION LEVEL SERIALIZABLE` |
-| `keel.RepeatableRead()` | `ISOLATION LEVEL REPEATABLE READ` |
+| `keel.ReadCommitted`, `keel.RepeatableRead`, `keel.Serializable` | `ISOLATION LEVEL …`; the levels are options themselves (constants of `keel.Isolation`), and a `Read` without one runs at `Config.ReadIsolation` |
 | `keel.Retry(n)` | reruns a top-level transaction up to `n` more times after a serialization failure or deadlock (`keel.IsRetryable`); `fn` must be safe to repeat |
 | `keel.Detached()` | begins a transaction of its own even inside another; see [Detached transactions](#detached-transactions) |
 
@@ -2791,11 +2807,54 @@ err := keel.Read(ctx, db, func(ctx context.Context) error {
     }
     late, err = s.Where(s.Status.Eq(fleet.StatusInTransit), s.Priority.Gte(2)).Count(ctx, db)
     return err
-}, keel.RepeatableRead())
+}, keel.RepeatableRead)
 ```
 
 `Retry` starts each attempt as a new transaction; `AfterCommit` functions of failed attempts are
 dropped. Nested calls never retry on their own.
+
+### Isolation
+
+`keel.ReadCommitted`, `keel.RepeatableRead` and `keel.Serializable` are constants of
+`keel.Isolation` and options of `Read` and `Write`. `Config.ReadIsolation` sets the level of every
+explicit `Read` that passes none; `Write` and the implicit transactions of single terminals keep the
+server's default unless an option says otherwise.
+
+```go
+cfg.ReadIsolation = keel.RepeatableRead // every Read reads one snapshot
+
+err := keel.Read(ctx, db, func(ctx context.Context) error { … }, keel.ReadCommitted) // this one does not
+```
+
+A read-only `REPEATABLE READ` transaction gives every statement the snapshot its first statement
+took, so the counts and lists of one request agree with each other, and pipelined relation loads
+read parents and children from one state. It takes no locks and cannot fail a serialization check,
+so it costs nothing over `READ COMMITTED` but a snapshot held for the transaction's length. A
+`ReplicaTx` read runs `REPEATABLE READ` where `ReadIsolation` says `Serializable`, which a hot
+standby refuses; an explicit `keel.Serializable` with `ReplicaTx` is refused.
+
+### Read-only transactions end without waiting
+
+When the function of a `Read` returns, keel writes `COMMIT` (`ROLLBACK` when it returned an error)
+and returns at once. A read-only transaction has nothing to make durable, so the caller has nothing
+to wait for. A goroutine reads the reply and only then releases the connection to the pool, which
+would destroy a connection still owed a reply; the next transaction that needs the connection waits
+for that, not the caller. A reply that fails (a broken connection) closes the connection instead of
+returning it, and `db.ReadCommitFailures()` counts those. The reply is read under a context of its
+own, so cancelling the caller's context after the `Read` returns, as an HTTP server does when the
+handler finishes, changes nothing. `db.Close` waits for the replies still in flight.
+
+The same holds for an implicit read-only transaction whose `COMMIT` would cost a round trip of its
+own (relation loads whose last level had no rows to load). When `COMMIT` rides in the round trip of
+the last statements, as it does for most terminals, keel reads it with them: Postgres sends the
+statements' results only once it has processed the whole pipeline, `COMMIT` included, so there is
+nothing to gain.
+
+Writes always wait, and so do `Serializable` reads, whose `COMMIT` can report a serialization
+failure that `Retry` must see, transactions joined with `JoinTx`, whose owner commits them, and every
+read when `Config.AwaitReadCommit` is set. `AfterCommit` callbacks of a read run when the `Read`
+returns, as before. An advisory lock a `Read` took (`LockKey`) is released when the server processes
+the `COMMIT`, a moment after `Read` returns.
 
 ### Detached transactions
 
@@ -2972,6 +3031,36 @@ err = fleetdb.Customers.Create(requestContext(), db,
     &fleet.Customer{OrganizationID: "org_other", BusinessUnitID: "bu_other", Code: "X", Name: "X"}) // ErrTenantMismatch
 plant, err := fleetdb.Plants.Get(context.Background(), db, "DAL1")     // no scope needed
 ```
+
+### Tenant concurrency
+
+One tenant's burst (an import, a dashboard of twenty widgets, a runaway client) can take every
+connection of the pool and stall all other tenants. `Config.TenantConcurrency` bounds how much of the
+`DB` one tenant uses at once:
+
+```go
+cfg.TenantConcurrency = 8 // at most 8 terminals or transactions per tenant at a time
+```
+
+- Each terminal outside a transaction and each top-level `Read` or `Write` takes a slot of its
+  context's tenant (the values of `Config.Tenant`, as `TenantKey` writes them) before it acquires a
+  connection, and gives it back when it ends. Work past the bound waits, first come first served,
+  until a slot frees or its context ends; the error then wraps the context's error.
+- A transaction holds one slot from its start to its end; its statements take none. Work started
+  under a context that carries a slot of the same tenant shares it: a `Detached` transaction inside
+  the tenant's transaction, and the queries a write's hooks run outside a transaction. Without that,
+  a bound of 1 would deadlock on them.
+- System scopes and unscoped work take no slot.
+- The slot is given back before `AfterCommit` callbacks and `Committed` hooks run, so work they start
+  takes a slot of its own.
+- `db.TenantWaits()` counts the terminals and transactions that had to wait: a rising count names a
+  bound too low or a tenant that needs looking at.
+
+Slots live in a map split into 64 independently locked shards, holding only the tenants with work
+running or waiting, so its size follows the number of active tenants, not of all tenants. Work
+started under a fresh context while the tenant's transaction is open (a goroutine that drops the
+transaction from its context) needs a slot of its own: keep the bound above the nesting the
+application does.
 
 ## Hooks, interceptors and observers
 
@@ -3220,6 +3309,59 @@ keel INSERT customers             tx     0.4ms  ERROR       customerrepository/c
 own. Values are the data itself, so set `ObserveArgs` only where a log may hold it; production
 logging belongs in an observer that writes structured fields to the application's logger.
 
+### Budgets and N+1 detection
+
+`keel.Budget(ctx, opts...)` returns a context that counts the work keel does under it: round trips,
+statements and statement texts sent again. Put one on a request's context in middleware and every
+terminal, transaction and goroutine of the request counts against it.
+
+```go
+ctx = keel.Budget(ctx, keel.MaxRoundTrips(20), keel.MaxRepeats(3))
+rows, err := s.Where(…).Limit(50).List(ctx, db)
+for _, sh := range rows {
+    c, err := fleetdb.Customers.Get(ctx, db, sh.CustomerID) // the fourth Get fails
+    …
+}
+```
+
+| Option | Limit |
+|---|---|
+| `keel.MaxRoundTrips(n)` | at most `n` round trips; `MaxRoundTrips(0)` asserts that a path (a cache hit) touches no database |
+| `keel.MaxStatements(n)` | at most `n` statements |
+| `keel.MaxRepeats(n)` | no statement text sent in more than `n` round trips: the shape of an N+1 read, one query per row of an earlier result |
+| `keel.OnExceeded(fn)` | call `fn(ctx, report)` once, when the first limit is crossed, instead of failing |
+
+Without `OnExceeded`, the terminal whose round trip crosses a limit returns a `*keel.BudgetError`
+(`errors.Is(err, keel.ErrBudgetExceeded)`, with `Limit`, `Max` and the `Report`) after its
+statements ran, and every later round trip under the budget is refused before it is sent. A write
+outside a transaction has committed when it returns the error; inside one, returning the error rolls
+the transaction back. With `OnExceeded` the work goes on: log the report in production, fail the
+test in development.
+
+`keel.BudgetReportFrom(ctx)` returns the innermost budget's account, for a log line or a metric at
+the end of the request:
+
+```go
+if r, ok := keel.BudgetReportFrom(ctx); ok && len(r.Repeats) > 0 {
+    for _, rep := range r.Repeats {
+        log.Printf("%d× %s at %v", rep.Count, rep.SQL, rep.CallSites)
+    }
+}
+```
+
+- `RoundTrips` counts the round trips that carried statements (a replica read rerun on the primary
+  counts twice), plus the `BEGIN` keel sends on its own before a `COPY`; the `COMMIT` that ends a
+  transaction is not counted.
+- `Statements` counts what observers see: queries, relation loads, writes, `COPY`, savepoints,
+  advisory locks and raw SQL; not `BEGIN`, the `OnBegin` statements or `COMMIT`.
+- `Repeats` lists the texts sent in more than one round trip, the most repeated first. A text counts
+  once per round trip, so the chunks of one `CreateMany` or the items of one `Batch` that share a
+  text are not repeats. `CallSites` holds the distinct `file:line` places, outside keel and the
+  generated `…db` packages, that sent it again (up to 8). keel captures a stack only when a text
+  repeats, so the statements that do not cost nothing beyond a map lookup.
+- A budget inside another counts against both; one budget is safe to share between goroutines.
+- A result the cache serves sends nothing and counts nothing.
+
 ## Errors
 
 | Error | Returned by |
@@ -3230,6 +3372,7 @@ logging belongs in an observer that writes structured fields to the application'
 | `keel.ErrNoScope`, `ErrAllTenantsRequired`, `ErrSystemScopeRequired`, `ErrTenantMismatch` | scope violations; see [Scope errors](#scope-errors) |
 | `keel.ErrUnbounded` | `List` without `Limit` |
 | `keel.ErrReadOnly` | a write, a `Write` or a `Savepoint` inside a `Read` |
+| `keel.ErrBudgetExceeded` | matched by a `*keel.BudgetError`: the terminal whose round trip took a `keel.Budget` past a limit, and every later round trip under it; see [Budgets and N+1 detection](#budgets-and-n1-detection) |
 | `keel.ErrScopeMismatch` | a statement, `Read`, `Write`, `Savepoint` or `LockKey` that would join the context's transaction under another scope than the one it began with; use `keel.Detached()` |
 | `migrate.ErrChanged` | `Up` and `Plan` when an applied migration's file changed |
 | `migrate.ErrOutOfOrder` | `Up` and `Plan` when a pending migration is older than the newest applied one |

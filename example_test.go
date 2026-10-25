@@ -1008,7 +1008,7 @@ func ExampleRead() {
 		}
 		late, err = s.Where(s.Status.Eq(fleet.StatusInTransit), s.Priority.Gte(2)).Count(ctx, db)
 		return err
-	}, keel.RepeatableRead())
+	}, keel.RepeatableRead)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -1041,7 +1041,7 @@ func ExampleWriteValue() {
 			return "", err
 		}
 		return sh.ID, nil
-	}, keel.Serializable(), keel.Retry(3))
+	}, keel.Serializable, keel.Retry(3))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -1460,7 +1460,7 @@ func ExampleReplicaTx() {
 				}
 				return nil
 			})
-	}, keel.ReplicaTx(), keel.RepeatableRead())
+	}, keel.ReplicaTx(), keel.RepeatableRead)
 	if err != nil {
 		log.Fatal(err)
 	}

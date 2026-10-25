@@ -94,7 +94,8 @@ func TestImplicitTransactionIsOneRoundTrip(t *testing.T) {
 
 	rec.reset()
 	_ = must(s.Load(s.Customer(), s.Moves().Stops()).All(w.ctx, d))(t)
-	eq(t, rec.trips(), 3)
+	eq(t, rec.trips(), 1)
+	eq(t, rec.statements(), 3)
 }
 
 func TestEmptyTransactionCostsNothing(t *testing.T) {

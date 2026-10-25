@@ -399,12 +399,16 @@ type renderedSQL struct {
 
 // hookCtx returns the context a write's hooks run with: ctx carrying the runner's implicit
 // transaction, so a hook's own statements through keel (Exec, reads, writes) join the write and
-// roll back with it, or ctx itself when the runner owns no transaction.
+// roll back with it; else, when the runner holds a tenant slot, ctx carrying the slot, so the
+// hook's statements share it rather than wait for a second one; else ctx itself.
 func (r *runner) hookCtx(ctx context.Context) context.Context {
-	if !r.own || r.tx == nil {
-		return ctx
+	if r.own && r.tx != nil {
+		return context.WithValue(ctx, txKey{}, r.tx)
 	}
-	return context.WithValue(ctx, txKey{}, r.tx)
+	if r.slot != nil {
+		return context.WithValue(ctx, slotKey{}, r.slot)
+	}
+	return ctx
 }
 
 // writeRunner returns the runner of a write. With tx, set when the write may run AfterWrite hooks,

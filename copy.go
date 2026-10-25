@@ -56,6 +56,9 @@ func (db *DB) copyRows(ctx context.Context, t *schema.Table, rows []unsafe.Point
 			}
 		}
 	}
+	if err := refuseBudgets(ctx); err != nil {
+		return 0, run.close(ctx, err)
+	}
 	conn, err := run.started(ctx)
 	if err != nil {
 		return 0, run.close(ctx, err)
@@ -73,6 +76,9 @@ func (db *DB) copyRows(ctx context.Context, t *schema.Table, rows []unsafe.Point
 	n, err := conn.CopyFrom(qctx, pgx.Identifier{t.Name}, names, src)
 	s.tag = pgconn.NewCommandTag("COPY " + strconv.FormatInt(n, 10))
 	err = db.endEvents(events, stmts, time.Since(start), err)
+	if berr := chargeBudgets(ctx, stmts, 1); err == nil {
+		err = berr
+	}
 	if err == nil {
 		err = db.afterWrite(ctx, run, th, OpCreate, rows, nil, nil)
 	}

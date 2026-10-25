@@ -179,7 +179,7 @@ func TestReplicaTx(t *testing.T) {
 			return fmt.Errorf("a ReplicaTx read ran on the primary")
 		}
 		return nil
-	}, keel.ReplicaTx(), keel.RepeatableRead()))
+	}, keel.ReplicaTx(), keel.RepeatableRead))
 	if !onReplica(t, rec) {
 		t.Fatal("ReplicaTx statements ran on the primary")
 	}
@@ -410,7 +410,7 @@ func TestReplicaTxOptions(t *testing.T) {
 		t.Fatal("Write accepted ReplicaTx")
 	}
 	if err := keel.Read(ctx, d, func(context.Context) error { return nil },
-		keel.ReplicaTx(), keel.Serializable()); err == nil {
+		keel.ReplicaTx(), keel.Serializable); err == nil {
 		t.Fatal("ReplicaTx accepted Serializable")
 	}
 	ok(t, keel.Read(ctx, d, func(context.Context) error { return nil }, keel.ReplicaTx()))
