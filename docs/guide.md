@@ -398,7 +398,7 @@ cacheKey := fmt.Sprintf("open-shipments:%s:%d:%d", tenant, versions["shipments"]
 How versions move:
 
 - Every write terminal records the (tenant, table) pairs it changed: `Create`, `CreateMany`,
-  `Copy`, `Save`, `DeleteRow`, `Upsert`, `CreateOrSkip`, `InsertFrom`, bulk `Update` and `Delete`.
+  `Copy`, `Save`, `DeleteRow`, `Upsert`, `CreateOrSkip`, `InsertFrom`, `UpsertFrom`, bulk `Update` and `Delete`.
   Inside a transaction the pairs wait for the commit, and a rollback drops them; outside one they
   are handed over after the statement.
 - A goroutine per `DB` writes the pairs every `Interval`, at most once per pair, in one
@@ -2531,12 +2531,27 @@ scope and must not be listed; under a system scope, list and pick them.
 ```go
 tg, c := fleetdb.Tags, fleetdb.Customers
 n, err := tg.InsertFrom(ctx, db,
-    c.Pick(keel.Raw("'tag_' || ?", c.ID), c.Name).Where(c.Email.IsNotNull()),
+    c.Pick(keel.DynConst("tag_").Concat(c.ID), c.Name).Where(c.Email.IsNotNull()),
     tg.ID, tg.Name)
 ```
 
 `InsertFrom` does not fill `autoid`, `autocreate` or `autoupdate` columns and runs no hooks: pick
 those values in the query.
+
+`UpsertFrom` is `InsertFrom` with a conflict clause, `INSERT INTO t AS alias (cols) SELECT … ON
+CONFLICT …`, for rollups that fold a query's rows into a table keyed by a unique index. It takes the
+same `keel.OnConflict(...)` an `Upsert` takes. Without `Update`, `Set` or `DoNothing`, a conflicting
+row takes the listed columns that are updatable; the `autoupdate` column of an updated row is
+stamped with the statement's time unless `Set` assigns it, and the version is incremented. It
+returns the rows inserted or updated, and runs no hooks.
+
+```go
+d, l := usagedb.Daily, usagedb.Ledger
+n, err := d.UpsertFrom(ctx, db,
+    l.Pick(l.Provider, l.Endpoint, keel.Count(), l.Units.Sum()).Group(l.Provider, l.Endpoint),
+    keel.OnConflict(d.OrganizationID, d.BusinessUnitID, d.Provider, d.Endpoint),
+    d.Provider, d.Endpoint, d.Calls, d.Units)
+```
 
 ### What is read back
 
@@ -2903,7 +2918,7 @@ the rows written.
 | `DeleteRow` | `BeforeDelete` | delete | delete, with `Old` |
 | `Query.Update` | none | none | update per row, with `Old` |
 | `Query.Delete` | none | none | delete per row, with `Old` |
-| `InsertFrom` | none | none | none |
+| `InsertFrom`, `UpsertFrom` | none | none | none |
 
 On inserts, keel fills the `autoid`, tenant and timestamp columns before the hooks run, so hooks see
 them. `AfterLoad` runs after reads.

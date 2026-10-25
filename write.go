@@ -63,6 +63,7 @@ type Conflict struct {
 	update  []Col
 	set     []Assignment
 	nothing bool
+	stamp   any
 }
 
 // OnConflict names what an upsert conflicts on, as a unique index declares it: columns of the
@@ -100,6 +101,34 @@ func (c Conflict) Update(cols ...Column) Conflict {
 // autoupdate column takes the proposed row's stamp and the version column is incremented.
 func (c Conflict) Set(sets ...Assignment) Conflict {
 	c.set = append(slices.Clip(c.set), sets...)
+	return c
+}
+
+// forInsertFrom completes the clause of an UpsertFrom into listed: without Update, Set or
+// DoNothing a conflicting row takes the listed updatable columns, and the autoupdate column takes
+// now's stamp since the source rows carry none. It returns what check returns.
+func (c *Conflict) forInsertFrom(ref *Ref, listed []int32, now time.Time) ([]int32, error) {
+	t := ref.Table
+	if !c.nothing && len(c.update) == 0 && len(c.set) == 0 {
+		for _, ci := range listed {
+			if slices.Contains(t.Update, ci) {
+				c.update = append(c.update, Col{Ref: ref, Index: ci})
+			}
+		}
+		if len(c.update) == 0 {
+			return nil, errf("UpsertFrom lists no updatable column of %s for a conflicting row; "+
+				"use Set or DoNothing", t.Name)
+		}
+	}
+	if t.AutoUpdate >= 0 {
+		c.stamp = stampValue(t.Columns[t.AutoUpdate].Kind, now)
+	}
+	return c.check(ref)
+}
+
+// DoNothing skips a conflicting row instead of updating it: ON CONFLICT … DO NOTHING.
+func (c Conflict) DoNothing() Conflict {
+	c.nothing = true
 	return c
 }
 
@@ -201,6 +230,11 @@ func (c *Conflict) write(r *render, ref *Ref, changed []int32) {
 			a.e(r)
 			continue
 		}
+		if ci == t.AutoUpdate && c.stamp != nil {
+			r.s(" = ")
+			r.arg(c.stamp)
+			continue
+		}
 		r.s(" = EXCLUDED.")
 		r.s(q)
 	}
@@ -279,9 +313,7 @@ func (h Handle[T]) CreateOrSkip(ctx context.Context, db *DB, rows []*T, targets 
 	for i, r := range rows {
 		ps[i] = unsafe.Pointer(r)
 	}
-	c := OnConflict(targets...)
-	c.nothing = true
-	ins, err := db.upsert(ctx, h.Ref, ps, c)
+	ins, err := db.upsert(ctx, h.Ref, ps, OnConflict(targets...).DoNothing())
 	var n int64
 	for _, b := range ins {
 		if b {
@@ -297,7 +329,19 @@ func (h Handle[T]) CreateOrSkip(ctx context.Context, db *DB, rows []*T, targets 
 func (h Handle[T]) InsertFrom(ctx context.Context, db *DB, src subquery,
 	cols ...Column,
 ) (int64, error) {
-	return db.insertFrom(ctx, h.Ref, src, cols)
+	return db.insertFrom(ctx, h.Ref, src, cols, nil)
+}
+
+// UpsertFrom inserts the rows of src into cols, as InsertFrom does, and resolves rows that
+// conflict with c: INSERT INTO t AS alias (cols) SELECT … ON CONFLICT … DO UPDATE SET …. Without
+// Update, Set or DoNothing a conflicting row takes the listed columns that are updatable. The
+// autoupdate column of an updated row is stamped with the statement's time unless Set assigns it,
+// and the version column is incremented. It returns the number of rows inserted or updated; hooks
+// do not run, as for InsertFrom.
+func (h Handle[T]) UpsertFrom(ctx context.Context, db *DB, src subquery, c Conflict,
+	cols ...Column,
+) (int64, error) {
+	return db.insertFrom(ctx, h.Ref, src, cols, &c)
 }
 
 // hookCtx returns the context a write's hooks run with: ctx carrying the runner's implicit
@@ -1069,7 +1113,7 @@ func (db *DB) deleteRow(ctx context.Context, ref *Ref, row unsafe.Pointer) error
 }
 
 func (db *DB) insertFrom(ctx context.Context, ref *Ref, src subquery,
-	cols []Column,
+	cols []Column, conflict *Conflict,
 ) (int64, error) {
 	t := ref.Table
 	if len(cols) == 0 {
@@ -1106,8 +1150,18 @@ func (db *DB) insertFrom(ctx context.Context, ref *Ref, src subquery,
 		target = append(target, t.Tenant...)
 		tenantCols = len(t.Tenant)
 	}
+	var changed []int32
+	if conflict != nil {
+		if changed, err = conflict.forInsertFrom(ref, target[:len(target)-tenantCols], db.now()); err != nil {
+			return 0, run.close(ctx, err)
+		}
+	}
 	r.s("INSERT INTO ")
 	r.s(t.Quoted)
+	if conflict != nil {
+		r.s(" AS ")
+		r.s(t.Alias)
+	}
 	r.s(" (")
 	for i, c := range target {
 		if i > 0 {
@@ -1131,6 +1185,9 @@ func (db *DB) insertFrom(ctx context.Context, ref *Ref, src subquery,
 		r.s(") s")
 	default:
 		src.writeSubquery(r, false)
+	}
+	if conflict != nil {
+		conflict.write(r, ref, changed)
 	}
 	if r.err != nil {
 		return 0, run.close(ctx, r.err)
