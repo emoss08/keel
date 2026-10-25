@@ -175,9 +175,9 @@ func (r *runner) batch(ctx context.Context, stmts []*stmt, last bool) error {
 		return err
 	}
 	if len(stmts) == 1 && guard == 0 && (r.tx == nil || r.tx.begun) && !(r.own && last) && !custom {
-		return r.db.constraintErr(r.direct(ctx, conn, stmts[0]))
+		return r.direct(ctx, conn, stmts[0])
 	}
-	events, qctx := r.db.startEvents(ctx, r.replica(), stmts)
+	events, qctx := r.db.startEvents(ctx, r.replica(), r.explicit(), stmts)
 	start := time.Now()
 	err = r.send(qctx, conn, stmts, last, custom, guard)
 	if err == errReplicaBehind {
@@ -187,8 +187,12 @@ func (r *runner) batch(ctx context.Context, stmts []*stmt, last bool) error {
 			err = r.send(qctx, conn, stmts, last, custom, 0)
 		}
 	}
-	r.db.endEvents(events, stmts, time.Since(start), err)
-	return r.db.constraintErr(err)
+	return r.db.endEvents(events, stmts, time.Since(start), err)
+}
+
+// explicit reports whether the runner runs inside a transaction its caller opened.
+func (r *runner) explicit() bool {
+	return r.tx != nil && !r.tx.implicit
 }
 
 // errReplicaBehind is the error of a guarded round trip on a replica that had not replayed the
@@ -356,7 +360,7 @@ func scanRows(rows pgx.Rows, s *stmt) error {
 // lone statement does not need.
 func (r *runner) direct(ctx context.Context, conn pgConn, s *stmt) error {
 	stmts := []*stmt{s}
-	events, qctx := r.db.startEvents(ctx, r.replica(), stmts)
+	events, qctx := r.db.startEvents(ctx, r.replica(), r.explicit(), stmts)
 	start := time.Now()
 	var err error
 	if s.scan == nil {
@@ -368,8 +372,7 @@ func (r *runner) direct(ctx context.Context, conn pgConn, s *stmt) error {
 			err = scanRows(rows, s)
 		}
 	}
-	r.db.endEvents(events, stmts, time.Since(start), err)
-	return err
+	return r.db.endEvents(events, stmts, time.Since(start), err)
 }
 
 // one sends a single statement.

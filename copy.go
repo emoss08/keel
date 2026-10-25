@@ -67,12 +67,11 @@ func (db *DB) copyRows(ctx context.Context, t *schema.Table, rows []unsafe.Point
 	stmts := []*stmt{s}
 	src := &copySource{t: t, rows: rows, vals: make([]any, len(t.Insert))}
 	run.touchRows(t, rows)
-	events, qctx := db.startEvents(ctx, nil, stmts)
+	events, qctx := db.startEvents(ctx, nil, run.explicit(), stmts)
 	start := time.Now()
 	n, err := conn.CopyFrom(qctx, pgx.Identifier{t.Name}, names, src)
 	s.tag = pgconn.NewCommandTag("COPY " + strconv.FormatInt(n, 10))
-	db.endEvents(events, stmts, time.Since(start), err)
-	err = db.constraintErr(err)
+	err = db.endEvents(events, stmts, time.Since(start), err)
 	if err == nil {
 		err = db.afterWrite(ctx, run, th, OpCreate, rows, nil, nil)
 	}

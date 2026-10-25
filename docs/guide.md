@@ -109,7 +109,8 @@ the request context.
 | `OnBegin` | `func(ctx, keel.TxInfo) ([]keel.Statement, error)` | statements sent at the start of every transaction, explicit or implicit; when set, every terminal outside a transaction runs in an implicit one |
 | `NewID` | `func(prefix string) string` | new primary keys for `autoid` columns; a write that needs one fails without it |
 | `Now` | `func() time.Time` | the time stamped into `autocreate` and `autoupdate` columns; defaults to `time.Now` |
-| `Observers` | `[]keel.Observer` | see every statement: tracing, metrics, slow-query logs |
+| `Observers` | `[]keel.Observer` | see every statement: tracing, metrics, slow-query logs, [the query log](#query-log) |
+| `ObserveArgs` | `bool` | hands observers each statement's bound values (`QueryEvent.Values`); for development logs only |
 | `AfterConnect` | `func(ctx, *pgx.Conn) error` | runs on every new connection after keel registers its types; register codecs here |
 | `LoadTypes` | `[]string` | user-defined types (domains, composites) and their array types to register on every connection |
 | `SkipEnums` | `bool` | stops keel registering every enum type of the database on each new connection |
@@ -3013,10 +3014,12 @@ func (l slowQueryLog) AfterQuery(_ context.Context, e *keel.QueryEvent) {
 | `Table` | the statement's table |
 | `SQL` | the statement text, which never contains values |
 | `Args` | the number of bound arguments |
+| `Values` | the bound arguments, only when `Config.ObserveArgs` is set |
 | `Replica` | the replica the statement ran on (`ReplicaStats.Name`); empty for the primary |
+| `Tx` | the statement ran in an explicit transaction (`Write`, `Read`, `Tx`), not an implicit one |
 | `Start`, `Duration` | when the round trip started and how long it took; statements sent in one round trip share both |
 | `Rows` | rows affected or returned |
-| `Err` | the error of the round trip |
+| `Err` | the error the terminal returns: a constraint violation is already a `*keel.ConstraintError`, and a missing row is `keel.ErrNotFound` |
 
 For each statement keel calls every observer's `BeforeQuery` before the round trip, in order: the
 first gets the terminal's context, each later one the context the previous one returned. The
@@ -3058,6 +3061,48 @@ func (tracingObserver) AfterQuery(ctx context.Context, e *keel.QueryEvent) {
 
 The `*QueryEvent` is the same pointer in both calls. `BEGIN`, `COMMIT`, `OnBegin` statements and
 plan-mode switches are not reported.
+
+### Query log
+
+`keel/keellog` prints statements for a developer reading a terminal: a header line per statement
+(operation, table, `tx` inside an explicit transaction, duration, rows or the outcome, and the file
+and line that issued it), then the SQL broken before its clauses, with the bound values written in
+when `Config.ObserveArgs` is set.
+
+```go
+db, err := keel.Open(ctx, keel.Config{
+    DSN:         dsn,
+    ObserveArgs: true,
+    Observers:   []keel.Observer{keellog.New(keellog.Options{Mode: keellog.All})},
+})
+```
+
+```text
+keel SELECT shipments                    2.3ms  25 rows     shipmentrepository/list.go:142
+     SELECT s.id, s.pro_number, s.status
+     FROM shipments s
+     WHERE s.organization_id = 'org_01J8…' AND s.status = ANY('{New,InTransit}')
+     ORDER BY s.created_at DESC LIMIT 25
+keel SELECT workers                      0.3ms  not found   workerrepository/get.go:40
+keel INSERT customers             tx     0.4ms  ERROR       customerrepository/create.go:51
+     INSERT INTO customers (id, code, name)
+     VALUES ('cus_01J…', 'ACME', 'Acme')
+     23505 unique violation uq_customers_code → code
+```
+
+| `keellog.Options` field | Meaning |
+|---|---|
+| `Mode` | `keellog.Errors` (the default) prints failed and slow statements; `keellog.All` prints every one. `ParseMode` reads `"errors"` or `"all"` |
+| `Slow` | the duration from which a statement is marked slow and printed in `Errors` mode; defaults to 100ms |
+| `Out` | defaults to `os.Stderr` |
+| `Color` | ANSI colors; defaults to on when `Out` is a terminal and `NO_COLOR` is unset |
+| `Skip` | function name prefixes never reported as the caller, besides keel's own: a repository helper every query passes through |
+| `MaxValue`, `MaxElems`, `MaxSQL` | how much of a bound string (64), a bound slice (8) and the SQL (4000) is printed |
+
+`keel.ErrNotFound` is an outcome, not a failure: it is printed dim in `All` mode and never in
+`Errors` mode. `keellog.Format` and `keellog.Inline` are the formatter and the value writer on their
+own. Values are the data itself, so set `ObserveArgs` only where a log may hold it; production
+logging belongs in an observer that writes structured fields to the application's logger.
 
 ## Errors
 

@@ -149,11 +149,11 @@ func ExecAll(ctx context.Context, db *DB, sql string, args ...any) (int64, error
 // execOn runs a statement on a pool, the primary's when rep is nil, for its observers.
 func (db *DB) execOn(ctx context.Context, pool *pgxpool.Pool, rep *replica, sql string, args []any) (int64, error) {
 	s := &stmt{sql: sql, args: args, op: "exec"}
-	events, qctx := db.startEvents(ctx, rep, []*stmt{s})
+	events, qctx := db.startEvents(ctx, rep, false, []*stmt{s})
 	start := time.Now()
 	tag, err := pool.Exec(qctx, sql, args...)
 	s.tag = tag
-	db.endEvents(events, []*stmt{s}, time.Since(start), err)
+	err = db.endEvents(events, []*stmt{s}, time.Since(start), err)
 	if err != nil && rep != nil {
 		err = fmt.Errorf("keel: replica %s: %w", rep.name, err)
 	}

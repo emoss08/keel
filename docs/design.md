@@ -654,8 +654,10 @@ deletes) the previous values of the columns hooks declared with `Needs` are read
 statement through `RETURNING old.…` (PostgreSQL 18) into `Mutation.Old`. Hooks are resolved per
 table when registered; a table without hooks pays nothing.
 
-Observers receive the statement text (never values), the number of bound arguments, the replica it
-ran on, duration, rows and error; statements sent in one round trip share a start time and a duration. Each statement's
+Observers receive the statement text (never values), the number of bound arguments (and the values
+themselves only with `Config.ObserveArgs`), the replica it ran on, whether it ran in an explicit
+transaction, duration, rows and the error the terminal returns (a constraint violation already
+resolved to a `*ConstraintError`); statements sent in one round trip share a start time and a duration. Each statement's
 observers chain their `BeforeQuery` contexts from the terminal's context; `AfterQuery` gets the
 statement's final context, and a round trip that carries one statement runs under it. Statements
 of one round trip get sibling contexts and the round trip runs under the terminal's context.

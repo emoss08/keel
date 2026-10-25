@@ -181,7 +181,7 @@ func (v *versioner) write(ctx context.Context, set versionSet) error {
 		b.Queue(s.sql, s.args...)
 	}
 	db := v.db
-	events, qctx := db.startEvents(ctx, nil, stmts)
+	events, qctx := db.startEvents(ctx, nil, false, stmts)
 	start := time.Now()
 	br := db.pool.SendBatch(qctx, b)
 	var err error
@@ -193,8 +193,7 @@ func (v *versioner) write(ctx context.Context, set versionSet) error {
 	if closeErr := br.Close(); err == nil {
 		err = closeErr
 	}
-	db.endEvents(events, stmts, time.Since(start), err)
-	return err
+	return db.endEvents(events, stmts, time.Since(start), err)
 }
 
 // ensure creates keel_data_versions when it does not exist, under a transaction-scoped advisory

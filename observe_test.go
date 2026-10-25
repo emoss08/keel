@@ -121,3 +121,51 @@ func TestObserverContextReachesExecution(t *testing.T) {
 	ok(t, keel.Batch(ctx, d, keel.CountInto(c.Query(), &n), keel.ExistsInto(c.Query(), &exists)))
 	eq(t, n, int64(0))
 }
+
+func TestObserverEventFields(t *testing.T) {
+	rec := &recorder{}
+	d := openDB(t, func(cfg *keel.Config) {
+		cfg.Observers = []keel.Observer{rec}
+		cfg.ObserveArgs = true
+	})
+	ctx := newTenant()
+	c := fleetdb.Customers
+
+	cust := &fleet.Customer{Name: "Observed", Code: "OBS"}
+	ok(t, c.Create(ctx, d, cust))
+	ok(t, keel.Write(ctx, d, func(ctx context.Context) error {
+		_, err := c.Get(ctx, d, cust.ID)
+		return err
+	}))
+	err := c.Create(ctx, d, &fleet.Customer{Name: "Again", Code: "OBS"})
+	if _, isConstraint := errors.AsType[*keel.ConstraintError](err); !isConstraint {
+		t.Fatalf("duplicate code: got %v, want a *ConstraintError", err)
+	}
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	var inserts, txReads int
+	var violation error
+	for _, e := range rec.events {
+		if e.Args != len(e.Values) {
+			t.Fatalf("%s: %d args but %d values", e.SQL, e.Args, len(e.Values))
+		}
+		if e.Op == "insert" {
+			inserts++
+			if e.Tx {
+				t.Fatalf("insert outside a transaction marked Tx")
+			}
+			if e.Err != nil {
+				violation = e.Err
+			}
+		}
+		if e.Op == "select" && e.Tx {
+			txReads++
+		}
+	}
+	eq(t, inserts, 2)
+	eq(t, txReads, 1)
+	if _, isConstraint := errors.AsType[*keel.ConstraintError](violation); !isConstraint {
+		t.Fatalf("observer saw %v, want the *ConstraintError the terminal returned", violation)
+	}
+}

@@ -2,6 +2,7 @@ package keel
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -106,6 +107,9 @@ type constraintCatalog struct {
 func (db *DB) constraintErr(err error) error {
 	if err == nil {
 		return nil
+	}
+	if _, ok := errors.AsType[*ConstraintError](err); ok {
+		return err
 	}
 	pe := pgError(err)
 	if pe == nil {

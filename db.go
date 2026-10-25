@@ -39,6 +39,9 @@ type Config struct {
 
 	// Observers see every statement.
 	Observers []Observer
+	// ObserveArgs hands observers each statement's bound values (QueryEvent.Values). The values
+	// are the data itself, so turn it on only where a query log may hold it, in development.
+	ObserveArgs bool
 
 	// Tables are the generated tables (keeltables.All()) that constraint violations resolve
 	// against: a *ConstraintError of a listed table carries the model's field names, labels and
