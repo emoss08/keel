@@ -1841,10 +1841,10 @@ nested for deeper levels, and keel groups the rows under their parents as they a
 
 ```sql
 SELECT s."id", … FROM "shipments" s WHERE s."organization_id" = $1 AND s."business_unit_id" = $2
-  AND s."status" = $3 ORDER BY s."created_at" DESC, s."id" LIMIT 50;
+  AND s."customer_id" = $3 ORDER BY s."created_at" DESC, s."id" LIMIT 50;
 SELECT m."id", … FROM "moves" m WHERE m."organization_id" = $1 AND m."business_unit_id" = $2
   AND m."shipment_id" IN (SELECT s."id" FROM "shipments" s WHERE s."organization_id" = $1
-  AND s."business_unit_id" = $2 AND s."status" = $3 ORDER BY s."created_at" DESC, s."id" LIMIT 50)
+  AND s."business_unit_id" = $2 AND s."customer_id" = $3 ORDER BY s."created_at" DESC, s."id" LIMIT 50)
   ORDER BY m."sequence" ASC;
 ```
 
