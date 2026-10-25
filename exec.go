@@ -47,6 +47,7 @@ type runner struct {
 	slot     *tenantSlot
 	ownsSlot bool
 	cache    *cacheRun
+	closed   bool
 }
 
 // runMode is what a runner runs: a read, which may go to a replica; a write, which records its
@@ -422,6 +423,7 @@ func (r *runner) one(ctx context.Context, s *stmt, last bool) error {
 // set: a statement may commit before its error reaches keel, and a version bumped for nothing
 // costs only a cache miss.
 func (r *runner) close(ctx context.Context, err error) error {
+	r.closed = true
 	if r.conn != nil {
 		r.conn.Release()
 		r.conn = nil
@@ -444,6 +446,35 @@ func (r *runner) close(ctx context.Context, err error) error {
 		r.tx.runAfterCommit(ctx)
 	}
 	return err
+}
+
+// abandon lets go of what a runner that never reached close holds, when a panic (a decoder, a
+// hook, an observer) unwinds the terminal: the connection, which the pool destroys when it is in
+// a transaction, so an implicit transaction rolls back; the replica; the pairs a write changed;
+// and the tenant slot, so the tenant's other work is not starved by a slot nobody holds. Each
+// terminal defers it right after taking its runner; after close it does nothing.
+func (r *runner) abandon() {
+	if r.closed {
+		return
+	}
+	r.closed = true
+	if r.own && r.tx.pooled != nil {
+		r.tx.pooled.Release()
+		r.tx.conn, r.tx.pooled = nil, nil
+	}
+	if r.conn != nil {
+		r.conn.Release()
+		r.conn = nil
+	}
+	if r.rep != nil {
+		r.rep.release()
+		r.rep = nil
+	}
+	if r.sc.changes != nil {
+		r.db.versions.add(r.sc.changes)
+		r.sc.changes = nil
+	}
+	r.releaseSlot()
 }
 
 // releaseSlot lets the runner's tenant slot go, once, if the runner took it.

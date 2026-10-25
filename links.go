@@ -55,6 +55,7 @@ func SetLinks[K any](ctx context.Context, db *DB, rel interface{ TableRef() *Ref
 	if err != nil {
 		return err
 	}
+	defer run.abandon()
 	s, err := linkStatement(run.sc, join, parentKey, keys, remoteKind)
 	if err != nil {
 		return run.close(ctx, err)

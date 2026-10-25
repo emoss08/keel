@@ -103,6 +103,7 @@ func readItems(ctx context.Context, db *DB, items []BatchItem, refill bool) erro
 	if err != nil {
 		return err
 	}
+	defer run.abandon()
 	reads := make([]*read, len(items))
 	var stmts []*stmt
 	var timeout time.Duration

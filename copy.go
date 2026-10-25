@@ -43,6 +43,7 @@ func (db *DB) copyRows(ctx context.Context, t *schema.Table, rows []unsafe.Point
 	if err != nil {
 		return 0, err
 	}
+	defer run.abandon()
 	st := db.stampsFor(t)
 	hctx := run.hookCtx(ctx)
 	for _, row := range rows {

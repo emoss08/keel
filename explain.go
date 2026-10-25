@@ -105,6 +105,7 @@ func (db *DB) explain(ctx context.Context, sql string, args []any, opts ExplainO
 		if rerr != nil {
 			return nil, rerr
 		}
+		defer run.abandon()
 		err = run.close(ctx, run.one(ctx, s, true))
 	case tx != nil:
 		err = db.explainInSavepoint(ctx, tx, s)

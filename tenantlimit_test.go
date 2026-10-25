@@ -99,3 +99,44 @@ func TestTenantConcurrencyOffByDefault(t *testing.T) {
 		t.Fatal("Open accepted a negative TenantConcurrency")
 	}
 }
+
+type panicObserver struct{ armed bool }
+
+func (o *panicObserver) BeforeQuery(ctx context.Context, _ *keel.QueryEvent) context.Context {
+	return ctx
+}
+
+func (o *panicObserver) AfterQuery(context.Context, *keel.QueryEvent) {
+	if o.armed {
+		o.armed = false
+		panic("observer failed")
+	}
+}
+
+func TestTenantConcurrencySlotSurvivesAPanic(t *testing.T) {
+	obs := &panicObserver{}
+	d := openDB(t, func(cfg *keel.Config) {
+		cfg.TenantConcurrency = 1
+		cfg.Observers = []keel.Observer{obs}
+	})
+	a := newTenant()
+	c := fleetdb.Customers
+	ok(t, c.Create(a, d, &fleet.Customer{Name: "A", Code: "A"}))
+
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("the observer's panic did not reach the caller")
+			}
+		}()
+		obs.armed = true
+		_, _ = c.Query().Count(a, d)
+	}()
+
+	ctx, cancel := context.WithTimeout(a, 5*time.Second)
+	defer cancel()
+	n, err := c.Query().Count(ctx, d)
+	ok(t, err)
+	eq(t, n, int64(1))
+	eq(t, d.Pool().Stat().AcquiredConns(), int32(0))
+}

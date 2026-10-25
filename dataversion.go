@@ -379,6 +379,7 @@ func (db *DB) DataVersions(ctx context.Context, tenantKey string, tables ...stri
 	if err != nil {
 		return nil, err
 	}
+	defer run.abandon()
 	s := &stmt{
 		sql: `SELECT table_name, sum(version)::int8 FROM keel_data_versions
 		 WHERE tenant_key = ANY($1) AND table_name = ANY($2) GROUP BY table_name`,

@@ -123,6 +123,7 @@ func runRaw(ctx context.Context, db *DB, stmts []*stmt) error {
 	if err != nil {
 		return err
 	}
+	defer run.abandon()
 	return run.close(ctx, run.batch(ctx, stmts, true))
 }
 

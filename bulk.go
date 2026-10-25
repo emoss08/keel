@@ -25,6 +25,7 @@ func (q *query) update(ctx context.Context, db *DB, sets []Assignment) (int64, e
 	if err != nil {
 		return 0, err
 	}
+	defer run.abandon()
 	r := newRender(run.sc, ctx, run.db)
 	defer r.recycle()
 	alias, changed := q.writeUpdate(r, db, sets)
@@ -156,6 +157,7 @@ func (q *query) updateReturning(ctx context.Context, db *DB, sets []Assignment, 
 	if err != nil {
 		return err
 	}
+	defer run.abandon()
 
 	outer := *q
 	outer.where, outer.joins, outer.ctes = nil, nil, nil
@@ -280,6 +282,7 @@ func (q *query) delete(ctx context.Context, db *DB) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
+	defer run.abandon()
 	r := newRender(run.sc, ctx, run.db)
 	defer r.recycle()
 	sc, alias := r.push(q.ref, joinFrom, q.allTenants)

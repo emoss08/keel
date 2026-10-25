@@ -508,6 +508,7 @@ func (db *DB) insert(ctx context.Context, t *schema.Table, rows []unsafe.Pointer
 	if err != nil {
 		return err
 	}
+	defer run.abandon()
 	st := db.stampsFor(t)
 	hctx := run.hookCtx(ctx)
 	for _, row := range rows {
@@ -765,6 +766,7 @@ func (db *DB) upsert(ctx context.Context, ref *Ref, rows []unsafe.Pointer, c Con
 	if err != nil {
 		return nil, err
 	}
+	defer run.abandon()
 	st := db.stampsFor(t)
 	hctx := run.hookCtx(ctx)
 	for _, row := range rows {
@@ -832,6 +834,7 @@ func (db *DB) save(ctx context.Context, ref *Ref, row unsafe.Pointer, cols []Col
 	if err != nil {
 		return err
 	}
+	defer run.abandon()
 	if err := db.prepareSave(run.hookCtx(ctx), run.sc, t, th, row, update); err != nil {
 		return run.close(ctx, err)
 	}
@@ -1106,6 +1109,7 @@ func (db *DB) deleteRow(ctx context.Context, ref *Ref, row unsafe.Pointer) error
 	if err != nil {
 		return err
 	}
+	defer run.abandon()
 	if err := fillTenant(run.sc, t, row); err != nil {
 		return run.close(ctx, err)
 	}
@@ -1187,6 +1191,7 @@ func (db *DB) insertFrom(ctx context.Context, ref *Ref, src subquery,
 	if err != nil {
 		return 0, err
 	}
+	defer run.abandon()
 	r := newRender(run.sc, ctx, db)
 	defer r.recycle()
 	target := make([]int32, 0, len(cols)+len(t.Tenant))
