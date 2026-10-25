@@ -1112,6 +1112,18 @@ The predicate is built even when `cond` is false; building one only allocates.
 
 ### Raw SQL
 
+Build computed values with the expressions of [Expressions](#expressions) first: `keel.DynOf(e)`
+wraps a typed column or aggregate, and its methods, `keel.DynFunc`, `keel.DynCase`, `keel.DynRow`
+and `Cast` cover coalesce, arithmetic, comparisons between expressions, casts, CASE, row
+comparisons and the common functions in typed queries as well as dynamic ones:
+
+```go
+n, err := s.Where(
+    keel.DynFunc("length", s.ProNumber).Gt(8),
+    keel.DynOf(s.Weight).Coalesce(0).Add(500).Lt(20000),
+).Count(ctx, db)
+```
+
 `keel.Raw(sql, args...)` is SQL text keel does not understand. Each `?` is replaced by the next
 argument: an expression (a column, a subquery) is written in place with its alias resolved, any
 other value is bound as a parameter. `??` is a literal question mark. The result is both an
@@ -1236,7 +1248,7 @@ field (below).
 
 ```go
 loads := keel.Scalar(s.Pick(keel.Count()).Where(s.CustomerID.EqCol(c.ID)))
-busy, err := c.Where(keel.Raw("? > 10", loads)).All(ctx, db)
+busy, err := c.Where(keel.DynOf(loads).Gt(10)).All(ctx, db)
 ```
 
 ### Lateral joins
@@ -1305,10 +1317,10 @@ makes it `UNION`, so repeated rows end the recursion.
 w := fleetdb.Workers
 
 chain := keel.RecursiveCTE("chain", []string{"id", "depth"},
-    w.Pick(w.ID, keel.Raw("0")).Where(w.ID.Eq("wrk_dispatch_lead")))
+    w.Pick(w.ID, keel.DynLit(0).Cast(keel.TypeInt64)).Where(w.ID.Eq("wrk_dispatch_lead")))
 sub := w.As("sub")
 chain.Recurse(sub.
-    Pick(sub.ID, keel.Raw("? + 1", chain.Col("depth"))).
+    Pick(sub.ID, keel.DynOf(chain.Col("depth")).Add(1)).
     Join(chain, chain.Col("id").EqCol(sub.ManagerID)))
 
 type node struct {
@@ -1819,7 +1831,7 @@ Rules:
 
 - The order may use columns of the query's table, columns of to-one relations (belongs, one and
   pick paths: `s.Customer().Name.Asc()`, `keel.ResolvePath(s, "customer", "name").Desc()`) and
-  expressions (`keel.Desc(keel.Raw("coalesce(?, ?)", s.Weight, 0))`, `s.Customer().Name.Lower().Asc()`).
+  expressions (`keel.DynOf(s.Weight).Coalesce(0).Desc()`, `s.Customer().Name.Lower().Asc()`).
   A relation in the order is LEFT JOINed with its tenant condition, the same join a `Load` or a
   filter on that path uses. A column of a to-many relation is refused.
 - keel appends every primary key column the order does not already name, in the direction of the
@@ -1975,7 +1987,8 @@ table query returns the table's default columns.
 ### Expressions
 
 A `keel.DynExpr` is an expression, and a predicate, so `Where`, `Having`, `keel.And`, `keel.Or` and
-`Filter` take it. Operands are other expressions or values, which are always bound as parameters:
+`Filter` take it, in a dynamic query and in a typed one alike: `Pick`, `Where`, `Order`, `Group`
+and `ToExpr` of a generated table take it too. Operands are other expressions or values, which are always bound as parameters:
 
 | Kind | Methods and functions |
 |---|---|
@@ -1985,6 +1998,7 @@ A `keel.DynExpr` is an expression, and a predicate, so `Where`, `Having`, `keel.
 | logic | `And`, `Or`, `Not` |
 | literals | `keel.DynLit(v)`, `Cast(keel.TypeNumeric)` and the other value types |
 | CASE | `keel.DynCase().When(cond, then).Else(v)` or `.End()` |
+| rows | `keel.DynRow(vs...)`: `ROW(a, b)`, compared element by element; `keel.DynRow(a, b).Gt(keel.DynRow(x, y))` is a keyset condition |
 | functions | `keel.DynFunc(name, args...)` from an allow-list |
 | aggregates | `Sum`, `Avg`, `Min`, `Max`, `Count`, `CountDistinct`, `keel.DynCount()`, `Filter(pred)`, `Over(window)` |
 | full-text search | `Match(q, opts...)`, `Rank(q, opts...)`, `RankCD(q, opts...)` on a `tsvector` column or expression, as on `TSVectorCol` |

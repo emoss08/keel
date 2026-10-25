@@ -175,6 +175,8 @@ func TestDynamicExpressions(t *testing.T) {
 		q.Path("total").Over(keel.Window{}),
 		q.Path("total").Cast(keel.ValueType(99)),
 		keel.DynOf(nil),
+		keel.DynRow(1),
+		keel.DynRow(1, keel.DynFunc("nope")),
 		{},
 	}
 	for i, b := range bad {
@@ -185,6 +187,26 @@ func TestDynamicExpressions(t *testing.T) {
 			t.Fatalf("bad expression %d rendered", i)
 		}
 	}
+}
+
+func TestDynRowKeysetInATypedQuery(t *testing.T) {
+	d := db(t)
+	w := seed(t, 12)
+	s := fleetdb.Shipments
+	all := must(s.Query().Order(s.Priority.Asc(), s.ProNumber.Asc()).All(w.ctx, d))(t)
+	after := all[4]
+	rows := must(s.Query().
+		Where(keel.DynRow(s.Priority, s.ProNumber).Gt(keel.DynRow(after.Priority, after.ProNumber))).
+		Order(s.Priority.Asc(), s.ProNumber.Asc()).
+		All(w.ctx, d))(t)
+	eq(t, len(rows), len(all)-5)
+	for i, r := range rows {
+		eq(t, r.ProNumber, all[i+5].ProNumber)
+	}
+	before := must(s.Query().
+		Where(keel.DynRow(s.Priority, s.ProNumber).Lte(keel.DynRow(after.Priority, after.ProNumber))).
+		All(w.ctx, d))(t)
+	eq(t, len(before), 5)
 }
 
 func TestDynamicAggregatesWindowsAndGroupingSets(t *testing.T) {

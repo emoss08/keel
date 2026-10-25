@@ -586,6 +586,28 @@ func DynFunc(name string, args ...any) DynExpr {
 	}), name)
 }
 
+// DynRow is the row value ROW(vs…): DynExprs, Exprs or values bound as parameters. Rows compare
+// element by element in order, so DynRow(a, b).Gt(DynRow(x, y)) is the keyset condition of a page
+// ordered by a, b ascending, which an index on (a, b) serves.
+func DynRow(vs ...any) DynExpr {
+	if len(vs) < 2 {
+		return dynFail(errf("DynRow needs at least two values, got %d", len(vs)))
+	}
+	ops := make([]Expr, len(vs))
+	for i, v := range vs {
+		e, err := dynOperand(v)
+		if err != nil {
+			return dynFail(err)
+		}
+		ops[i] = e
+	}
+	return newDyn(exprFunc(func(r *render) {
+		r.s("ROW(")
+		writeExprs(r, ops)
+		r.b(')')
+	}), "row")
+}
+
 // DynCaseBuilder builds CASE WHEN … THEN … [ELSE …] END. Start it with DynCase.
 type DynCaseBuilder struct {
 	whens []dynWhen
