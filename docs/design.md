@@ -111,6 +111,13 @@ NULL. The pool's `AfterConnect` puts `Config.JSON.UnmarshalNumber` in the connec
 `CustomData`, where the plan finds it when it is built, once per connection and statement like
 every scan plan; a connection keel did not set up (`JoinTx`) uses the default.
 
+A string column with enum constants (`Column.Enum`) gets an enum scan plan (`enumScanPlan` for a
+`*string` field, `enumPtrScanPlan` for `**string`; generated accessors point a named string field at
+its string) when its values arrive as their own text: a text type, the text format, or a Postgres
+enum (`EnumCodec`), whose binary form is the label. The plan compares the raw bytes with each
+constant (no allocation) and stores the generated constant's string, so every row shares it;
+NULL and any other value go to the plan the column would have had (nullzero, nullable or pgx's).
+
 There is no `default:` or `notnull`, and `type=` names a report value type, not a SQL type. The SQL
 migrations own the schema; nullability follows the Go type (a pointer, or a `sql.Scanner` named
 `Null…`). The value in the struct is the value written: keel never substitutes `DEFAULT` for a zero
@@ -317,11 +324,11 @@ Every clause takes expressions, never strings. Columns are typed by their Go kin
 | float | as above without `In` and `NotIn` |
 | time | `Eq`, `Ne`, `Gt`, `Gte`, `Lt`, `Lte`, `Between`, `To` |
 | numbers | `Add`, `Sum`, and `Avg` except on `smallint` |
-| string | `Contains`, `HasPrefix`, `HasSuffix` (escaped), `ContainsFold`, `HasPrefixFold`, `Like`, `ILike`, `Match`, `MatchFold`, `Lower` |
+| string | `Contains`, `HasPrefix`, `HasSuffix` (escaped), `ContainsFold`, `HasPrefixFold`, `Like`, `ILike`, `Match`, `MatchFold`, and the string functions below |
 | bool | `Eq`, `IsTrue`, `IsFalse`, `To` |
 | bytea | `Eq`, `To` |
 | jsonb | `Contains`, `HasKey`, `HasAnyKey`, `HasAllKeys`, `Text(path...)`, `To` |
-| array | `Has`, `Overlaps`, `ContainsAll`, `ContainedBy`, `To`; `Len` on text arrays |
+| array | `Has`, `Overlaps`, `ContainsAll`, `ContainedBy`, `To`, `Len`, `Unnest`, `Append`, `Remove` |
 | tsvector | `Match(q, opts...)`, `Rank(q, opts...)`, `RankCD(q, opts...)`: the search string bound once, the tsquery built by `websearch_to_tsquery` (default), `plainto_tsquery`, `phraseto_tsquery` or `to_tsquery` over the string's words as lexemes or prefixes, for each configuration (`SearchConfig`, else the column's `TSConfig`, else the database default) and each mode (`SearchModes`), ORed |
 
 Combinators: `keel.And`, `keel.Or`, `keel.Not`, `keel.When`, `keel.Exists`, `keel.NotExists`,
@@ -334,6 +341,31 @@ Combinators: `keel.And`, `keel.Or`, `keel.Not`, `keel.When`, `keel.Exists`, `kee
 query declares. Relation paths: belongs-to and has-one columns join automatically (`LEFT JOIN` in
 reads, `FROM`/`USING` in bulk writes); `Any` and `None` on a to-many path compile to `EXISTS` and
 `NOT EXISTS`.
+
+Typed functions (`funcs.go`). Each value kind has an expression type, `struct{ e Expr }`, with the
+comparisons of its columns: `StringExpr`, `Int64Expr`, `Int32Expr`, `Float64Expr`, `NumericExpr`,
+`BoolExpr` (a `Pred`), `TimeExpr`, `JSONBExpr`. Each kind also has a value interface (`StringValue`,
+`Int64Value`, …, `NumberValue` for any number) whose unexported marker method its column kinds and
+its expression type implement, so generated wrappers satisfy it through embedding and a function's
+arguments are checked by the compiler. A function whose result kind follows its receiver is a
+method of the column kinds and expression types (`Lower`, `Trim`, `Length`, `Substr`, `SplitPart`,
+`RegexpReplace`, `Abs`, `Round`, `RoundTo`, `Floor`, `Ceil`, `Ln`, `Greatest`, `Least`, `Coalesce`,
+`NullIf`, `ToChar`, `AtTimeZone`, `TypeOf`, `Set`, `Unnest`, …); one whose kind is fixed is a package
+function (`Concat`, `ConcatWS`, `Now`, `NowEpoch`, `Epoch`, `ToTimestamp`, `DatePart`, `DateTrunc`,
+`BoolOr`, `BoolAnd`, `JSONBAgg`, `JSONBuildObject`, `JSONBuildArray`, `ArrayPosition`,
+`WidthBucket`, `GenerateSeries`, `Int8Range`, `GenRandomUUID`, `Cast…`). Package-level
+`Greatest(a, b)` with the result typed by its arguments would need a generic function inferring
+its result from a method set, which Go cannot do, so kind-preserving functions are methods. Calls
+render as `name(args)` (`sqlCall`); Go values are `*litExpr` binds (one placeholder per literal
+wherever the expression repeats), cast (`$n::text`) where the parameter's type is "any" or
+ambiguous; a date field is checked against Postgres's list and written as a constant. A string
+column holding an enum or declaring a non-text `sqltype` is cast to text inside text functions.
+`Text`, `Int64`, … bind a Go value as an expression of the kind; `StringOf`, … type any expression
+without changing the SQL. `exprKind` reads the kind of every typed expression through an unexported
+`kind()` method, so `Compute` checks them. `DeclareFunc0[R]` … `DeclareFunc3[R, A, B, C]` declare a
+database function: a non-generic `*FuncDecl` (name, quoted name, arity, result kind) inside small
+generic `FuncN` values whose `Call` converts the call to `R` (every expression type shares the
+underlying struct). `FuncN` are user-level values, never reachable from `schema.Table`.
 
 Values are bind parameters. `In` binds one array parameter (`= ANY($1)`), so the statement text does
 not depend on the number of values. Two binds share a placeholder only when they provably get the
@@ -862,6 +894,13 @@ rules are the decoding rules: a kind holds the types pgx scans it from (`int16` 
 `int64` any integer, `string` text types, enums, `uuid` and `json`), a field holds NULL when it is
 nullable, nullzero, jsonb, `[]byte`, an array or a custom type, and a join table carries
 `Table.JoinTableOf`'s columns. `keelcli`'s `verify` runs it for `App.Tables`.
+
+`keel.VerifyFuncs(ctx, db, decls...)` checks declared functions the same way: one statement over
+`pg_proc` (plain functions only, `pg_function_is_visible` for an unqualified name), then in Go an
+overload must take the declared arity (`pronargs - pronargdefaults` up to `pronargs`, any count from
+there for a variadic one) and return a type the result kind holds by `kindHolds`, domains resolved
+and pseudo-type results skipped. Drifts are `missing_function`, `function_arity` and
+`function_result`, with the function's name in `Table`.
 
 ## Plan guard
 

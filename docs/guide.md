@@ -1128,31 +1128,119 @@ late, err := st.Where(st.ArrivedAt.Gte(since), st.Kind.Eq("delivery")).Count(ctx
 | Column type | Operators |
 |---|---|
 | every column | `IsNull`, `IsNotNull`, `EqCol`, `NeCol`, `InQuery`, `NotInQuery`, `Asc`, `Desc`, `Count`, `CountDistinct`, `Min`, `Max`, `Coalesce(v)`, `ToNull`, `ToDefault`, `ToExpr(e)` |
-| `StringCol` | `Eq`, `Ne`, `Gt`, `Gte`, `Lt`, `Lte`, `Between`, `IsDistinctFrom`, `In`, `NotIn`, `To`; `Contains`, `ContainsFold`, `HasPrefix`, `HasPrefixFold`, `HasSuffix` (their argument is escaped, so `%` and `_` match themselves); `Like`, `ILike` (patterns as given); `Match`, `MatchFold` (POSIX regular expressions); `Lower` |
-| `Int64Col`, `Int32Col` | `Eq`, `Ne`, `Gt`, `Gte`, `Lt`, `Lte`, `Between`, `IsDistinctFrom`, `In`, `NotIn`, `To`, `Add`, `Sum`, `Avg` |
-| `Int16Col` | as `Int32Col`, without `Avg` |
-| `Float64Col` | `Eq`, `Ne`, `Gt`, `Gte`, `Lt`, `Lte`, `Between`, `IsDistinctFrom`, `To`, `Add`, `Sum`, `Avg` |
+| `StringCol` | `Eq`, `Ne`, `Gt`, `Gte`, `Lt`, `Lte`, `Between`, `IsDistinctFrom`, `In`, `NotIn`, `To`; `Contains`, `ContainsFold`, `HasPrefix`, `HasPrefixFold`, `HasSuffix` (their argument is escaped, so `%` and `_` match themselves); `Like`, `ILike` (patterns as given); `Match`, `MatchFold` (POSIX regular expressions); the string functions of [Functions](#functions) |
+| `Int64Col`, `Int32Col` | `Eq`, `Ne`, `Gt`, `Gte`, `Lt`, `Lte`, `Between`, `IsDistinctFrom`, `In`, `NotIn`, `To`, `Add`, `Sum`, `Avg`; `Abs`, `NullIf`, `Greatest`, `Least` |
+| `Int16Col` | as `Int32Col`, without `Avg` and the functions |
+| `Float64Col` | `Eq`, `Ne`, `Gt`, `Gte`, `Lt`, `Lte`, `Between`, `IsDistinctFrom`, `To`, `Add`, `Sum`, `Avg`; `Abs`, `Round`, `Floor`, `Ceil`, `Ln`, `Exp`, `NullIf`, `Greatest`, `Least` |
 | `BoolCol` | `Eq`, `IsTrue`, `IsFalse`, `To` |
 | `BytesCol` | `Eq`, `To` |
-| `TimeCol` | `Eq`, `Ne`, `Gt`, `Gte`, `Lt`, `Lte`, `Between`, `To` |
+| `TimeCol` | `Eq`, `Ne`, `Gt`, `Gte`, `Lt`, `Lte`, `Between`, `To`; `ToChar`, `AtTimeZone`, `Greatest`, `Least` |
 | `AnyCol` and its wrappers (`MoneyCol`) | `Eq`, `Ne`, `Gt`, `Gte`, `Lt`, `Lte`, `Between`, `IsDistinctFrom`, `In`, `NotIn`, `To`, `Add`, `Sum`, `Avg` |
-| `JSONBCol` | `Contains(v)` (`@>`, `v` encoded as JSON), `HasKey`, `HasAnyKey`, `HasAllKeys`, `Text(path...)` (`#>>`, a `StringExpr`), `To` |
-| `StringArrayCol` | `Has`, `Overlaps`, `ContainsAll`, `ContainedBy`, `Len`, `To` |
-| `Int64ArrayCol` | `Has`, `Overlaps`, `ContainsAll`, `ContainedBy`, `To` |
+| `JSONBCol` | `Contains(v)` (`@>`, `v` encoded as JSON), `HasKey`, `HasAnyKey`, `HasAllKeys`, `Text(path...)` (`#>>`, a `StringExpr`), `To`; `TypeOf`, `Set`, `Concat`, `ArrayElementsText` |
+| `StringArrayCol` | `Has`, `Overlaps`, `ContainsAll`, `ContainedBy`, `Len` (an `Int32Expr`), `Unnest`, `To`, `Append`, `Remove` |
+| `Int64ArrayCol` | `Has`, `Overlaps`, `ContainsAll`, `ContainedBy`, `Len`, `Unnest`, `To`, `Append`, `Remove` |
 | `TSVectorCol` | `Match(q, opts...)` (`@@ websearch_to_tsquery(…)`), `Rank(q, opts...)` (`ts_rank`), `RankCD(q, opts...)` (`ts_rank_cd`); see [Full-text search](#full-text-search) |
 
 Generated wrappers (`StatusCol`, `IdsIDCol`) take the named type in `Eq`, `Ne`, `Gt`, `Gte`, `Lt`,
 `Lte`, `IsDistinctFrom`, `Between`, `To`, and for string, integer and scanner kinds `In` and
 `NotIn`; the base type's other methods stay available. `In` binds one array parameter
-(`= ANY($1)`), so the statement text does not depend on the number of values. `Lower()` and
-`Text(...)` return a `keel.StringExpr` with `Eq`, `Ne`, `In`, `Like`, `Contains`, `IsNull`, `Asc`
-and `Desc`. `EqCol` and `NeCol` compare with another expression, for joins and correlated
-subqueries. `Col.Excluded()` is the value an upsert proposed for the column (`EXCLUDED.col`); it is
+(`= ANY($1)`), so the statement text does not depend on the number of values. `Coalesce(v)` of a
+string, integer, float, bool, time or jsonb column returns the typed expression of its kind (a
+`keel.StringExpr`, `keel.Int64Expr`, …), and `JSONBCol.Text(...)` a `StringExpr`; see
+[Functions](#functions). `EqCol` and `NeCol` compare with another expression, for joins and
+correlated subqueries. `Col.Excluded()` is the value an upsert proposed for the column (`EXCLUDED.col`); it is
 valid only inside `Conflict.Set` (see [Upsert](#upsert)) and fails the statement anywhere else.
 
 Combinators: `keel.And(ps...)` and `keel.Or(ps...)` skip nil predicates (`And` of nothing is
 `TRUE`, `Or` of nothing `FALSE`), `keel.Not(p)`, `keel.True()`. `Where` joins its arguments with
 `AND`.
+
+### Functions
+
+SQL functions are typed like columns. Each value kind has an expression type that compares to Go
+values of its kind, as its columns do: `keel.StringExpr`, `Int64Expr`, `Int32Expr`, `Float64Expr`,
+`NumericExpr`, `BoolExpr` (a predicate), `TimeExpr` and `JSONBExpr`. Functions return the expression
+type of their result, so `s.ProNumber.Lower().Eq(1)` does not compile, and a function's arguments
+are value interfaces (`keel.StringValue`, `Int64Value`, `Int32Value`, `Float64Value`,
+`NumericValue`, `NumberValue`, `BoolValue`, `TimeValue`, `JSONBValue`) that the kind's columns and
+expressions implement.
+
+```go
+u := tenantdb.Users
+taken, err := u.AllTenants().Where(u.EmailAddress.Lower().EqExpr(keel.Text(email).Lower())).Exists(ctx, db)
+
+w := workerdb.Workers
+fullName := keel.ConcatWS(" ", w.FirstName, w.LastName)
+rows, err := w.Pick(w.ID, fullName).Where(fullName.ContainsFold(term)).All(ctx, db)
+
+th := conversationdb.Threads
+lastActive := th.LastMessageAt.Greatest(th.CreatedAt) // an Int64Expr
+live := keel.Or(ura.ExpiresAt.IsNull(), keel.NowEpoch().LtExpr(ura.ExpiresAt))
+day := keel.ToTimestamp(f.CreatedAt).AtTimeZone(keel.Text(zone)).ToChar("YYYY-MM-DD")
+```
+
+Every expression type has `Eq`, `Ne`, `Gt`, `Gte`, `Lt`, `Lte`, `Between`, `IsDistinctFrom` with a
+Go value (`In` and `NotIn` too for text and integers), `EqExpr` … `LteExpr` against another value of
+its kind, `IsNull`, `IsNotNull`, `Asc`, `Desc`, `Coalesce(v)` (a value or an expression), and
+`Min`, `Max` (`Sum`, `Avg` for numbers) as aggregates. Go values are bound; a value whose type
+nothing in the statement fixes is bound under a cast. `keel.Text(s)`, `Int64(n)`, `Int32(n)`,
+`Float64(f)`, `Numeric(v)`, `Bool(b)`, `Time(t)` and `JSONB(v)` bind a value as an expression of
+its kind (`$1::text`, `$1::bigint`, …, `JSONB` encoded with the configured codec), where a function
+takes a value interface. `keel.StringOf(e)`, `Int64Of`, `Int32Of`, `Float64Of`, `NumericOf`,
+`BoolOf`, `TimeOf` and `JSONBOf` type an expression keel cannot type itself (a `Raw`, a `Scalar`, a
+`DynExpr`, a `Rows` or CTE column) without changing the SQL; `keel.CastText(e)`, `CastInt64(v)`,
+`CastFloat64(v)` and `CastNumeric(v)` convert with `CAST`.
+
+| Kind | Functions |
+|---|---|
+| text (string columns, `StringExpr`) | `Lower`, `Upper`, `Trim` (`btrim`), `TrimChars(chars)`, `LTrim`, `LTrimChars`, `RTrim`, `RTrimChars`, `Length` (an `Int32Expr`), `Left(n)`, `Right(n)`, `Substr(start, count)`, `SubstrFrom(start)`, `Replace(from, to)`, `SplitPart(delim, n)`, `MD5`, `RegexpReplace(pattern, replacement, flags)`, `NullIf(v)`, `Greatest`, `Least`; a column that holds an enum, or declares a SQL type that is not text, is cast to text inside these, since Postgres's text functions do not take a Postgres enum |
+| bigint, integer | `Abs`, `NullIf(v)`, `Greatest`, `Least` |
+| double precision | `Abs`, `Round` (to a whole number), `Floor`, `Ceil`, `Ln`, `Exp`, `NullIf`, `Greatest`, `Least` |
+| numeric | as double precision, and `RoundTo(places)`: `keel.CastNumeric(miles).RoundTo(2)` |
+| time | `ToChar(format)`, `AtTimeZone(zone)` (`timezone(zone, t)`), `Greatest`, `Least` |
+| jsonb | `TypeOf` (`jsonb_typeof`), `Set(path, v)` (`jsonb_set`), `Concat(o)` (`||`), `ArrayElementsText`, and on `JSONBExpr` `Contains`, `ContainsExpr`, `HasKey`, `Text(path...)` |
+| arrays | `Len` (`cardinality`), `Unnest`, the assignments `Append(v)` and `Remove(v)` |
+
+Package functions, whose result kind does not follow one argument:
+
+| Function | SQL |
+|---|---|
+| `keel.Concat(args...)`, `keel.ConcatWS(sep, args...)` | `concat`, `concat_ws`; an argument is any expression or a Go value bound under the cast its type implies |
+| `keel.Now()`, `keel.NowEpoch()`, `keel.Epoch(t)` | `now()`; `CAST(extract(epoch FROM t) AS bigint)`, Unix seconds for models that store times as epochs |
+| `keel.ToTimestamp(seconds)` | `to_timestamp(seconds)` |
+| `keel.DatePart(field, t)`, `keel.DateTrunc(field, t)` | `date_part('hour', t)` (a `Float64Expr`), `date_trunc('month', t)`; the field is checked against Postgres's and written as a constant, so an expression index on it matches |
+| `keel.BoolOr(p)`, `keel.BoolAnd(p)`, `keel.JSONBAgg(e)` | the aggregates, as `keel.Agg` values with `Filter`, `OrderBy` and `Over` |
+| `keel.JSONBuildObject(keel.Pair(key, v), ...)`, `keel.JSONBuildArray(vs...)` | `jsonb_build_object($1::text, v, …)`, `jsonb_build_array(…)` |
+| `keel.ArrayPosition(list, v)` | `array_position($1::text[], v)`: `Order(keel.ArrayPosition(ids, q.ID).Asc())` keeps a caller's order |
+| `keel.WidthBucket(v, bounds)`, `keel.WidthBucketRange(v, lo, hi, n)` | `width_bucket(v, $1::bigint[])`, `width_bucket(v, lo, hi, n)` |
+| `keel.GenerateSeries(start, stop)`, `GenerateSeriesBy(start, stop, step)`, `GenerateTimeSeries(start, stop, "1 day")` | `generate_series`, for `keel.Rows` |
+| `keel.Int8Range(lo, hi)` | `int8range(lo, hi)`, with `Covers(v)` (`@>`) and `Overlaps` (`&&`) |
+| `keel.GenRandomUUID()` | `CAST(gen_random_uuid() AS text)` |
+
+An expression written in two places of a statement (in `Pick` and `Group`) binds its values once,
+so Postgres sees one expression: keep it in a variable (`day := …; q.Pick(day, keel.Count()).Group(day)`).
+`keel.DynFunc` stays for dynamic queries, whose functions are chosen at run time.
+
+#### Declared database functions
+
+A function of the application's schema is declared once, with its argument and result types, and
+called like keel's own:
+
+```go
+var (
+    slugify    = keel.DeclareFunc1[keel.StringExpr, keel.StringValue]("public.slugify")
+    nextNumber = keel.DeclareFunc2[keel.Int64Expr, keel.StringValue, keel.Int32Value]("billing.next_number")
+)
+
+c.Where(slugify.Call(c.Name).Eq("acme-freight"))
+c.Pick(nextNumber.Call(keel.Text("INV"), keel.Int32(6)))
+```
+
+`DeclareFunc0[R]` … `DeclareFunc3[R, A, B, C]` take the name, `fn` or `schema.fn` (each part
+quoted as given), and panic on a malformed one, since declarations are package variables. `R` is
+one of the expression types; each argument type is a value interface or an expression type.
+`keel.VerifyFuncs(ctx, db, decls...)` checks the declarations against the catalog (see
+[Verifying the schema](#verifying-the-schema)).
 
 ### Full-text search
 
@@ -4218,7 +4306,10 @@ CREATE INDEX idx_shipments_created ON shipments (organization_id, business_unit_
 
 Rows decode straight from pgx's buffers into struct fields through generated accessors, with no
 reflection. Rows of one statement are allocated in slabs, scan plans are cached per connection and
-statement, and enum values and tenant strings are shared instead of allocated per row.
+statement, and enum values and tenant strings are shared instead of allocated per row. A column
+whose Go type is an enum (`Column.Enum`) matches each value's bytes against the generated constants
+and stores the constant's string, whether the column is a Postgres enum or text; a value that is no
+constant decodes as any string does, and a nullable enum field allocates only its pointer.
 
 ## Testing
 
@@ -4323,6 +4414,19 @@ func TestSchemaMatchesModels(t *testing.T) {
 
 `keelcli` exposes the same check as `verify` for an `App` that sets `Tables: keeltables.All`, with
 plain or `-json` output and exit code 3 on drift, to run against a deployed database.
+
+`keel.VerifyFuncs(ctx, db, decls...)` does the same for [declared database
+functions](#declared-database-functions): each must exist as a plain function (not a procedure or
+an aggregate), found through the search_path when its name carries no schema, with an overload that
+takes the declared number of arguments (defaults and a variadic last argument counted) and returns
+a type the declared result kind decodes, by `Verify`'s type rules (polymorphic results are not
+checked). Drifts carry the function's name in `Table`:
+
+| Kind | Reported when |
+|---|---|
+| `missing_function` | no plain function of that name exists |
+| `function_arity` | no overload takes the declared number of arguments |
+| `function_result` | the overloads of that arity return a type the result kind cannot hold (`text` declared as `Int64Expr`) |
 
 ### Plan guard
 
