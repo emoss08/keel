@@ -113,15 +113,14 @@ func numericKind(k schema.Kind) bool {
 	return false
 }
 
-// exprKind returns the kind of value e yields when keel knows it: a column's kind, text for
-// string expressions, and the result kind of the aggregates and window functions keel builds.
+// exprKind returns the kind of value e yields when keel knows it: a column's kind, the kind of a
+// typed expression (StringExpr, Int64Expr, … and a Scalar of one), and the result kind of the
+// aggregates and window functions keel builds.
 func exprKind(e Expr) (schema.Kind, bool) {
 	switch x := e.(type) {
 	case DynExpr:
 		return dynKind(x)
-	case StringExpr:
-		return schema.KindString, true
-	case scalarExpr:
+	case kinded:
 		return x.kind()
 	case Agg:
 		return aggKind(x)
@@ -135,7 +134,7 @@ func exprKind(e Expr) (schema.Kind, bool) {
 	return 0, false
 }
 
-// dynKind is exprKind of a dynamic expression: a column or an aggregate.
+// dynKind is exprKind of a dynamic expression: a column, an aggregate or a typed expression.
 func dynKind(d DynExpr) (schema.Kind, bool) {
 	switch {
 	case d.n == nil:
@@ -145,10 +144,7 @@ func dynKind(d DynExpr) (schema.Kind, bool) {
 	case d.n.agg != nil:
 		return aggKind(*d.n.agg)
 	}
-	if a, ok := d.n.e.(Agg); ok {
-		return aggKind(a)
-	}
-	return 0, false
+	return exprKind(d.n.e)
 }
 
 // aggKinds are the result kinds of aggregates and window functions whose kind does not depend on
@@ -158,7 +154,7 @@ var aggKinds = map[string]schema.Kind{
 	"dense_rank": schema.KindInt64, "ntile": schema.KindInt32, "percent_rank": schema.KindFloat64,
 	"cume_dist": schema.KindFloat64, "ts_rank": schema.KindFloat32, "ts_rank_cd": schema.KindFloat32,
 	"cardinality": schema.KindInt32, "GROUPING": schema.KindInt32,
-	"bool_and": schema.KindBool, "bool_or": schema.KindBool,
+	"bool_and": schema.KindBool, "bool_or": schema.KindBool, "jsonb_agg": schema.KindJSON,
 }
 
 // aggKind returns the result kind of an aggregate: fixed for counts, ranks and the functions of

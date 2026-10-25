@@ -33,12 +33,22 @@ const (
 	DriftRelationKey DriftKind = "relation_key"
 	// DriftConstraint is a constraint a model's Constraints method names that the table lacks.
 	DriftConstraint DriftKind = "constraint"
+	// DriftMissingFunction is a declared database function (DeclareFunc0 … DeclareFunc3) that does
+	// not exist, or exists only as a procedure, aggregate or window function.
+	DriftMissingFunction DriftKind = "missing_function"
+	// DriftFunctionArity is a declared function none of whose overloads takes the declared number
+	// of arguments.
+	DriftFunctionArity DriftKind = "function_arity"
+	// DriftFunctionResult is a declared function whose overloads of the declared arity return a
+	// type the declared result kind cannot hold.
+	DriftFunctionResult DriftKind = "function_result"
 )
 
 // Drift is one difference between a model and the live database.
 type Drift struct {
 	Kind DriftKind `json:"kind"`
-	// Table is the table the difference is in: the model's, a join table, or a relation's target.
+	// Table is the table the difference is in: the model's, a join table, or a relation's target;
+	// for a function drift, the declared function's name.
 	Table string `json:"table"`
 	// Column is the column, empty for a whole table.
 	Column string `json:"column,omitempty"`
@@ -625,4 +635,143 @@ func sameType(declared, catalog string) bool {
 	}
 	_, unqualified, ok := strings.Cut(declared, ".")
 	return ok && unqualified == catalog
+}
+
+// verifyFuncsSQL lists, for each schema and name pair (an empty schema resolves through the
+// search_path), the overloads of the plain function of that name: argument counts, defaults,
+// whether the last argument is variadic, and the result type with domains resolved to their base
+// type.
+const verifyFuncsSQL = `SELECT n.ord, p.pronargs, p.pronargdefaults, p.provariadic <> 0,
+       coalesce(bt.typname::text, ''), coalesce(bt.typcategory::text, ''), coalesce(bt.typtype::text, '')
+  FROM unnest($1::text[], $2::text[]) WITH ORDINALITY AS n(nsp, name, ord)
+  JOIN pg_proc p ON p.proname = n.name AND p.prokind = 'f'
+   AND CASE WHEN n.nsp = '' THEN pg_function_is_visible(p.oid)
+            ELSE p.pronamespace = (SELECT ns.oid FROM pg_namespace ns WHERE ns.nspname = n.nsp) END
+  JOIN pg_type ty ON ty.oid = p.prorettype
+  LEFT JOIN pg_type bt ON bt.oid = CASE WHEN ty.typtype = 'd' THEN ty.typbasetype ELSE ty.oid END
+ ORDER BY n.ord`
+
+// funcOverload is one overload of a declared function as the catalog describes it.
+type funcOverload struct {
+	args     int16
+	defaults int16
+	variadic bool
+	result   catalogCol
+}
+
+// takes reports whether the overload accepts a call with n arguments.
+func (o funcOverload) takes(n int) bool {
+	required := int(o.args - o.defaults)
+	if o.variadic {
+		return n >= required
+	}
+	return n >= required && n <= int(o.args)
+}
+
+// VerifyFuncs checks typed function declarations against the live catalog: each declared function
+// must exist as a plain function (not a procedure or an aggregate), resolved through the
+// connection's search_path when its name carries no schema, with an overload that takes the
+// declared number of arguments (counting defaults and a variadic last argument) and returns a type
+// the declared result kind decodes (the rules Verify applies to columns; polymorphic results are
+// not checked). It reads the catalog in one statement on a pool connection, outside any
+// transaction and scope, and returns one Drift per mismatch in the order of fns; none means every
+// call the declarations make resolves.
+func VerifyFuncs(ctx context.Context, db *DB, fns ...DeclaredFunc) ([]Drift, error) {
+	var decls []*FuncDecl
+	for _, f := range fns {
+		if f == nil {
+			continue
+		}
+		if d := f.Decl(); d != nil && !slices.Contains(decls, d) {
+			decls = append(decls, d)
+		}
+	}
+	if len(decls) == 0 {
+		return nil, nil
+	}
+	nsps := make([]string, len(decls))
+	names := make([]string, len(decls))
+	for i, d := range decls {
+		nsps[i], names[i] = d.nsp, d.proc
+	}
+	rows, err := db.pool.Query(ctx, verifyFuncsSQL, nsps, names)
+	if err != nil {
+		return nil, fmt.Errorf("keel: verify functions: %w", err)
+	}
+	defer rows.Close()
+	found := make([][]funcOverload, len(decls))
+	for rows.Next() {
+		var ord int64
+		var o funcOverload
+		var typtype string
+		if err := rows.Scan(&ord, &o.args, &o.defaults, &o.variadic, &o.result.typ, &o.result.category,
+			&typtype); err != nil {
+			return nil, fmt.Errorf("keel: verify functions: %w", err)
+		}
+		o.result.enum = typtype == "e"
+		if ord >= 1 && int(ord) <= len(decls) {
+			found[ord-1] = append(found[ord-1], o)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("keel: verify functions: %w", err)
+	}
+	var out []Drift
+	for i, d := range decls {
+		if dr, ok := funcDrift(d, found[i]); ok {
+			out = append(out, dr)
+		}
+	}
+	return out, nil
+}
+
+// funcDrift compares a declaration with its overloads.
+func funcDrift(d *FuncDecl, overloads []funcOverload) (Drift, bool) {
+	if len(overloads) == 0 {
+		return Drift{Kind: DriftMissingFunction, Table: d.name,
+			Detail: "the function does not exist, or is not a plain function, on the search_path",
+			Fix:    "create it in a migration, or fix the name given to keel.DeclareFunc"}, true
+	}
+	var arities []string
+	matched := false
+	for _, o := range overloads {
+		if !o.takes(d.arity) {
+			arities = append(arities, arityText(o))
+			continue
+		}
+		matched = true
+		if o.result.category == "P" {
+			return Drift{}, false
+		}
+		if holds, _ := kindHolds(d.result, &o.result); holds {
+			return Drift{}, false
+		}
+	}
+	if !matched {
+		return Drift{Kind: DriftFunctionArity, Table: d.name,
+			Detail: fmt.Sprintf("no overload takes %d arguments (overloads take %s)", d.arity,
+				strings.Join(arities, ", ")),
+			Fix: "declare it with the DeclareFunc of the arity it takes, or add the overload in a migration"}, true
+	}
+	var results []string
+	for _, o := range overloads {
+		if o.takes(d.arity) && !slices.Contains(results, o.result.typ) {
+			results = append(results, o.result.typ)
+		}
+	}
+	return Drift{Kind: DriftFunctionResult, Table: d.name,
+		Detail: fmt.Sprintf("it returns %s, declared as %s", strings.Join(results, " or "), kindNames[d.result]),
+		Fix:    "declare it with the expression type of the type it returns"}, true
+}
+
+// arityText describes the argument counts an overload takes.
+func arityText(o funcOverload) string {
+	required := int(o.args - o.defaults)
+	switch {
+	case o.variadic:
+		return fmt.Sprintf("%d or more", required)
+	case required == int(o.args):
+		return fmt.Sprint(o.args)
+	}
+	return fmt.Sprintf("%d to %d", required, o.args)
 }

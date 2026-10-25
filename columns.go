@@ -310,28 +310,6 @@ func (c StringCol) Match(re string) Pred { return cmp(c.Col, " ~ ", re) }
 // MatchFold matches a POSIX regular expression ignoring case.
 func (c StringCol) MatchFold(re string) Pred { return cmp(c.Col, " ~* ", re) }
 
-// Lower is lower(col).
-func (c StringCol) Lower() StringExpr {
-	return StringExpr{e: exprFunc(func(r *render) {
-		r.s("lower(")
-		r.col(c.Col)
-		r.b(')')
-	})}
-}
-
-// StringExpr is a computed string value.
-type StringExpr struct{ e Expr }
-
-func (e StringExpr) writeSQL(r *render)     { e.e.writeSQL(r) }
-func (e StringExpr) Eq(v string) Pred       { return cmp(e.e, " = ", v) }
-func (e StringExpr) Ne(v string) Pred       { return cmp(e.e, " <> ", v) }
-func (e StringExpr) In(vs ...string) Pred   { return anyOf(e.e, vs, false) }
-func (e StringExpr) Like(p string) Pred     { return cmp(e.e, " LIKE ", p) }
-func (e StringExpr) Contains(s string) Pred { return cmp(e.e, " LIKE ", "%"+escapeLike(s)+"%") }
-func (e StringExpr) IsNull() Pred           { return suffix(e.e, " IS NULL") }
-func (e StringExpr) Asc() Order             { return Order{e: e.e} }
-func (e StringExpr) Desc() Order            { return Order{e: e.e, desc: true} }
-
 // Int64Col is a bigint column.
 type Int64Col struct{ Col }
 
@@ -529,8 +507,8 @@ func (c StringArrayCol) Remove(v string) Assignment {
 	}}
 }
 
-// Len is cardinality(col).
-func (c StringArrayCol) Len() Agg { return Agg{fn: "cardinality", arg: c.Col} }
+// Len is cardinality(col): the number of elements, 0 for an empty array and NULL for NULL.
+func (c StringArrayCol) Len() Int32Expr { return Int32Expr{e: callOf("cardinality", c.Col)} }
 
 // Int64ArrayCol is a bigint[] column.
 type Int64ArrayCol struct{ Col }
@@ -552,3 +530,20 @@ func (c Int64ArrayCol) To(vs []int64) Assignment     { return set(c.Col, vs) }
 
 // TSVectorCol is a tsvector column. Match, Rank and RankCD search it.
 type TSVectorCol struct{ Col }
+
+// The value interfaces each column kind implements, so typed functions and comparisons take the
+// column wherever a value of its kind is expected. A scanner column (AnyCol) counts as numeric: it
+// is how decimal columns are typed.
+func (StringCol) stringValue()   {}
+func (Int64Col) int64Value()     {}
+func (Int64Col) numberValue()    {}
+func (Int32Col) int32Value()     {}
+func (Int32Col) numberValue()    {}
+func (Int16Col) numberValue()    {}
+func (Float64Col) float64Value() {}
+func (Float64Col) numberValue()  {}
+func (AnyCol) numericValue()     {}
+func (AnyCol) numberValue()      {}
+func (BoolCol) boolValue()       {}
+func (TimeCol) timeValue()       {}
+func (JSONBCol) jsonbValue()     {}

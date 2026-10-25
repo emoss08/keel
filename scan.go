@@ -155,8 +155,8 @@ func (p *selectPlan) scan(sc *scopeState, sql string, rows pgx.Rows, emit func(r
 }
 
 // planColumn plans decoding column c, of type oid, read on conn, into dst: a jsonnumber column
-// keeps its JSON numbers as json.Number, a nullzero column reads NULL as its zero value, any other
-// column decodes as planScan plans it.
+// keeps its JSON numbers as json.Number, a nullzero column reads NULL as its zero value, an enum
+// column stores its constants' shared strings, any other column decodes as planScan plans it.
 func planColumn(conn *pgx.Conn, oid uint32, format int16, c *schema.Column, dst any) pgtype.ScanPlan {
 	if c.Flags.Has(schema.FlagJSONNumber) {
 		if p := planJSONNumber(conn, oid, format); p != nil {
@@ -164,10 +164,93 @@ func planColumn(conn *pgx.Conn, oid uint32, format int16, c *schema.Column, dst 
 		}
 	}
 	m := conn.TypeMap()
+	var plan pgtype.ScanPlan
 	if c.Flags.Has(schema.FlagNullZero) {
-		return newZeroScanPlan(m, oid, format, dst)
+		plan = newZeroScanPlan(m, oid, format, dst)
+	} else {
+		plan = planScan(m, oid, format, dst)
 	}
-	return planScan(m, oid, format, dst)
+	if len(c.Enum) > 0 && c.Kind == schema.KindString && enumBytes(m, oid, format) {
+		return newEnumScanPlan(c.Enum, dst, plan)
+	}
+	return plan
+}
+
+// enumBytes reports whether a value of type oid in format arrives as the text of the value itself:
+// a text type, any value in the text format, or a Postgres enum, whose binary form is its label.
+func enumBytes(m *pgtype.Map, oid uint32, format int16) bool {
+	if textOID(oid) || format == pgtype.TextFormatCode {
+		return true
+	}
+	t, ok := m.TypeForOID(oid)
+	if !ok {
+		return false
+	}
+	_, isEnum := t.Codec.(*pgtype.EnumCodec)
+	return isEnum
+}
+
+// newEnumScanPlan returns the plan of an enum column read into dst, a *string or **string field
+// (generated code points a named string field at its string), that matches the raw value against
+// the column's constants and falls back to elem; dst of any other type keeps elem.
+func newEnumScanPlan(values []schema.EnumValue, dst any, elem pgtype.ScanPlan) pgtype.ScanPlan {
+	switch dst.(type) {
+	case *string:
+		return &enumScanPlan{values: values, elem: elem}
+	case **string:
+		return &enumPtrScanPlan{values: values, elem: elem}
+	}
+	return elem
+}
+
+// enumMatch returns the constant whose value is src. The comparison does not allocate, and the
+// string returned is the generated constant's, shared by every row that holds it.
+func enumMatch(values []schema.EnumValue, src []byte) (string, bool) {
+	for i := range values {
+		if string(src) == values[i].Value {
+			return values[i].Value, true
+		}
+	}
+	return "", false
+}
+
+// enumScanPlan decodes an enum column into a *string field: a value that is one of the column's
+// constants stores the constant's string, so decoding allocates nothing; NULL and any other value
+// go to elem.
+type enumScanPlan struct {
+	values []schema.EnumValue
+	elem   pgtype.ScanPlan
+}
+
+// Scan decodes src into the *string target.
+func (p *enumScanPlan) Scan(src []byte, target any) error {
+	if src != nil {
+		if v, ok := enumMatch(p.values, src); ok {
+			*target.(*string) = v
+			return nil
+		}
+	}
+	return p.elem.Scan(src, target)
+}
+
+// enumPtrScanPlan decodes a nullable enum column into a **string field: a constant allocates only
+// the pointer, not the string; NULL and any other value go to elem.
+type enumPtrScanPlan struct {
+	values []schema.EnumValue
+	elem   pgtype.ScanPlan
+}
+
+// Scan decodes src into the **string target.
+func (p *enumPtrScanPlan) Scan(src []byte, target any) error {
+	if src != nil {
+		if v, ok := enumMatch(p.values, src); ok {
+			s := new(string)
+			*s = v
+			*target.(**string) = s
+			return nil
+		}
+	}
+	return p.elem.Scan(src, target)
 }
 
 // newZeroScanPlan returns the plan of a nullzero column read into dst: a typed zeroScanPlan for
