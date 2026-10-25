@@ -16,6 +16,9 @@ func TestDefaultColumnsTakeTheDatabaseDefaultWhenUnset(t *testing.T) {
 
 	one := &fleet.Badge{Name: "one"}
 	ok(t, b.Create(ctx, d, one))
+	eq(t, *one.Level, int32(3))
+	eq(t, one.Color, "blue")
+	eq(t, one.Note.String, "none")
 	got := must(b.Where(b.ID.Eq(one.ID)).One(ctx, d))(t)
 	eq(t, *got.Level, int32(3))
 	eq(t, got.Color, "blue")
@@ -27,6 +30,8 @@ func TestDefaultColumnsTakeTheDatabaseDefaultWhenUnset(t *testing.T) {
 		{Name: "set", Level: &five, Color: "red", Note: sql.NullString{String: "kept", Valid: true}},
 	}
 	ok(t, b.CreateMany(ctx, d, rows))
+	eq(t, *rows[0].Level, int32(3))
+	eq(t, *rows[1].Level, int32(5))
 	unset := must(b.Where(b.Name.Eq("unset")).One(ctx, d))(t)
 	eq(t, *unset.Level, int32(3))
 	eq(t, unset.Color, "blue")

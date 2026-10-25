@@ -295,6 +295,9 @@ func Derive(t *Table) {
 			continue
 		}
 		t.Insert = append(t.Insert, idx)
+		if c.Flags.Has(FlagDefault) && !c.Flags.Has(FlagNoSelect) {
+			t.Returning = append(t.Returning, idx)
+		}
 		if !c.Flags.Has(FlagPK) && !c.Flags.Has(FlagTenant) && !c.Flags.Has(FlagAutoCreate) &&
 			!c.Flags.Has(FlagVersion) {
 			t.Update = append(t.Update, idx)

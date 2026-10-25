@@ -193,7 +193,7 @@ var badgesTable = schema.Table{
 	Select:     []int32{0, 1, 2, 3, 4, 5, 6},
 	Insert:     []int32{0, 1, 2, 3, 4, 5, 6},
 	Update:     []int32{3, 4, 5, 6},
-	Returning:  nil,
+	Returning:  []int32{4, 5, 6},
 	Version:    -1,
 	AutoID:     0,
 	AutoCreate: -1,
