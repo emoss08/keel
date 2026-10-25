@@ -1,0 +1,44 @@
+[
+  {
+    "Plan": {
+      "Node Type": "Limit",
+      "Startup Cost": 25711.29,
+      "Total Cost": 25712.46,
+      "Plan Rows": 10,
+      "Plans": [
+        {
+          "Node Type": "Gather Merge",
+          "Parent Relationship": "Outer",
+          "Workers Planned": 2,
+          "Startup Cost": 25711.29,
+          "Total Cost": 122940.40,
+          "Plan Rows": 833334,
+          "Plans": [
+            {
+              "Node Type": "Sort",
+              "Parent Relationship": "Outer",
+              "Startup Cost": 24711.27,
+              "Total Cost": 25752.94,
+              "Plan Rows": 416667,
+              "Sort Key": ["shipments.created_at DESC", "shipments.id DESC"],
+              "Plans": [
+                {
+                  "Node Type": "Seq Scan",
+                  "Parent Relationship": "Outer",
+                  "Parallel Aware": true,
+                  "Relation Name": "shipments",
+                  "Schema": "tms",
+                  "Alias": "s",
+                  "Startup Cost": 0.00,
+                  "Total Cost": 15707.67,
+                  "Plan Rows": 416667,
+                  "Filter": "(s.organization_id = $1)"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+]

@@ -1,0 +1,35 @@
+[
+  {
+    "Plan": {
+      "Node Type": "Limit",
+      "Startup Cost": 0.47,
+      "Total Cost": 12.97,
+      "Plan Rows": 25,
+      "Plans": [
+        {
+          "Node Type": "Incremental Sort",
+          "Parent Relationship": "Outer",
+          "Startup Cost": 0.47,
+          "Total Cost": 4982.26,
+          "Plan Rows": 10000,
+          "Sort Key": ["s.created_at DESC", "s.pro_number"],
+          "Presorted Key": ["s.created_at"],
+          "Plans": [
+            {
+              "Node Type": "Index Scan",
+              "Parent Relationship": "Outer",
+              "Scan Direction": "Backward",
+              "Index Name": "idx_shipments_created",
+              "Relation Name": "shipments",
+              "Schema": "tms",
+              "Alias": "s",
+              "Startup Cost": 0.42,
+              "Total Cost": 4532.26,
+              "Plan Rows": 10000
+            }
+          ]
+        }
+      ]
+    }
+  }
+]

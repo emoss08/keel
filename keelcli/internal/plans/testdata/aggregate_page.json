@@ -1,0 +1,43 @@
+[
+  {
+    "Plan": {
+      "Node Type": "Limit",
+      "Startup Cost": 900.00,
+      "Total Cost": 900.10,
+      "Plan Rows": 10,
+      "Plans": [
+        {
+          "Node Type": "Aggregate",
+          "Strategy": "Sorted",
+          "Parent Relationship": "Outer",
+          "Startup Cost": 800.00,
+          "Total Cost": 950.00,
+          "Plan Rows": 500,
+          "Plans": [
+            {
+              "Node Type": "Sort",
+              "Parent Relationship": "Outer",
+              "Startup Cost": 800.00,
+              "Total Cost": 825.00,
+              "Plan Rows": 10000,
+              "Sort Key": ["items.state"],
+              "Plans": [
+                {
+                  "Node Type": "Index Only Scan",
+                  "Parent Relationship": "Outer",
+                  "Index Name": "items_state_idx",
+                  "Relation Name": "items",
+                  "Schema": "public",
+                  "Alias": "items",
+                  "Startup Cost": 0.29,
+                  "Total Cost": 300.00,
+                  "Plan Rows": 10000
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+]

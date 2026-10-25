@@ -1,0 +1,44 @@
+[
+  {
+    "Plan": {
+      "Node Type": "Limit",
+      "Parallel Aware": false,
+      "Async Capable": false,
+      "Startup Cost": 1580.82,
+      "Total Cost": 1580.85,
+      "Plan Rows": 10,
+      "Plan Width": 37,
+      "Output": ["id", "name"],
+      "Plans": [
+        {
+          "Node Type": "Sort",
+          "Parent Relationship": "Outer",
+          "Parallel Aware": false,
+          "Async Capable": false,
+          "Startup Cost": 1580.82,
+          "Total Cost": 1630.82,
+          "Plan Rows": 20000,
+          "Plan Width": 37,
+          "Output": ["id", "name"],
+          "Sort Key": ["big.name"],
+          "Plans": [
+            {
+              "Node Type": "Seq Scan",
+              "Parent Relationship": "Outer",
+              "Parallel Aware": false,
+              "Async Capable": false,
+              "Relation Name": "big",
+              "Schema": "public",
+              "Alias": "big",
+              "Startup Cost": 0.00,
+              "Total Cost": 368.00,
+              "Plan Rows": 20000,
+              "Plan Width": 37,
+              "Output": ["id", "name"]
+            }
+          ]
+        }
+      ]
+    }
+  }
+]

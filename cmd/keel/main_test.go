@@ -257,3 +257,53 @@ func write(t *testing.T, path, body string) {
 		t.Fatal(err)
 	}
 }
+
+func TestPlans(t *testing.T) {
+	contains(t, "help", ok(t, "help"), "plans", "explain recorded statement shapes")
+	dsn := database(t)
+	ctx := context.Background()
+	conn, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(ctx)
+	var version int
+	if err := conn.QueryRow(ctx, "SELECT current_setting('server_version_num')::int").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version < 160000 {
+		t.Skipf("EXPLAIN (GENERIC_PLAN) needs PostgreSQL 16, the server is %d", version)
+	}
+	if _, err := conn.Exec(ctx, `CREATE TABLE orders (id int PRIMARY KEY, customer text NOT NULL);
+INSERT INTO orders SELECT g, 'c' || (g % 100) FROM generate_series(1, 5000) AS g;
+ANALYZE orders`); err != nil {
+		t.Fatal(err)
+	}
+	shapes := filepath.Join(t.TempDir(), "shapes.jsonl")
+	write(t, shapes, `{"sql":"SELECT id FROM orders WHERE id = $1","op":"select","table":"orders","args":1}
+{"sql":"SELECT id FROM orders WHERE customer = $1","op":"select","table":"orders","args":1}
+`)
+
+	contains(t, "plans", ok(t, "plans", "-dsn", dsn, "-shapes", shapes), "No findings: 2 shapes planned.")
+	code, out, errOut := cli(t, "plans", "-dsn", dsn, "-shapes", shapes, "-seq-scan-rows", "-1")
+	if code != 3 || !strings.Contains(out, "seq-scan sequential scan of public.orders (about 5,000 rows)") ||
+		!strings.Contains(errOut, "plans found 1 finding") {
+		t.Fatalf("plans -seq-scan-rows -1: exit %d\n%s%s", code, out, errOut)
+	}
+	code, out, _ = cli(t, "plans", "-json", "-dsn", dsn, "-shapes", shapes, "-seq-scan-rows", "-1")
+	var doc struct {
+		Shapes, Findings int
+		Reports          []struct {
+			SQL      string
+			Findings []struct{ Kind, Relation string }
+		}
+	}
+	if err := json.Unmarshal([]byte(out), &doc); err != nil || code != 3 || doc.Shapes != 2 || doc.Findings != 1 ||
+		len(doc.Reports) != 2 || len(doc.Reports[1].Findings) != 1 || doc.Reports[1].Findings[0].Relation != "public.orders" {
+		t.Fatalf("plans json: exit %d %v\n%s", code, err, out)
+	}
+	t.Setenv("KEEL_DSN", "")
+	if code, _, errOut := cli(t, "plans", "-shapes", shapes); code != 1 || !strings.Contains(errOut, "pass -dsn or set KEEL_DSN") {
+		t.Fatalf("plans without a database: exit %d %s", code, errOut)
+	}
+}

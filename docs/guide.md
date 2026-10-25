@@ -1759,7 +1759,8 @@ plan a prepared statement settles on after its first runs, which cannot use a va
 partial index or an expression index. A predicate that needs `DynConst` to reach its index shows
 here as the scan it really gets. `plan.Indexes()` and `plan.SeqScans()` list the indexes the plan
 reads and the tables it scans sequentially; [`keeltest.UsesIndex`](#testing-an-application) asserts
-on them.
+on them, and the [plan guard](#plan-guard) checks the generic plan of every statement a test run
+sent.
 
 ## Loading relations
 
@@ -3174,6 +3175,9 @@ func (tracingObserver) AfterQuery(ctx context.Context, e *keel.QueryEvent) {
 The `*QueryEvent` is the same pointer in both calls. `BEGIN`, `COMMIT`, `OnBegin` statements and
 plan-mode switches are not reported.
 
+`keel.RecordShapes(w)` is a ready-made observer that writes each distinct statement text once, for
+the [plan guard](#plan-guard).
+
 ### Query log
 
 `keel/keellog` prints statements for a developer reading a terminal: a header line per statement
@@ -4047,6 +4051,80 @@ func TestSchemaMatchesModels(t *testing.T) {
 
 `keelcli` exposes the same check as `verify` for an `App` that sets `Tables: keeltables.All`, with
 plain or `-json` output and exit code 3 on drift, to run against a deployed database.
+
+### Plan guard
+
+`keeltest.UsesIndex` asserts on the queries a test names; the plan guard checks every statement
+the application really sends. Record the distinct statement texts while the test suite (or a
+staging soak) runs, then explain each one against a database with realistic statistics:
+
+```go
+func TestMain(m *testing.M) {
+    var observers []keel.Observer
+    var closeShapes func() error
+    if path := os.Getenv("KEEL_SHAPES"); path != "" {
+        obs, closeFn, err := keel.RecordShapesFile(path)
+        if err != nil {
+            log.Fatal(err)
+        }
+        observers, closeShapes = append(observers, obs), closeFn
+    }
+    testDB = openTestDB(observers) // Config.Observers: observers
+    code := m.Run()
+    if closeShapes != nil {
+        if err := closeShapes(); err != nil {
+            log.Print(err)
+            code = 1
+        }
+    }
+    os.Exit(code)
+}
+```
+
+```sh
+rm -f /tmp/shapes.jsonl
+KEEL_SHAPES=/tmp/shapes.jsonl go test ./...
+keel plans -dsn "$STAGING_DSN" -shapes /tmp/shapes.jsonl -sort-limit
+```
+
+```text
+findings select shipments (cost 48213.50, 1,204 rows)
+  SELECT s.id, s.pro_number FROM shipments s WHERE s.organization_id = $1 AND s.bol = $2 …
+  seq-scan sequential scan of public.shipments (about 2,400,000 rows)
+findings select stops (cost 912.40, 25 rows)
+  SELECT st.id FROM stops st WHERE st.organization_id = $1 ORDER BY st.planned_at LIMIT $2
+  sort-under-limit sort by st.planned_at under a limit: the page is sorted in full, no index gives its order
+unplanned select tmp_import
+  SELECT id FROM tmp_import WHERE batch = $1
+  relation "tmp_import" does not exist (SQLSTATE 42P01)
+2 findings in 2 of 311 shapes planned; 1 shape could not be planned.
+keelcli: plans found 2 findings
+```
+
+- `keel.RecordShapes(w)` is the same observer over any `io.Writer`; `keel.RecordShapesFile(path)`
+  appends, so every test binary of `go test ./...` can write to one file, and its close function
+  returns the first write error. Each line is a `keel.Shape`:
+  `{"sql": "...", "op": "select", "table": "shipments", "args": 2}`. A text seen before costs a
+  read-locked map lookup; only statements EXPLAIN can plan are written (no savepoints, `COPY`,
+  DDL through `Exec`, advisory locks or `Explain`'s own statements). `keel.ReadShapes(r)` reads a
+  file back with each distinct text once.
+- `keel plans` runs `EXPLAIN (GENERIC_PLAN, VERBOSE, FORMAT JSON)` (PostgreSQL 16 or later) for
+  every shape on one connection, outside transactions, with the placeholders unbound: the plan a
+  prepared statement settles on, which a value-dependent partial index cannot rescue. A shape
+  that holds more than one statement is never sent.
+- `-seq-scan-rows N` (default 10000) flags a sequential scan of a relation whose
+  `pg_class.reltuples` exceeds N; a table never analyzed counts as empty, so run `ANALYZE` (or use
+  a database restored from production statistics) first, and `-seq-scan-rows -1` flags every
+  sequential scan. `-max-cost C` flags a plan whose total cost exceeds C (default 0: no limit).
+  `-sort-limit` flags a `Sort` under a `Limit`, directly or through `Gather Merge`, `Subquery
+  Scan`, `Unique`, `Materialize`, `Result` or `Merge Append`: a page sorted in full because no
+  index gives its order. An `Incremental Sort` passes.
+- A shape EXPLAIN cannot plan (a temporary table, a parameter whose type Postgres cannot infer) is
+  listed with its error and does not fail the run. Any finding exits 3, keelcli's "a check found
+  problems"; `-json` writes one document with `shapes`, `findings`, `unplanned` and a report per
+  shape (`sql`, `op`, `table`, `args`, `cost`, `rows`, `findings`, `error`).
+- `plans` is a keelcli command, so an application's database binary has it too whenever its `App`
+  sets `Config`, with the application's connection settings.
 
 ## Coming from Bun
 

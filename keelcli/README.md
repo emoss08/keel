@@ -245,6 +245,7 @@ database), and the application's own. A command's flags may follow its arguments
 | `template` / `template build` / `template prune` | list, build (migrations and reference seeds), or drop the application's stale templates (prune confirms); each takes `-admin` |
 | `doctor` | connection, server, `plan_cache_mode`, extensions, migrations, templates, environment, lock holders and long queries; exits 3 when a check fails |
 | `verify` | compare the models (`App.Tables`) with the database through `keel.Verify`: missing tables and columns, primary keys, nullability, generated columns, types, join tables and relation keys, each with a fix; exits 3 on drift |
+| `plans -shapes file [-seq-scan-rows n] [-max-cost c] [-sort-limit]` | the plan guard: `EXPLAIN (GENERIC_PLAN, VERBOSE, FORMAT JSON)` (PostgreSQL 16) of every statement shape in the file `keel.RecordShapesFile` wrote (`-` reads stdin), on one connection of its own outside transactions; flags sequential scans of relations whose `reltuples` exceed `-seq-scan-rows` (default 10000, `-1` flags every one), plans whose total cost exceeds `-max-cost` (default 0, no limit) and, with `-sort-limit`, a `Sort` under a `Limit`; a shape EXPLAIN cannot plan is listed with its error and does not fail the run; exits 3 on any finding. Present whenever the App has a `Config` |
 | `version` | the binary's name and version |
 | `help [command]` | help for a command |
 

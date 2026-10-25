@@ -2,6 +2,7 @@
 //
 //	keel gen [-out {dir}/{name}db] [-kinds keelkinds] [-tables keeltables] [-check] ./internal/...
 //	keel migrate <command> [flags] [args]
+//	keel plans -dsn DSN -shapes FILE [-seq-scan-rows N] [-max-cost C] [-sort-limit] [-json]
 //	keel analytics ts [-check] -out path
 //
 // Every command but gen is keelcli's: in a terminal runs draw live views and keel with no
@@ -53,7 +54,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 func app(f *migrateFlags) keelcli.App {
 	return keelcli.App{
 		Name:        "keel",
-		Description: "typed data access for Postgres: gen writes the packages, analytics ts the analytics TypeScript module, the other commands manage migrations.",
+		Description: "typed data access for Postgres: gen writes the packages, analytics ts the analytics TypeScript module, plans checks recorded statement plans, the other commands manage migrations.",
 		Version:     version(),
 		Config:      f.config,
 		Flags:       f.bind,

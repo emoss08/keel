@@ -636,7 +636,7 @@ pos := keel.CommitPosition(ctx, db)                 // for keel.OnReplicaAfter i
 | model hooks | methods on the model | normalisation and derived fields |
 | table hooks | `keel.OnCreate/OnUpdate/OnDelete/OnWrite[T](db, handle, phase, fn, keel.Needs(cols...))` | validation, audit, side effects |
 | interceptors | `db.Intercept(handle, fn)`, `db.InterceptAll(fn)` | add `WHERE` predicates to every statement whose base is a table and that has one: queries, loads, subqueries, bulk updates and deletes, `Save`, `DeleteRow`. Never inserts, including an upsert's conflict update |
-| observers | `Config.Observers` | tracing, metrics, slow-query log, N+1 detection |
+| observers | `Config.Observers` | tracing, metrics, slow-query log, N+1 detection, recording statement shapes for the plan guard (`keel.RecordShapes`) |
 
 Table hook phases:
 
@@ -676,6 +676,37 @@ rules are the decoding rules: a kind holds the types pgx scans it from (`int16` 
 `int64` any integer, `string` text types, enums, `uuid` and `json`), a field holds NULL when it is
 nullable, nullzero, jsonb, `[]byte`, an array or a custom type, and a join table carries
 `Table.JoinTableOf`'s columns. `keelcli`'s `verify` runs it for `App.Tables`.
+
+## Plan guard
+
+A query that scans a large table sequentially, costs too much or sorts a page in full is caught
+before it ships, from the statements the application really sends:
+
+- `keel.RecordShapes(w io.Writer) Observer` writes each distinct statement text once, in
+  `BeforeQuery`, as a JSON line of `keel.Shape{SQL, Op, Table, Args}`
+  (`{"sql": "...", "op": "...", "table": "...", "args": n}`). It keeps the texts it has seen in a
+  map behind an `RWMutex`, so a repeated statement costs a read-locked lookup and each new line is
+  one `Write` under the lock; it skips what EXPLAIN cannot plan (texts not starting with `SELECT`,
+  `WITH`, `INSERT`, `UPDATE`, `DELETE`, `MERGE`, `VALUES` or `TABLE`, and advisory locks).
+  Statement text never contains values, so the set is bounded by the code, not the data.
+- `keel.RecordShapesFile(path) (Observer, func() error, error)` appends to a file (one write per
+  line), so the test binaries of one `go test ./...` share it; the close function returns the
+  first write error. `keel.ReadShapes(r)` reads the lines back, each distinct text once in first-seen
+  order.
+- `keel plans` (keelcli, so `cmd/keel` and every application binary have it whenever the App has a
+  `Config`) explains every shape with `EXPLAIN (GENERIC_PLAN, VERBOSE, FORMAT JSON)` over the
+  simple query protocol on one connection of its own, outside transactions: placeholders stay
+  unbound, the plan is the generic one a prepared statement settles on, and `VERBOSE` names each
+  relation's schema. A shape that is not a single statement (checked by a lexer that skips
+  literals, quoted identifiers, dollar quotes and comments) is never sent. The `reltuples` of every
+  relation scanned sequentially are then read in one catalog statement. Findings: a `Seq Scan`
+  (parallel included) of a relation with more than `-seq-scan-rows` rows (default 10000; never
+  analyzed counts as empty; `-1` flags every one); a total cost over `-max-cost`; with
+  `-sort-limit`, a `Sort` a `Limit` reads through `Gather`, `Gather Merge`, `Result`,
+  `Subquery Scan`, `Materialize`, `Unique` or `Merge Append` only (an `Incremental Sort`, or a
+  sort feeding an aggregate, is not one). A shape EXPLAIN cannot plan is reported with its error
+  and does not fail the run; any finding exits 3, keelcli's "a check found problems".
+  PostgreSQL 16 or later is required.
 
 ## Errors
 

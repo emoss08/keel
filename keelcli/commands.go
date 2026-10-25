@@ -65,6 +65,10 @@ func builtins(s *session) []builtin {
 	if s.app.Tables != nil {
 		out = append(out, builtin{"verify", "", "compare the models with the database's tables", setupVerify})
 	}
+	if s.app.Config != nil {
+		out = append(out, builtin{"plans", "-shapes file [-seq-scan-rows n] [-max-cost c] [-sort-limit]",
+			"explain recorded statement shapes and flag scans, costs and sorted pages", setupPlans})
+	}
 	return append(out, builtin{"version", "", "print the version", setupVersion})
 }
 
