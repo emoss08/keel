@@ -554,7 +554,7 @@ func (d *decoders) put(dec *decoder) {
 // and closes it.
 func (d *decoders) open(ctx context.Context) (*decoder, error) {
 	pc := d.db.pool.Config()
-	cc := pc.ConnConfig
+	cc := pc.ConnConfig.Copy()
 	if pc.BeforeConnect != nil {
 		if err := pc.BeforeConnect(ctx, cc); err != nil {
 			return nil, fmt.Errorf("keel: open a cache decoder: %w", err)

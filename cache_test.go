@@ -12,6 +12,7 @@ import (
 	"github.com/emoss08/keel/analytics/cache"
 	"github.com/emoss08/keel/internal/testmodels/fleet"
 	"github.com/emoss08/keel/internal/testmodels/fleet/fleetdb"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -275,6 +276,18 @@ func TestCacheKeySeparatesEntries(t *testing.T) {
 	cachedCustomers(t, alice, d)
 	cachedCustomers(t, bob, d)
 	eq(t, d.CacheStats().Hits, int64(2))
+}
+
+func TestCacheListensOnItsOwnConnConfig(t *testing.T) {
+	db(t)
+	listen, err := pgx.ParseConfig(testDSN)
+	ok(t, err)
+	d := cacheDB(t, nil, func(cfg *keel.Config) { cfg.Cache.Listen = listen })
+	ctx := newTenant()
+	ok(t, fleetdb.Customers.Create(ctx, d, &fleet.Customer{Name: "A", Code: "A"}))
+	eq(t, len(cachedCustomers(t, ctx, d)), 1)
+	eq(t, len(cachedCustomers(t, ctx, d)), 1)
+	eq(t, d.CacheStats().Hits, int64(1))
 }
 
 func TestCacheOpenRefusesUnsafeConfigs(t *testing.T) {

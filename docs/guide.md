@@ -535,8 +535,10 @@ open, err := s.Where(s.Status.Eq(fleet.StatusNew)).
   (`Get`, `Set`, `Del`) as `keel/analytics/cache`, and the stores of `keel/analytics/cache` fit
   as they are. A local miss reads it; an entry read while this process had unflushed writes to its
   tables stays local. Store errors are misses, reported to `OnError`.
-- The listener is one dedicated connection per `DB` that runs `LISTEN keel_data_versions`; behind
-  a transaction-mode pooler, give the pool a direct connection. Hits decode on up to `GOMAXPROCS`
+- The listener is one dedicated connection per `DB` that runs `LISTEN keel_data_versions`, with
+  the pool's settings unless `CacheConfig.Listen` (a `*pgx.ConnConfig` from `pgx.ParseConfig`)
+  names another: behind a transaction-mode pooler such as PgBouncer, point `Listen` at Postgres
+  directly. Hits decode on up to `GOMAXPROCS`
   decoder connections, each opened once (with `AfterConnect`) and closed, so a hit never takes a
   pooled connection.
 - `db.CacheStats()` returns `Hits`, `Misses`, `Bypasses`, `Errors`, `Bytes` (local), `Versions`

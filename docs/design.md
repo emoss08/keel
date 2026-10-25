@@ -821,13 +821,14 @@ bypasses, errors, local bytes, pairs held and whether the listener is up.
   clean and takes the returned versions. A stamp with an epoch is never written to the shared
   store, so a process never serves its own stale data and never shares data keyed by its local
   state.
-- **Listener.** A dedicated connection (the primary pool's settings and `BeforeConnect`) runs
+- **Listener.** A dedicated connection (`CacheConfig.Listen` as given, else a copy of the primary
+  pool's settings after its `BeforeConnect`) runs
   `LISTEN keel_data_versions`; `Open` waits for the first connection and retries in the background
   when it fails. After 30s without a notification it pings. On loss, and again on reconnect, the
   bus forgets every version (keeping dirty epochs) and the cache is bypassed until it is back;
   reconnects back off from 100ms to 5s. Entries survive: a refilled version that still matches
-  revalidates them. It needs a session connection: behind a transaction-mode pooler point the
-  pool at a direct connection.
+  revalidates them. It needs a session connection: behind a transaction-mode pooler set `Listen`
+  to a direct connection.
 - **Entries** hold the raw wire result of every round trip the terminal sent, loads included:
   per statement the hash of its text, its command tag, its field descriptions and each row's raw
   values. On a miss the runner hook wraps each statement's scanner so the rows it reads are

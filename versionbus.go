@@ -148,15 +148,13 @@ func (b *versionBus) stop() {
 	<-b.done
 }
 
-// connect opens the listener's connection with the primary pool's settings and LISTENs on it,
-// then clears the map and marks the bus up: notifications from here on reach it.
+// connect opens the listener's connection, with CacheConfig.Listen or else the primary pool's
+// settings, and LISTENs on it, then clears the map and marks the bus up: notifications from here
+// on reach it.
 func (b *versionBus) connect(ctx context.Context) (*pgx.Conn, error) {
-	pc := b.db.pool.Config()
-	cc := pc.ConnConfig
-	if pc.BeforeConnect != nil {
-		if err := pc.BeforeConnect(ctx, cc); err != nil {
-			return nil, err
-		}
+	cc, err := b.listenConfig(ctx)
+	if err != nil {
+		return nil, err
 	}
 	conn, err := pgx.ConnectConfig(ctx, cc)
 	if err != nil {
@@ -169,6 +167,22 @@ func (b *versionBus) connect(ctx context.Context) (*pgx.Conn, error) {
 	b.reset()
 	b.up.Store(true)
 	return conn, nil
+}
+
+// listenConfig returns a copy of the listener's connection settings: CacheConfig.Listen as given,
+// or the primary pool's after its BeforeConnect.
+func (b *versionBus) listenConfig(ctx context.Context) (*pgx.ConnConfig, error) {
+	if cc := b.db.cfg.Cache; cc != nil && cc.Listen != nil {
+		return cc.Listen.Copy(), nil
+	}
+	pc := b.db.pool.Config()
+	cc := pc.ConnConfig.Copy()
+	if pc.BeforeConnect != nil {
+		if err := pc.BeforeConnect(ctx, cc); err != nil {
+			return nil, err
+		}
+	}
+	return cc, nil
 }
 
 // run applies notifications until ctx ends, reconnecting after a loss. While the listener is down

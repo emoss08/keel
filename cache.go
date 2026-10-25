@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -30,6 +31,11 @@ type CacheConfig struct {
 	// OnError receives the errors of the shared store, the listener and the decoders; the cache
 	// treats each as a miss or a bypass.
 	OnError func(err error)
+	// Listen is the connection the listener LISTENs for data versions on; nil uses the primary
+	// pool's settings (and its BeforeConnect). LISTEN needs a session, so behind a
+	// transaction-mode pooler (PgBouncer) point it at Postgres directly. Build it with
+	// pgx.ParseConfig; it is used as given, without the pool's BeforeConnect.
+	Listen *pgx.ConnConfig
 }
 
 // defaultCacheTTL is the time to live of a query that asks for the cache without TTL, and
