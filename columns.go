@@ -201,6 +201,7 @@ func anyOf(e Expr, list any, not bool) Pred {
 			return p
 		}
 	}
+	slot := &list
 	return predExpr{e: func(r *render) {
 		e.writeSQL(r)
 		if not {
@@ -208,7 +209,7 @@ func anyOf(e Expr, list any, not bool) Pred {
 		} else {
 			r.s(" = ANY(")
 		}
-		r.arg(list)
+		r.argSlot(list, unsafe.Pointer(slot), " = ANY(")
 		r.b(')')
 	}}
 }

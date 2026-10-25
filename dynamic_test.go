@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/emoss08/keel"
+	"github.com/emoss08/keel/internal/testmodels/fleet"
 	"github.com/emoss08/keel/internal/testmodels/fleet/fleetdb"
 	"github.com/emoss08/keel/schema"
 )
@@ -1092,6 +1093,19 @@ func TestDynExpressionsInTypedQueries(t *testing.T) {
 		}
 	}
 	eq(t, must(s.Where(keel.DynOf(s.ProNumber).Eq(keel.DynConst("it's"))).Count(w.ctx, d))(t), int64(0))
+
+	type bucket struct {
+		Bucket string
+		N      int64
+	}
+	early := keel.DynCase().
+		When(s.Status.In(fleet.StatusNew, fleet.StatusAssigned), keel.DynOf(s.Status).Cast(keel.TypeString)).
+		End().
+		Coalesce("other")
+	buckets := must(keel.Into[bucket](w.ctx, d, s.Pick(early, keel.Count()).Group(early).Order(keel.Asc(early))))(t)
+	eq(t, len(buckets), 3)
+	eq(t, buckets[2].Bucket, "other")
+	eq(t, buckets[2].N, int64(6))
 
 	wide := must(keel.IntoOne[int64](w.ctx, d, s.Pick(keel.DynOf(s.Priority).Add(1).Mul(86400).Max())))(t)
 	eq(t, wide, int64(3*86400))
