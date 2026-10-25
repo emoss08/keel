@@ -1106,6 +1106,9 @@ Options shape the query:
 | `keel.SearchModes(keel.Prefix)` | `to_tsquery(config, 'dal':* & 'ree':*)`: every word as a prefix, for search as you type |
 | `keel.SearchModes(keel.AnyWord)` | `to_tsquery(config, 'dallas' \| 'reefer')`: any of the words |
 | `keel.SearchModes(keel.AnyPrefix)` | `to_tsquery(config, 'dal':* \| 'ree':*)`: any word as a prefix |
+| `keel.SearchModes(keel.AnyWebSearch)` | `to_tsquery(config, ('dallas' \| ('dry' <-> 'van')) & !'frozen')`: any word or `"quoted phrase"`, without any `-excluded` word |
+| `keel.SearchModes(keel.TSQuery)` | `to_tsquery(config, q)`: `q` is tsquery syntax the code built from cleaned words; malformed syntax fails the statement, so never pass user input |
+| `keel.SearchAlso(mode, text)` | another term, `text` read with `mode`, ORed into the query: a websearch of the whole string plus a `TSQuery` of the prefixes the code chose |
 | `keel.SearchModes(a, b, …)` | the queries of each mode ORed: `(websearch_to_tsquery(…) \|\| to_tsquery(…))` |
 | `keel.SearchConfig("simple", "english")` | the queries built with each configuration ORed, so a word matches stemmed or not |
 | `keel.RankNormalization(32)` | `ts_rank(vector, query, 32)`: the normalization bit mask of `Rank` and `RankCD` |

@@ -26,7 +26,20 @@ const (
 	AnyWord
 	// AnyPrefix matches rows holding a word that starts with any of the string's words.
 	AnyPrefix
+	// TSQuery reads the string as tsquery syntax (to_tsquery): ('dallas':* & 'reefer') | 'tx'.
+	// Build it from words the code has cleaned, never from user input: a malformed string fails the
+	// statement.
+	TSQuery
+	// AnyWebSearch reads the string as WebSearch does but matches rows holding any of its words or
+	// "quoted phrases", without any -word: "dallas reefer -frozen" finds rows with either word and
+	// without "frozen".
+	AnyWebSearch
 )
+
+// wordMode reports whether m builds its tsquery from the string's words in Go.
+func wordMode(m SearchMode) bool {
+	return m == Prefix || m == AnyWord || m == AnyPrefix || m == AnyWebSearch
+}
 
 // SearchOption shapes a full-text search: the configurations and modes its query is built with,
 // and the normalization of a rank.
@@ -47,6 +60,15 @@ func SearchModes(modes ...SearchMode) SearchOption {
 	return func(s *search) { s.modes = append(s.modes[:0:0], modes...) }
 }
 
+// SearchAlso ORs another term into the query: text read with mode, under each of the search's
+// configurations. A search of the words typed so far can add their prefixes, ANDed, alongside a
+// WebSearch of the whole string:
+//
+//	m.SearchVector.Match(raw, keel.SearchAlso(keel.TSQuery, "'dal':* & 'ree':*"))
+func SearchAlso(mode SearchMode, text string) SearchOption {
+	return func(s *search) { s.also = append(s.also, searchTerm{mode: mode, text: text}) }
+}
+
 // RankNormalization sets the normalization of Rank and RankCD, the bit mask ts_rank takes as its
 // third argument (1 divides the rank by 1 + the logarithm of the document length, 32 scales it to
 // rank/(rank+1), …). Match ignores it.
@@ -60,10 +82,18 @@ type search struct {
 	text    string
 	configs []string
 	modes   []SearchMode
+	also    []searchTerm
 	norm    int64
 	hasNorm bool
-	words   map[SearchMode]string
+	terms   []searchTerm
 	err     error
+}
+
+// searchTerm is one tsquery term before configurations: a mode and the string it reads, the word
+// list already built for a word mode.
+type searchTerm struct {
+	mode SearchMode
+	text string
 }
 
 // newSearch builds the search of text over column c (nil when the searched expression is not a
@@ -88,16 +118,28 @@ func newSearch(c *schema.Column, text string, opts []SearchOption) *search {
 			s.err = errf("text search configuration %q must match [a-z_][a-z0-9_]* or schema.name", cfg)
 		}
 	}
-	for _, m := range s.modes {
-		if m < WebSearch || m > AnyPrefix {
+	add := func(m SearchMode, text string) {
+		if m < WebSearch || m > AnyWebSearch {
 			s.err = errf("unknown search mode %d", m)
+			return
 		}
-		if m >= Prefix && s.words[m] == "" {
-			if s.words == nil {
-				s.words = make(map[SearchMode]string, 1)
+		if wordMode(m) {
+			if m == AnyWebSearch {
+				text = anyWebQuery(text)
+			} else {
+				text = wordQuery(text, m)
 			}
-			s.words[m] = wordQuery(text, m)
+			if text == "" {
+				return
+			}
 		}
+		s.terms = append(s.terms, searchTerm{mode: m, text: text})
+	}
+	for _, m := range s.modes {
+		add(m, text)
+	}
+	for _, t := range s.also {
+		add(t.mode, t.text)
 	}
 	return s
 }
@@ -136,10 +178,48 @@ func wordQuery(text string, m SearchMode) string {
 	return b.String()
 }
 
+// anyWebQuery writes the tsquery text of AnyWebSearch: the words and "quoted phrases" of text
+// ORed, ANDed with the negation of every -word. It is empty when text has nothing to look for.
+func anyWebQuery(text string) string {
+	isSep := func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) }
+	var alts, not []string
+	for i, part := range strings.Split(text, `"`) {
+		if i%2 == 1 {
+			words := strings.FieldsFunc(part, isSep)
+			if len(words) > 0 {
+				alts = append(alts, "('"+strings.Join(words, "' <-> '")+"')")
+			}
+			continue
+		}
+		for field := range strings.FieldsSeq(part) {
+			exclude := len(field) > 1 && field[0] == '-'
+			if strings.EqualFold(field, "or") {
+				continue
+			}
+			for _, w := range strings.FieldsFunc(field, isSep) {
+				if exclude {
+					not = append(not, "!'"+w+"'")
+				} else {
+					alts = append(alts, "'"+w+"'")
+				}
+			}
+		}
+	}
+	if len(alts) == 0 {
+		return ""
+	}
+	q := "(" + strings.Join(alts, " | ") + ")"
+	if len(not) > 0 {
+		q += " & " + strings.Join(not, " & ")
+	}
+	return q
+}
+
 // tsqueryFuncs are the functions that turn a search string into a tsquery, by mode.
 var tsqueryFuncs = map[SearchMode]string{
 	WebSearch: "websearch_to_tsquery(", Plain: "plainto_tsquery(", Phrase: "phraseto_tsquery(",
-	Prefix: "to_tsquery(", AnyWord: "to_tsquery(", AnyPrefix: "to_tsquery(",
+	Prefix: "to_tsquery(", AnyWord: "to_tsquery(", AnyPrefix: "to_tsquery(", TSQuery: "to_tsquery(",
+	AnyWebSearch: "to_tsquery(",
 }
 
 // writeQuery writes the search's tsquery: one term per configuration and mode, ORed. Word modes
@@ -150,12 +230,7 @@ func (s *search) writeQuery(r *render) {
 		r.fail(s.err)
 		return
 	}
-	terms := 0
-	for _, m := range s.modes {
-		if m < Prefix || s.words[m] != "" {
-			terms += len(s.configs)
-		}
-	}
+	terms := len(s.terms) * len(s.configs)
 	if terms == 0 {
 		r.s("NULL::tsquery")
 		return
@@ -165,24 +240,18 @@ func (s *search) writeQuery(r *render) {
 	}
 	first := true
 	for _, cfg := range s.configs {
-		for _, m := range s.modes {
-			text := s.text
-			if m >= Prefix {
-				if text = s.words[m]; text == "" {
-					continue
-				}
-			}
+		for _, t := range s.terms {
 			if !first {
 				r.s(" || ")
 			}
 			first = false
-			r.s(tsqueryFuncs[m])
+			r.s(tsqueryFuncs[t.mode])
 			if cfg != "" {
 				r.b('\'')
 				r.s(cfg)
 				r.s("'::regconfig, ")
 			}
-			r.argTyped(text, "tsquery")
+			r.argTyped(t.text, "tsquery")
 			r.b(')')
 		}
 	}

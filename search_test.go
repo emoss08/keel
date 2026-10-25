@@ -63,6 +63,14 @@ func TestSearchMatchModes(t *testing.T) {
 		{"modes ORed", v.Match("flat", keel.SearchModes(keel.WebSearch, keel.Prefix)), "Chicago"},
 		{"no words", v.Match("&&& ***", keel.SearchModes(keel.Prefix)), ""},
 		{"quotes are data", v.Match(`o'brien\ ' | dallas`, keel.SearchModes(keel.AnyWord)), "Dallas,Reefer"},
+		{"tsquery syntax", v.Match("(dallas:* & monday) | chicago", keel.SearchModes(keel.TSQuery)), "Chicago,Dallas"},
+		{"any websearch word", v.Match("chicago produce", keel.SearchModes(keel.AnyWebSearch)), "Chicago,Customer"},
+		{"any websearch word keeps exclusions", v.Match("reefer chicago -produce", keel.SearchModes(keel.AnyWebSearch)),
+			"Chicago,Dallas,Reefer"},
+		{"any websearch phrase", v.Match(`"dry van" chicago`, keel.SearchModes(keel.AnyWebSearch)), "Chicago,Reefer"},
+		{"any websearch exclusions only", v.Match("-produce", keel.SearchModes(keel.AnyWebSearch)), ""},
+		{"also", v.Match("chicago", keel.SearchAlso(keel.TSQuery, "'mon':*")), "Chicago,Dallas"},
+		{"also word mode", v.Match("chicago", keel.SearchAlso(keel.Prefix, "prod")), "Chicago,Customer"},
 	} {
 		t.Run(c.name, func(t *testing.T) { eq(t, bodies(t, ctx, d, c.p), c.want) })
 	}
