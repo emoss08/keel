@@ -5613,7 +5613,8 @@ policy's row rules), the entry point, the output format and schema, and the data
 table the statement reads for the tenant. A write through keel to any of those tables moves its version,
 so the next run misses; `CacheTTL` (15 min) is the backstop for writes keel cannot see. The cache needs
 data versions on the DB. A streamed run is cached when it has at most `MaxCachedRows` rows (50,000).
-Cache failures go to `OnError` and count as misses.
+Cache failures go to `OnError` and count as misses. `Result.Cached()` and `Stream.Cached()` report
+that the rows came from the cache rather than a statement.
 
 ### Rollups
 

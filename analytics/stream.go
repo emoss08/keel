@@ -70,6 +70,9 @@ func (s *Stream) Truncated() bool {
 // Rollup names the rollup table that answers the report, or "".
 func (s *Stream) Rollup() string { return s.rollup }
 
+// Cached reports that the rows come from the result cache rather than a statement.
+func (s *Stream) Cached() bool { return s.cached != nil }
+
 // Close stops the statement if it is still running and waits for its transaction to end.
 func (s *Stream) Close() error {
 	if s.cached != nil {

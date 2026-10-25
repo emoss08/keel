@@ -121,6 +121,9 @@ func TestRunStreamsAndExports(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if stream.Cached() {
+		t.Fatal("the first run read the cache")
+	}
 	var buf bytes.Buffer
 	stats, err := export.CSV(w.ctx, &buf, stream, export.CSVOptions{Raw: true})
 	if err != nil {
@@ -138,6 +141,9 @@ func TestRunStreamsAndExports(t *testing.T) {
 	stream, err = r.Run(w.ctx, analytics.Request{Definition: report})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !stream.Cached() {
+		t.Fatal("the second run did not report the cache")
 	}
 	var xlsx bytes.Buffer
 	if _, err := export.XLSX(w.ctx, &xlsx, stream, export.Options{}); err != nil {
