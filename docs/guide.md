@@ -2642,6 +2642,7 @@ statement and `COMMIT` in one round trip; with relation loads, `BEGIN` goes with
 | Option | Effect |
 |---|---|
 | `keel.LockTimeout(d)` | any statement of the transaction waits at most `d` for a lock (`set_config('lock_timeout', …, true)`, sent with `BEGIN`) |
+| `keel.Setting(name, value)` | sets a run-time parameter for the transaction (`set_config(name, value, true)`, sent with `BEGIN`), such as `hnsw.ef_search`; a `Read` or `Write` that joins a transaction sets it for `fn` and restores the joined transaction's value after |
 | `keel.Serializable()` | `ISOLATION LEVEL SERIALIZABLE` |
 | `keel.RepeatableRead()` | `ISOLATION LEVEL REPEATABLE READ` |
 | `keel.Retry(n)` | reruns a top-level transaction up to `n` more times after a serialization failure or deadlock (`keel.IsRetryable`); `fn` must be safe to repeat |

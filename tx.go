@@ -44,13 +44,45 @@ type txOptions struct {
 	retries     int
 	replica     bool
 	detached    bool
+	settings    []setting
+	err         error
 }
+
+type setting struct{ name, value string }
 
 // TxOption configures Read and Write.
 type TxOption func(*txOptions)
 
 // LockTimeout bounds how long any statement of the transaction waits for a lock.
 func LockTimeout(d time.Duration) TxOption { return func(o *txOptions) { o.lockTimeout = d } }
+
+// Setting sets the run-time parameter name to value for the transaction, as SET LOCAL does:
+// set_config(name, value, true), for a planner or extension setting one query needs, such as
+// hnsw.ef_search. A transaction Read or Write begins queues it with BEGIN, in the same round trip.
+// A Read or Write that joins a transaction already on the context sets it for fn and restores the
+// joined transaction's value when fn returns.
+func Setting(name, value string) TxOption {
+	return func(o *txOptions) {
+		if !validSetting(name) {
+			o.err = errf("setting name %q must be letters, digits, _ and dots", name)
+			return
+		}
+		o.settings = append(o.settings, setting{name: name, value: value})
+	}
+}
+
+func validSetting(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if c != '_' && c != '.' && (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') {
+			return false
+		}
+	}
+	return true
+}
 
 // Serializable runs the transaction at the SERIALIZABLE isolation level.
 func Serializable() TxOption { return func(o *txOptions) { o.isolation = "SERIALIZABLE" } }
@@ -174,12 +206,18 @@ func (db *DB) runTx(ctx context.Context, readOnly bool, fn func(context.Context)
 	for _, opt := range opts {
 		opt(&o)
 	}
+	if o.err != nil {
+		return o.err
+	}
 	if cur := txFrom(ctx, db); cur != nil && !o.detached {
 		if !readOnly && cur.readOnly {
 			return ErrReadOnly
 		}
 		if err := cur.checkScope(db.resolveScope(ctx)); err != nil {
 			return err
+		}
+		if len(o.settings) > 0 {
+			return db.withSettings(ctx, o.settings, fn)
 		}
 		return fn(ctx)
 	}
@@ -247,6 +285,32 @@ func (tx *txState) acquire(ctx context.Context) (pgConn, error) {
 	return conn, nil
 }
 
+// withSettings runs fn with settings applied to the transaction on ctx and restores their values
+// after it. A failed fn leaves them: its error rolls the transaction back or the caller handles it
+// after a savepoint rollback, which restores them itself.
+func (db *DB) withSettings(ctx context.Context, settings []setting, fn func(context.Context) error) error {
+	prev := make([]string, len(settings))
+	for i, st := range settings {
+		v, err := QueryValue[string](ctx, db, "SELECT coalesce(current_setting($1, true), '')", st.name)
+		if err != nil {
+			return err
+		}
+		prev[i] = v
+		if _, err := Exec(ctx, db, "SELECT set_config($1, $2, true)", st.name, st.value); err != nil {
+			return err
+		}
+	}
+	if err := fn(ctx); err != nil {
+		return err
+	}
+	for i := len(settings) - 1; i >= 0; i-- {
+		if _, err := Exec(ctx, db, "SELECT set_config($1, $2, true)", settings[i].name, prev[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // queueBegin queues BEGIN, the transaction options and the OnBegin statements.
 func (tx *txState) queueBegin(b *pgx.Batch) (int, error) {
 	begin := "BEGIN"
@@ -261,6 +325,10 @@ func (tx *txState) queueBegin(b *pgx.Batch) (int, error) {
 	if tx.opts.lockTimeout > 0 {
 		ms := max(tx.opts.lockTimeout.Milliseconds(), 1)
 		b.Queue("SELECT set_config('lock_timeout', $1, true)", strconv.FormatInt(ms, 10)+"ms")
+		n++
+	}
+	for _, st := range tx.opts.settings {
+		b.Queue("SELECT set_config($1, $2, true)", st.name, st.value)
 		n++
 	}
 	if tx.db.cfg.OnBegin != nil {

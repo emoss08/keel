@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -395,4 +396,31 @@ func TestPanicInsideATransactionReleasesItsConnection(t *testing.T) {
 	}
 	n := must(c.Where(c.Code.In("PANIC", "PANIC2")).Count(ctx, d))(t)
 	eq(t, n, int64(0))
+}
+
+func TestSettingAppliesToTheTransactionAndRestoresAJoinedOne(t *testing.T) {
+	d := db(t)
+	ctx := newTenant()
+	read := func(ctx context.Context) string {
+		return must(keel.QueryValue[string](ctx, d, "SELECT current_setting('work_mem')"))(t)
+	}
+	ok(t, keel.Read(ctx, d, func(ctx context.Context) error {
+		eq(t, read(ctx), "3MB")
+		return nil
+	}, keel.Setting("work_mem", "3MB")))
+
+	ok(t, keel.Read(ctx, d, func(ctx context.Context) error {
+		outer := read(ctx)
+		ok(t, keel.Read(ctx, d, func(ctx context.Context) error {
+			eq(t, read(ctx), "5MB")
+			return nil
+		}, keel.Setting("work_mem", "5MB")))
+		eq(t, read(ctx), outer)
+		return nil
+	}))
+
+	err := keel.Read(ctx, d, func(context.Context) error { return nil }, keel.Setting("work_mem;", "1MB"))
+	if err == nil || !strings.Contains(err.Error(), "setting name") {
+		t.Fatalf("got %v", err)
+	}
 }
