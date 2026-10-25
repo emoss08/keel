@@ -11,6 +11,7 @@ import (
 
 	"github.com/emoss08/keel"
 	"github.com/emoss08/keel/internal/testmodels/ids"
+	"github.com/emoss08/keel/internal/testmodels/keeltables"
 	"github.com/emoss08/keel/migrate"
 )
 
@@ -56,6 +57,7 @@ func systemCtx(reason string) context.Context {
 func testConfig(dsn string) keel.Config {
 	return keel.Config{
 		DSN:           dsn,
+		Tables:        keeltables.All(),
 		TenantColumns: []string{"organization_id", "business_unit_id"},
 		Tenant: func(ctx context.Context) ([]any, bool) {
 			t, ok := ctx.Value(tenantKey{}).(tenant)

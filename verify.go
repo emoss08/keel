@@ -31,6 +31,8 @@ const (
 	DriftJoinTable DriftKind = "join_table"
 	// DriftRelationKey is a relation whose key column or target table does not exist.
 	DriftRelationKey DriftKind = "relation_key"
+	// DriftConstraint is a constraint a model's Constraints method names that the table lacks.
+	DriftConstraint DriftKind = "constraint"
 )
 
 // Drift is one difference between a model and the live database.
@@ -105,6 +107,9 @@ func Verify(ctx context.Context, db *DB, tables []*schema.Table) ([]Drift, error
 	if err := v.load(ctx, db); err != nil {
 		return nil, err
 	}
+	if err := v.loadConstraints(ctx, db); err != nil {
+		return nil, err
+	}
 	v.found = make([][]Drift, len(v.tables))
 	for i, t := range v.tables {
 		v.cur = i
@@ -135,6 +140,8 @@ type verifier struct {
 	found   [][]Drift
 	cur     int
 	missing map[[2]string]bool
+	// constraints holds the constraint and index names of each table that declares constraints.
+	constraints map[string]map[string]bool
 }
 
 // catalogRel is a table or view as the catalog describes it.
@@ -268,6 +275,53 @@ func (v *verifier) table(t *schema.Table) {
 	if !view(rel.kind) {
 		v.primaryKey(t, rel)
 	}
+	for _, c := range t.Constraints {
+		if !v.constraints[t.Quoted][c.Name] {
+			v.add(Drift{Kind: DriftConstraint, Table: t.Name, Field: fieldName(t, ""),
+				Detail: fmt.Sprintf("the constraint or unique index %s does not exist", c.Name),
+				Fix:    "rename it in the model's Constraints method to the migration's name"})
+		}
+	}
+}
+
+// verifyConstraintsSQL lists the constraints and indexes of every named table.
+const verifyConstraintsSQL = `SELECT n.name, k.conname
+  FROM unnest($1::text[]) AS n(name)
+  CROSS JOIN LATERAL (
+	SELECT conname::text FROM pg_constraint WHERE conrelid = to_regclass(n.name)
+	UNION ALL
+	SELECT i.relname::text FROM pg_index x JOIN pg_class i ON i.oid = x.indexrelid
+	 WHERE x.indrelid = to_regclass(n.name)
+  ) AS k(conname)`
+
+// loadConstraints reads the constraint and index names of the tables that declare constraints.
+func (v *verifier) loadConstraints(ctx context.Context, db *DB) error {
+	var names []string
+	for _, t := range v.tables {
+		if len(t.Constraints) > 0 {
+			names = append(names, t.Quoted)
+		}
+	}
+	v.constraints = map[string]map[string]bool{}
+	if len(names) == 0 {
+		return nil
+	}
+	rows, err := db.pool.Query(ctx, verifyConstraintsSQL, names)
+	if err != nil {
+		return fmt.Errorf("keel: verify: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var table, name string
+		if err := rows.Scan(&table, &name); err != nil {
+			return fmt.Errorf("keel: verify: %w", err)
+		}
+		if v.constraints[table] == nil {
+			v.constraints[table] = map[string]bool{}
+		}
+		v.constraints[table][name] = true
+	}
+	return rows.Err()
 }
 
 // column checks one stored column of t.

@@ -44,6 +44,8 @@ type model struct {
 	report      *schema.TableReport
 
 	hooks map[string]bool
+	// constraints is set when the model declares Constraints() []keel.Constraint.
+	constraints bool
 }
 
 // column is one stored field.
@@ -240,7 +242,27 @@ func (rd *reader) readHooks(m *model) error {
 		}
 		m.hooks[h] = true
 	}
+	if sel := ms.Lookup(m.pkg.pkg, "Constraints"); sel != nil {
+		if !isConstraintsSig(sel.Type().(*types.Signature)) {
+			return rd.src.errorf(sel.Obj().Pos(), "%s.Constraints must be func() []keel.Constraint", m.name)
+		}
+		m.constraints = true
+	}
 	return nil
+}
+
+// isConstraintsSig reports whether sig is func() []keel.Constraint.
+func isConstraintsSig(sig *types.Signature) bool {
+	if sig.Params().Len() != 0 || sig.Results().Len() != 1 {
+		return false
+	}
+	sl, ok := types.Unalias(sig.Results().At(0).Type()).(*types.Slice)
+	if !ok {
+		return false
+	}
+	n, ok := types.Unalias(sl.Elem()).(*types.Named)
+	return ok && n.Obj().Name() == "Constraint" && n.Obj().Pkg() != nil &&
+		n.Obj().Pkg().Path() == keelPath+"/schema"
 }
 
 // isHookSig reports whether sig is func(context.Context) error.

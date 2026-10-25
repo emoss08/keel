@@ -65,8 +65,8 @@ func Code(err error) string {
 	return ""
 }
 
-// Constraint returns the constraint a Postgres error names, or "".
-func Constraint(err error) string {
+// ConstraintName returns the constraint a Postgres error names, or "".
+func ConstraintName(err error) string {
 	if pe := pgError(err); pe != nil {
 		return pe.ConstraintName
 	}

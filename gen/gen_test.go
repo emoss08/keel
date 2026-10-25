@@ -166,6 +166,8 @@ func TestGenerateErrors(t *testing.T) {
 		{"to-many needs slice", "type A struct {\n\tkeel.Table ~keel:\"a\"~\n\tID string ~keel:\"id,pk\"~\n\tB *B ~keel:\"many:a_id\"~\n}\n" +
 			"type B struct {\n\tkeel.Table ~keel:\"b\"~\n\tID string ~keel:\"id,pk\"~\n\tAID string ~keel:\"a_id\"~\n}\n", field(4) + ": A.B: many relations need a slice field"},
 		{"bad hook", oneA(`ID string ~keel:"id,pk"~`) + "func (a *A) BeforeSave() error { return nil }\n", at(5, 13) + ": A.BeforeSave must be func(context.Context) error"},
+		{"bad constraints", oneA(`ID string ~keel:"id,pk"~`) + "func (a *A) Constraints() []string { return nil }\n",
+			at(5, 13) + ": A.Constraints must be func() []keel.Constraint"},
 		{"unexported", oneA(`id string ~keel:"id,pk"~`), field(3) + ": A.id: stored fields must be exported"},
 		{"no models", "type A struct{ X int }\n", "no models"},
 		{"unexported model", "type a struct {\n\tkeel.Table ~keel:\"a\"~\n\tID string ~keel:\"id,pk\"~\n}\n", ": a: models must be exported"},

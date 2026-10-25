@@ -27,6 +27,23 @@ const (
 	KindTSVector
 )
 
+// Constraint names a unique, foreign key, check, exclusion or not-null constraint (or a unique
+// index) of a model's table and the message a violation of it reports to users.
+type Constraint struct {
+	Name    string
+	Message string
+}
+
+// Constraint returns the constraint named name the table declares.
+func (t *Table) Constraint(name string) (Constraint, bool) {
+	for _, c := range t.Constraints {
+		if c.Name == name {
+			return c, true
+		}
+	}
+	return Constraint{}, false
+}
+
 // ColFlag describes how keel treats a column.
 type ColFlag uint16
 
@@ -163,6 +180,10 @@ type Table struct {
 	Insert    []int32
 	Update    []int32
 	Returning []int32
+
+	// Constraints are the constraints the model names, with the message a violation reports;
+	// keel gen fills them from the model's Constraints method, and keel.Verify checks each exists.
+	Constraints []Constraint
 
 	Version    int32
 	AutoID     int32

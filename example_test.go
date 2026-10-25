@@ -1329,7 +1329,7 @@ func ExampleIsUnique() {
 	case keel.IsForeignKey(err, "fk_shipments_customer"):
 		fmt.Println("no such customer")
 	case err != nil:
-		fmt.Println("SQLSTATE", keel.Code(err), "constraint", keel.Constraint(err))
+		fmt.Println("SQLSTATE", keel.Code(err), "constraint", keel.ConstraintName(err))
 	}
 }
 

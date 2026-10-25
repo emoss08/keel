@@ -175,7 +175,7 @@ func (r *runner) batch(ctx context.Context, stmts []*stmt, last bool) error {
 		return err
 	}
 	if len(stmts) == 1 && guard == 0 && (r.tx == nil || r.tx.begun) && !(r.own && last) && !custom {
-		return r.direct(ctx, conn, stmts[0])
+		return r.db.constraintErr(r.direct(ctx, conn, stmts[0]))
 	}
 	events, qctx := r.db.startEvents(ctx, r.replica(), stmts)
 	start := time.Now()
@@ -188,7 +188,7 @@ func (r *runner) batch(ctx context.Context, stmts []*stmt, last bool) error {
 		}
 	}
 	r.db.endEvents(events, stmts, time.Since(start), err)
-	return err
+	return r.db.constraintErr(err)
 }
 
 // errReplicaBehind is the error of a guarded round trip on a replica that had not replayed the

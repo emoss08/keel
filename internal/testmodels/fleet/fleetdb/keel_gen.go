@@ -311,13 +311,14 @@ func valueBadge(p unsafe.Pointer, c int32) any {
 
 // contactsTable is the schema of fleet.Contact.
 var contactsTable = schema.Table{
-	Name:   "contacts",
-	Quoted: `"contacts"`,
-	Alias:  "c",
-	Model:  "fleet.Contact",
-	Label:  `Contact`,
-	Plural: `Contacts`,
-	Doc:    `Contact is a person at a customer. Its optional fields are nullzero: an empty value is stored as NULL and NULL reads back as the empty value.`,
+	Name:        "contacts",
+	Quoted:      `"contacts"`,
+	Alias:       "c",
+	Model:       "fleet.Contact",
+	Label:       `Contact`,
+	Plural:      `Contacts`,
+	Doc:         `Contact is a person at a customer. Its optional fields are nullzero: an empty value is stored as NULL and NULL reads back as the empty value.`,
+	Constraints: (&fleet.Contact{}).Constraints(),
 	Columns: []schema.Column{
 		{Name: "id", Quoted: `"id"`, Field: "ID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagAutoID, Label: `ID`},
 		{Name: "organization_id", Quoted: `"organization_id"`, Field: "OrganizationID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagTenant, Label: `Organization ID`},

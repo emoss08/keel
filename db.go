@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/emoss08/keel/schema"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -38,6 +39,11 @@ type Config struct {
 
 	// Observers see every statement.
 	Observers []Observer
+
+	// Tables are the generated tables (keeltables.All()) that constraint violations resolve
+	// against: a *ConstraintError of a listed table carries the model's field names, labels and
+	// the message its Constraints method declares.
+	Tables []*schema.Table
 
 	// AfterConnect runs on every new connection, after keel registers its types; use it to
 	// register codecs (a decimal type, a faster JSON codec).
@@ -128,6 +134,10 @@ type DB struct {
 	types    columnTypes
 	replicas *replicaSet
 	versions *versioner
+
+	tablesOnce   sync.Once
+	tablesByName map[string]*schema.Table
+	constraints  constraintCatalog
 
 	closeOnce sync.Once
 }

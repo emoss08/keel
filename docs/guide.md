@@ -3079,7 +3079,34 @@ Test them with `errors.Is` (and `errors.As` for `*keel.ConflictError`): keel wra
 table name. Misuse (an `Update` without `Where`, an `Into` whose struct does not match the picks) is
 reported with plain errors.
 
-Postgres errors pass through as `*pgconn.PgError`. Helpers:
+A constraint violation (unique, foreign key, check, not-null, exclusion) comes back as a
+`*keel.ConstraintError` wrapping the `*pgconn.PgError`: its `Kind`, `Table`, `Constraint`, the
+constraint's `Columns` without the tenant columns, and, when `Config.Tables` lists the table (pass
+`keeltables.All()`), the model (`Model`), the columns' JSON names (`Fields`) and labels (`Labels`),
+and the `Message` the model declares for the constraint. keel reads a table's constraint columns
+from the catalog the first time one of them is violated, on a pool connection of its own, and caches
+them.
+
+A model declares the constraints whose violation should read well with a `Constraints` method;
+keel gen records them in the generated table and `keel.Verify` reports a name the table lacks, so a
+renamed constraint fails CI instead of quietly losing its message:
+
+```go
+func (Location) Constraints() []keel.Constraint {
+    return []keel.Constraint{
+        {Name: "idx_locations_code", Message: "A location with this code already exists"},
+        {Name: "fk_locations_location_category", Message: "The location category does not exist"},
+    }
+}
+
+var ce *keel.ConstraintError
+if errors.As(err, &ce) {
+    return fieldError(ce.Fields, ce.Message) // "code", "A location with this code already exists"
+}
+```
+
+Other Postgres errors pass through as `*pgconn.PgError`. Helpers, which see through a
+`ConstraintError`:
 
 | Helper | Reports |
 |---|---|
@@ -3090,7 +3117,7 @@ Postgres errors pass through as `*pgconn.PgError`. Helpers:
 | `keel.IsNotNull(err)` | a not-null violation (`23502`) |
 | `keel.IsRetryable(err)` | a serialization failure (`40001`) or deadlock (`40P01`) |
 | `keel.Code(err)` | the SQLSTATE, or `""` |
-| `keel.Constraint(err)` | the constraint name, or `""` |
+| `keel.ConstraintName(err)` | the constraint name, or `""` |
 
 ```go
 err := fleetdb.Shipments.Create(ctx, db, sh)

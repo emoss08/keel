@@ -311,6 +311,9 @@ func (e *emitter) emitPackage(p *pkgModels) ([]byte, error) {
 		w("\tName: %q,\n\tQuoted: %s,\n\tAlias: %q,\n\tModel: %q,\n", m.table, lit(schema.Quote(m.table)),
 			schema.AliasFor(m.table), m.pkg.name+"."+m.name)
 		body.WriteString(sh.tableMeta(m))
+		if m.constraints {
+			w("\tConstraints: (&%s{}).Constraints(),\n", model)
+		}
 		w("\tColumns: []%s.Column{\n", sch)
 		for i, c := range m.columns {
 			w("\t\t{Name: %q, Quoted: %s, Field: %q, Kind: %s.%s, Flags: %s%s},\n",

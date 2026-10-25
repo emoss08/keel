@@ -214,6 +214,14 @@ type Contact struct {
 	Customer *Customer `keel:"belongs:customer_id"`
 }
 
+// Constraints names the contact constraints whose violation reports a message of its own.
+func (Contact) Constraints() []keel.Constraint {
+	return []keel.Constraint{
+		{Name: "uq_contacts_name", Message: "A contact with this name already exists"},
+		{Name: "fk_contacts_customer", Message: "The customer does not exist"},
+	}
+}
+
 // Note is a free-text note about a customer, searched by its words.
 type Note struct {
 	keel.Table `keel:"notes"`
