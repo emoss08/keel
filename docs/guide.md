@@ -1999,6 +1999,11 @@ and `ToExpr` of a generated table take it too. Operands are other expressions or
 | literals | `keel.DynLit(v)`, `Cast(keel.TypeNumeric)` and the other value types |
 | CASE | `keel.DynCase().When(cond, then).Else(v)` or `.End()` |
 | rows | `keel.DynRow(vs...)`: `ROW(a, b)`, compared element by element; `keel.DynRow(a, b).Gt(keel.DynRow(x, y))` is a keyset condition |
+| sets | `InUnnest(slices...)`: `(a, b) IN (SELECT * FROM unnest($1::text[], $2::bigint[]))`, one parameter per slice whatever its length |
+| arrays, ranges, jsonb | `keel.DynArray(vs...)` (`ARRAY[…]`), `At(i)` (`d[i]`), `Covers(v)` (`@>`), `CoveredBy(v)` (`<@`); on a jsonb column `Path(keys...)` (`#>`, jsonb) beside `Text(keys...)` (`#>>`, text); on a text[] column `Remove(v)` assigns `array_remove(col, v)` |
+| collation | `Collate("C")`: `d COLLATE "C"` |
+| constants | `keel.DynConst(v)`: an integer, float, bool or string written into the SQL text, for an expression that must match an expression index or a partial index predicate; everything else is a bound `DynLit` |
+| ordered aggregates | `keel.ArrayAgg(e)`, `keel.StringAgg(e, sep)` with `OrderBy(orders...)`; `keel.PercentileCont(f, order)`, `keel.PercentileDisc(f, order)`, `keel.Mode(order)` (`WITHIN GROUP`); all take `Filter` |
 | functions | `keel.DynFunc(name, args...)` from an allow-list |
 | aggregates | `Sum`, `Avg`, `Min`, `Max`, `Count`, `CountDistinct`, `keel.DynCount()`, `Filter(pred)`, `Over(window)` |
 | full-text search | `Match(q, opts...)`, `Rank(q, opts...)`, `RankCD(q, opts...)` on a `tsvector` column or expression, as on `TSVectorCol` |
@@ -2010,8 +2015,13 @@ and `ToExpr` of a generated table take it too. Operands are other expressions or
 `concat`, `concat_ws`, `strpos`, `split_part`, `lpad`, `rpad`, `md5`, `to_char`, `date_trunc`,
 `date_part`, `date_bin`, `age`, `to_timestamp`, `timezone`, `make_date`, `now`,
 `jsonb_extract_path_text`, `jsonb_typeof`, `jsonb_array_length`, `cardinality`,
-`array_to_string`, and the aggregates `sum`, `avg`, `min`, `max`, `count`, `bool_and`, `bool_or`,
-`string_agg`, `stddev`, `stddev_samp`, `stddev_pop`, `variance`, `var_samp` and `var_pop`. `Cast`
+`array_to_string`, `array_append`, `array_remove`, `array_position`, `regexp_replace`,
+`jsonb_build_array`, `jsonb_build_object`, `jsonb_set`, `width_bucket`, `gen_random_uuid`,
+`int4range`, `int8range`, `numrange`, `tstzrange`, and the aggregates `sum`, `avg`, `min`, `max`,
+`count`, `bool_and`, `bool_or`, `string_agg`, `array_agg`, `jsonb_agg`, `jsonb_object_agg`,
+`stddev`, `stddev_samp`, `stddev_pop`, `variance`, `var_samp` and `var_pop`. Arguments of a
+function declared over `"any"` (`concat`, `concat_ws`, `jsonb_build_object`, `jsonb_build_array`)
+give a bound value no type, so cast such a value: `keel.DynLit("k").Cast(keel.TypeString)`. `Cast`
 takes a `keel.ValueType`, never a type name. An unresolved name, an unknown function or a `Filter`
 on something that is not an aggregate makes an expression that carries an error: `Err()` reports it
 at once, and a query that uses it fails with it, so a compiler can validate a definition before

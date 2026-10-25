@@ -3,6 +3,7 @@ package keel_test
 import (
 	"context"
 	"errors"
+	"math"
 	"slices"
 	"strings"
 	"testing"
@@ -988,4 +989,107 @@ func TestDynamicExists(t *testing.T) {
 	if _, err := reg.Query("nope").Exists(w.ctx, d); err == nil {
 		t.Fatal("unknown table")
 	}
+}
+
+func TestDynExpressionsInTypedQueries(t *testing.T) {
+	d := db(t)
+	w := seed(t, 12)
+	s := fleetdb.Shipments
+	type row struct {
+		Pro       string
+		Konst     int64
+		Arr       []string
+		First     string
+		Ranked    string
+		Covers    bool
+		Path      map[string]any
+		Temp      bool
+		Collated  string
+		Replaced  string
+		Bucket    int64
+		Built     map[string]any
+		Appended  []string
+		Positions int64
+	}
+	rows := must(keel.Into[row](w.ctx, d, s.Pick(
+		s.ProNumber,
+		keel.DynConst(7),
+		keel.DynArray(s.ProNumber, keel.DynConst("x")),
+		keel.DynOf(s.Labels).At(1),
+		keel.DynFunc("upper", s.ProNumber).Collate("C"),
+		keel.DynOf(s.Labels).Covers(keel.DynArray(keel.DynConst("lane-0"))),
+		s.Attributes.Path(),
+		s.Attributes.Path("temp"),
+		keel.DynOf(s.ProNumber).Collate("C"),
+		keel.DynFunc("regexp_replace", s.ProNumber, "^PRO-", ""),
+		keel.DynFunc("width_bucket", keel.DynLit(5).Cast(keel.TypeFloat64), 0.0, 10.0, 2),
+		keel.DynFunc("jsonb_build_object", keel.DynLit("k").Cast(keel.TypeString), s.ProNumber),
+		keel.DynFunc("array_append", s.Labels, keel.DynLit("z").Cast(keel.TypeString)),
+		keel.DynFunc("array_position", s.Labels, keel.DynLit("lane-1").Cast(keel.TypeString)).Coalesce(0),
+	).Where(
+		keel.DynRow(s.ProNumber, s.Priority).InUnnest([]string{"PRO-0000", "PRO-0001"}, []int16{0, 1}),
+	).Order(s.ProNumber.Asc())))(t)
+	eq(t, len(rows), 2)
+	eq(t, rows[0].Pro, "PRO-0000")
+	eq(t, rows[0].Konst, int64(7))
+	eq(t, strings.Join(rows[0].Arr, ","), "PRO-0000,x")
+	eq(t, rows[0].First, "lane-0")
+	eq(t, rows[0].Ranked, "PRO-0000")
+	eq(t, rows[0].Covers, true)
+	eq(t, rows[1].Covers, false)
+	eq(t, rows[0].Path["temp"], any(true))
+	eq(t, rows[0].Temp, true)
+	eq(t, rows[0].Replaced, "0000")
+	eq(t, rows[0].Bucket, int64(2))
+	eq(t, rows[0].Built["k"], any("PRO-0000"))
+	eq(t, strings.Join(rows[0].Appended, ","), "lane-0,z")
+	eq(t, rows[0].Positions, int64(0))
+	eq(t, rows[1].Positions, int64(1))
+
+	type stats struct {
+		Median   float64
+		Disc     int64
+		Mode     string
+		Pros     []string
+		Joined   string
+		Contains bool
+	}
+	got := must(keel.IntoOne[stats](w.ctx, d, s.Pick(
+		keel.PercentileCont(0.5, s.Weight.Asc()),
+		keel.PercentileDisc(0.5, s.Weight.Asc()).Filter(s.Weight.IsNotNull()),
+		keel.Mode(s.Status.Asc()),
+		keel.ArrayAgg(s.ProNumber).OrderBy(s.ProNumber.Desc()),
+		keel.StringAgg(s.ProNumber, ",").OrderBy(s.ProNumber.Asc()).Filter(s.ProNumber.Lte("PRO-0001")),
+		keel.DynFunc("bool_or", s.Attributes.Contains(keel.DynFunc("jsonb_build_object",
+			keel.DynLit("index").Cast(keel.TypeString), keel.DynConst(3)))),
+	)))(t)
+	eq(t, got.Median, 1060.0)
+	eq(t, got.Disc, int64(1060))
+	eq(t, got.Pros[0], "PRO-0011")
+	eq(t, got.Joined, "PRO-0000,PRO-0001")
+	eq(t, got.Contains, true)
+	if got.Mode == "" {
+		t.Fatal("mode returned nothing")
+	}
+
+	tag := w.shipments[0]
+	_, err := s.Where(s.ID.Eq(tag.ID)).Update(w.ctx, d, s.Labels.Remove("lane-0"))
+	ok(t, err)
+	after := must(s.Where(s.ID.Eq(tag.ID)).One(w.ctx, d))(t)
+	eq(t, len(after.Labels), 0)
+
+	for i, b := range []keel.DynExpr{
+		keel.DynConst(math.NaN()),
+		keel.DynConst("a\x00b"),
+		keel.DynConst([]int{1}),
+		keel.DynArray(),
+		keel.DynOf(s.ProNumber).Collate(""),
+		keel.DynOf(s.ProNumber).Collate(`C"`),
+		keel.DynRow(s.ID, s.ProNumber).InUnnest(),
+	} {
+		if b.Err() == nil {
+			t.Fatalf("bad expression %d has no error", i)
+		}
+	}
+	eq(t, must(s.Where(keel.DynOf(s.ProNumber).Eq(keel.DynConst("it's"))).Count(w.ctx, d))(t), int64(0))
 }

@@ -1,7 +1,14 @@
 package keel
 
 import (
+	"math"
+	"reflect"
+	"strconv"
+	"strings"
+	"time"
 	"unsafe"
+
+	"github.com/emoss08/keel/schema"
 )
 
 // DynExpr is an expression of a dynamic query, built at run time: a column or relation path
@@ -116,6 +123,68 @@ func DynLit(v any) DynExpr {
 	}
 	l := &litExpr{v: v}
 	return newDyn(l, "value")
+}
+
+// DynConst writes v into the SQL text as a constant instead of binding it: an integer, a float, a
+// bool or a string (a named type over one of them included), the string quoted with its single
+// quotes doubled. Use it where Postgres must see the constant itself, as when the expression has to
+// match an expression index or the predicate of a partial index, which a parameter does not under a
+// generic plan. Values from users belong in DynLit: each distinct constant is a distinct statement.
+func DynConst(v any) DynExpr {
+	text, err := constText(v)
+	if err != nil {
+		return dynFail(err)
+	}
+	return newDyn(rawText(text), "const")
+}
+
+func constText(v any) (string, error) {
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return strconv.FormatInt(rv.Int(), 10), nil
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return strconv.FormatUint(rv.Uint(), 10), nil
+	case reflect.Float32, reflect.Float64:
+		f := rv.Float()
+		if math.IsNaN(f) || math.IsInf(f, 0) {
+			return "", errf("DynConst of %v: only finite floats are constants", f)
+		}
+		return strconv.FormatFloat(f, 'g', -1, 64), nil
+	case reflect.Bool:
+		if rv.Bool() {
+			return "TRUE", nil
+		}
+		return "FALSE", nil
+	case reflect.String:
+		str := rv.String()
+		if strings.IndexByte(str, 0) >= 0 {
+			return "", errf("DynConst of a string holding a NUL byte")
+		}
+		return "'" + strings.ReplaceAll(str, "'", "''") + "'", nil
+	}
+	return "", errf("DynConst of %T: only integers, floats, bools and strings are constants", v)
+}
+
+// DynArray is the array ARRAY[vs…]: DynExprs, Exprs or values bound as parameters. Cast an element
+// when Postgres cannot infer the array's type from its elements alone.
+func DynArray(vs ...any) DynExpr {
+	if len(vs) == 0 {
+		return dynFail(errf("DynArray needs at least one element; bind an empty slice with DynLit"))
+	}
+	ops := make([]Expr, len(vs))
+	for i, v := range vs {
+		e, err := dynOperand(v)
+		if err != nil {
+			return dynFail(err)
+		}
+		ops[i] = e
+	}
+	return newDyn(exprFunc(func(r *render) {
+		r.s("ARRAY[")
+		writeExprs(r, ops)
+		r.b(']')
+	}), "array")
 }
 
 // litExpr is a bound value. Its address identifies it, so a literal written twice in a statement
@@ -400,6 +469,108 @@ func (d DynExpr) Div(v any) DynExpr { return d.bin(" / ", d.Label(), v) }
 // Mod is d % v.
 func (d DynExpr) Mod(v any) DynExpr { return d.bin(" % ", d.Label(), v) }
 
+// Covers is d @> v: an array, range or jsonb d contains v.
+func (d DynExpr) Covers(v any) DynExpr { return d.bin(" @> ", d.Label(), v) }
+
+// CoveredBy is d <@ v: v contains d.
+func (d DynExpr) CoveredBy(v any) DynExpr { return d.bin(" <@ ", d.Label(), v) }
+
+// At is d[i], the i-th element of an array, from 1.
+func (d DynExpr) At(i int) DynExpr {
+	if err := d.Err(); err != nil {
+		return dynFail(err)
+	}
+	return newDyn(exprFunc(func(r *render) {
+		r.b('(')
+		d.writeSQL(r)
+		r.s(")[")
+		r.int(int64(i))
+		r.b(']')
+	}), d.Label())
+}
+
+// Collate is d COLLATE "name", ordering or comparing d by that collation ("C" orders by bytes).
+func (d DynExpr) Collate(name string) DynExpr {
+	if err := d.Err(); err != nil {
+		return dynFail(err)
+	}
+	if name == "" || strings.ContainsAny(name, "\"\x00") {
+		return dynFail(errf("collation name %q", name))
+	}
+	return newDyn(exprFunc(func(r *render) {
+		r.b('(')
+		d.writeSQL(r)
+		r.s(" COLLATE ")
+		r.s(schema.Quote(name))
+		r.b(')')
+	}), d.Label())
+}
+
+// InUnnest is d IN (SELECT * FROM unnest(arrays…)): d, usually a DynRow, equals one of the rows the
+// arrays zip into, element i of each array making row i. Each array is bound as one parameter, so
+// the statement keeps one shape whatever the number of rows.
+func (d DynExpr) InUnnest(arrays ...any) DynExpr {
+	if err := d.Err(); err != nil {
+		return dynFail(err)
+	}
+	if len(arrays) == 0 {
+		return dynFail(errf("InUnnest needs at least one array"))
+	}
+	ops := make([]Expr, len(arrays))
+	for i, a := range arrays {
+		if _, isExpr := a.(Expr); isExpr {
+			ops[i] = a.(Expr)
+			continue
+		}
+		typ, err := arrayType(a)
+		if err != nil {
+			return dynFail(err)
+		}
+		v := a
+		ops[i] = exprFunc(func(r *render) {
+			r.argTyped(v, typ)
+			r.s("::")
+			r.s(typ)
+		})
+	}
+	return newDyn(exprFunc(func(r *render) {
+		r.b('(')
+		d.writeSQL(r)
+		r.s(" IN (SELECT * FROM unnest(")
+		writeExprs(r, ops)
+		r.s(")))")
+	}), d.Label())
+}
+
+// arrayType is the SQL array type a Go slice binds as: its element's kind decides, so a slice of a
+// named string or integer type binds as its underlying type's array.
+func arrayType(v any) (string, error) {
+	t := reflect.TypeOf(v)
+	if t == nil || t.Kind() != reflect.Slice {
+		return "", errf("InUnnest takes slices or expressions, not %T", v)
+	}
+	if t.Elem() == reflect.TypeFor[time.Time]() {
+		return "timestamptz[]", nil
+	}
+	switch t.Elem().Kind() {
+	case reflect.String:
+		return "text[]", nil
+	case reflect.Int64, reflect.Int:
+		return "bigint[]", nil
+	case reflect.Int32:
+		return "integer[]", nil
+	case reflect.Int16:
+		return "smallint[]", nil
+	case reflect.Float64:
+		return "double precision[]", nil
+	case reflect.Float32:
+		return "real[]", nil
+	case reflect.Bool:
+		return "boolean[]", nil
+	}
+	return "", errf("InUnnest cannot type a slice of %s; pass DynLit(slice) with a cast", t.Elem())
+}
+
 // Concat is d || v.
 func (d DynExpr) Concat(v any) DynExpr { return d.bin(" || ", d.Label(), v) }
 
@@ -536,6 +707,12 @@ var dynFuncs = map[string]dynFunc{
 	"make_date": {3, 3, false}, "now": {0, 0, false}, "jsonb_extract_path_text": {2, -1, false},
 	"jsonb_typeof": {1, 1, false}, "jsonb_array_length": {1, 1, false},
 	"cardinality": {1, 1, false}, "array_to_string": {2, 3, false},
+	"array_append": {2, 2, false}, "array_remove": {2, 2, false}, "array_position": {2, 3, false},
+	"regexp_replace": {3, 4, false}, "jsonb_build_array": {0, -1, false},
+	"jsonb_build_object": {0, -1, false}, "jsonb_set": {3, 4, false}, "width_bucket": {2, 4, false},
+	"gen_random_uuid": {0, 0, false}, "int4range": {2, 3, false}, "int8range": {2, 3, false},
+	"numrange": {2, 3, false}, "tstzrange": {2, 3, false}, "array_agg": {1, 1, true},
+	"jsonb_agg": {1, 1, true}, "jsonb_object_agg": {2, 2, true},
 	"sum": {1, 1, true}, "avg": {1, 1, true}, "min": {1, 1, true}, "max": {1, 1, true},
 	"count": {0, 1, true}, "bool_and": {1, 1, true}, "bool_or": {1, 1, true},
 	"string_agg": {2, 2, true}, "stddev": {1, 1, true}, "stddev_samp": {1, 1, true},
@@ -548,9 +725,13 @@ var dynFuncs = map[string]dynFunc{
 // greatest, least, coalesce, nullif, lower, upper, initcap, trim, ltrim, rtrim, btrim, length,
 // substr, left, right, replace, concat, concat_ws, strpos, split_part, lpad, rpad, md5, to_char,
 // date_trunc, date_part, date_bin, age, to_timestamp, timezone, make_date, now,
-// jsonb_extract_path_text, jsonb_typeof, jsonb_array_length, cardinality, array_to_string.
+// jsonb_extract_path_text, jsonb_typeof, jsonb_array_length, cardinality, array_to_string,
+// array_append, array_remove, array_position, regexp_replace, jsonb_build_array,
+// jsonb_build_object, jsonb_set, width_bucket, gen_random_uuid, int4range, int8range, numrange,
+// tstzrange.
 // Aggregates, which take Filter and Over: sum, avg, min, max, count (count() is count(*)),
-// bool_and, bool_or, string_agg, stddev, stddev_samp, stddev_pop, variance, var_samp, var_pop.
+// bool_and, bool_or, string_agg, stddev, stddev_samp, stddev_pop, variance, var_samp, var_pop,
+// array_agg, jsonb_agg, jsonb_object_agg.
 // Any other name makes an expression that fails.
 func DynFunc(name string, args ...any) DynExpr {
 	f, ok := dynFuncs[name]

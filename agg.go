@@ -16,6 +16,8 @@ type Agg struct {
 	distinct bool
 	star     bool
 	custom   func(r *render)
+	order    []Order
+	within   []Order
 	filter   Pred
 	over     *Window
 }
@@ -85,6 +87,28 @@ func LastValue(e Expr) Agg { return Agg{fn: "last_value", arg: e} }
 // NthValue is nth_value(e, n): e in the n-th row of the window frame, from 1.
 func NthValue(e Expr, n int) Agg { return Agg{fn: "nth_value", arg: e, ops: []any{int64(n)}} }
 
+// ArrayAgg is array_agg(e). OrderBy orders the elements.
+func ArrayAgg(e Expr) Agg { return Agg{fn: "array_agg", arg: e} }
+
+// StringAgg is string_agg(e, sep). OrderBy orders the pieces.
+func StringAgg(e Expr, sep string) Agg { return Agg{fn: "string_agg", arg: e, ops: []any{sep}} }
+
+// PercentileCont is percentile_cont(fraction) WITHIN GROUP (ORDER BY order): the value at
+// fraction (0 to 1) of the ordered group, interpolated between rows.
+func PercentileCont(fraction float64, order Order) Agg {
+	return Agg{fn: "percentile_cont", ops: []any{fraction}, within: []Order{order}}
+}
+
+// PercentileDisc is percentile_disc(fraction) WITHIN GROUP (ORDER BY order): the first value of
+// the ordered group whose position reaches fraction.
+func PercentileDisc(fraction float64, order Order) Agg {
+	return Agg{fn: "percentile_disc", ops: []any{fraction}, within: []Order{order}}
+}
+
+// Mode is mode() WITHIN GROUP (ORDER BY order): the group's most frequent value, the first in
+// order on a tie.
+func Mode(order Order) Agg { return Agg{fn: "mode", star: true, within: []Order{order}} }
+
 // Grouping is GROUPING(es...): a bit mask with a 1 for each of es that the row's grouping set
 // does not group by. In a query with GroupingSets, Rollup or Cube it tells a subtotal or total row
 // from a detail row; it may appear in Pick, Having and Order. Each of es must be written exactly
@@ -100,6 +124,10 @@ func Grouping(es ...Expr) Agg {
 		r.b(')')
 	}}
 }
+
+// OrderBy orders the rows an aggregate reads, for an aggregate whose result depends on their order:
+// array_agg(e ORDER BY …), string_agg(e, sep ORDER BY …).
+func (a Agg) OrderBy(os ...Order) Agg { a.order = slices.Clip(os); return a }
 
 // Filter restricts the rows an aggregate sees: count(*) FILTER (WHERE p).
 func (a Agg) Filter(p Pred) Agg { a.filter = p; return a }
@@ -141,7 +169,16 @@ func (a Agg) writeSQL(r *render) {
 		}
 		writeOperand(r, a.ops[i], unsafe.Pointer(&a.ops[i]), a.fn)
 	}
+	if len(a.order) > 0 {
+		r.s(" ORDER BY ")
+		writeOrders(r, a.order)
+	}
 	r.b(')')
+	if len(a.within) > 0 {
+		r.s(" WITHIN GROUP (ORDER BY ")
+		writeOrders(r, a.within)
+		r.b(')')
+	}
 	if a.filter != nil {
 		r.s(" FILTER (WHERE ")
 		a.filter.writeSQL(r)
@@ -329,12 +366,7 @@ func (w *Window) writeSpec(r *render) {
 	if len(w.order) > 0 {
 		space()
 		r.s("ORDER BY ")
-		for i, o := range w.order {
-			if i > 0 {
-				r.s(", ")
-			}
-			o.writeSQL(r)
-		}
+		writeOrders(r, w.order)
 	}
 	if w.frame == "" {
 		if w.exclude != "" {
@@ -445,6 +477,15 @@ func singletons(es []Expr) [][]Expr {
 }
 
 // writeExprs writes es separated by commas.
+func writeOrders(r *render, os []Order) {
+	for i, o := range os {
+		if i > 0 {
+			r.s(", ")
+		}
+		o.writeSQL(r)
+	}
+}
+
 func writeExprs(r *render, es []Expr) {
 	for i, e := range es {
 		if i > 0 {

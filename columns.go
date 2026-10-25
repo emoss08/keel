@@ -162,9 +162,14 @@ func cmp(e Expr, op string, v any) Pred {
 	}}
 }
 
-// operand binds v as the operand of e op v. Compared with a column, it shares the placeholder of
-// an equal value compared with the same column through the same operator.
+// operand writes v, the operand of e op v, in place when it is an expression and binds it
+// otherwise. Compared with a column, a value shares the placeholder of an equal value compared with
+// the same column through the same operator.
 func operand(r *render, e Expr, op string, v any) {
+	if x, ok := v.(Expr); ok {
+		x.writeSQL(r)
+		return
+	}
 	if c, ok := e.(Col); ok {
 		r.argCol(v, c, op)
 		return
@@ -448,6 +453,21 @@ func (c JSONBCol) Text(path ...string) StringExpr {
 	})}
 }
 
+// Path is col #> path: the value at path as jsonb, NULL when the path is missing; no path is the
+// whole document.
+func (c JSONBCol) Path(path ...string) DynExpr {
+	if path == nil {
+		path = []string{}
+	}
+	return DynOf(exprFunc(func(r *render) {
+		r.b('(')
+		r.col(c.Col)
+		r.s(" #> ")
+		r.argSlot(path, unsafe.Pointer(unsafe.SliceData(path)), " #> ")
+		r.b(')')
+	}))
+}
+
 // To sets the column to v encoded as JSON.
 func (c JSONBCol) To(v any) Assignment { return set(c.Col, v) }
 
@@ -468,6 +488,17 @@ func (c StringArrayCol) Overlaps(vs ...string) Pred    { return cmp(c.Col, " && 
 func (c StringArrayCol) ContainsAll(vs ...string) Pred { return cmp(c.Col, " @> ", vs) }
 func (c StringArrayCol) ContainedBy(vs ...string) Pred { return cmp(c.Col, " <@ ", vs) }
 func (c StringArrayCol) To(vs []string) Assignment     { return set(c.Col, vs) }
+
+// Remove sets the column to itself without the elements equal to v: array_remove(col, v).
+func (c StringArrayCol) Remove(v string) Assignment {
+	return Assignment{col: c.Col, e: func(r *render) {
+		r.s("array_remove(")
+		r.col(c.Col)
+		r.s(", ")
+		r.argTyped(v, "text")
+		r.s("::text)")
+	}}
+}
 
 // Len is cardinality(col).
 func (c StringArrayCol) Len() Agg { return Agg{fn: "cardinality", arg: c.Col} }
