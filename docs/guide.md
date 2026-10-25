@@ -266,6 +266,20 @@ AfterConnect: func(ctx context.Context, conn *pgx.Conn) error {
   the extension's types and their array types in `AfterConnect` so values travel in binary through
   a codec; pgvector-go's `pgxvec.RegisterTypes` does it for vectors, and `keel/postgis` does it for
   PostGIS (below).
+- **pgvector expressions:** `keel/vector` has the distance operators (`CosineDistance` `<=>`,
+  `L2Distance` `<->`, `NegativeInnerProduct` `<#>`, `L1Distance` `<+>`), the casts an expression
+  index over a column of mixed dimensions declares (`HalfVec(e, 1536)` is `(e)::halfvec(1536)`,
+  with the dimensions written into the statement so it matches the index), and the HNSW settings
+  `EFSearch(n)` and `IterativeScan(mode)`, `TxOption`s for `Read`. Order by the distance and limit
+  the rows, and the HNSW index serves the query:
+
+```go
+distance := vector.CosineDistance(vector.HalfVec(e.Embedding, 1536), vector.HalfVec(query, 1536))
+err := keel.Read(ctx, db, func(ctx context.Context) error {
+    rows, err = e.Pick(e.SourceID, distance).Order(distance.Asc()).Limit(40).All(ctx, db)
+    return err
+}, vector.EFSearch(100))
+```
 
   With the codecs registered, every write path binds the type's `Value` (WKB) and every read
   passes the bytes PostGIS sends (EWKB) to `Scan`; bulk inserts send the column as one array of
