@@ -267,6 +267,33 @@ func (e binOp) writeSQL(r *render) {
 	r.b(')')
 }
 
+// arith is d op v for an arithmetic operator. A Go integer v is bound as bigint: Postgres types a
+// bare parameter after the other operand, so a smallint or integer column would otherwise make it
+// smallint or integer, refuse a value that does not fit and compute in the narrower type.
+func (d DynExpr) arith(op string, v any) DynExpr {
+	if !isGoInteger(v) {
+		return d.bin(op, d.Label(), v)
+	}
+	if err := d.Err(); err != nil {
+		return dynFail(err)
+	}
+	l := &litExpr{v: v}
+	b := exprFunc(func(r *render) {
+		r.argSlot(l.v, unsafe.Pointer(l), "::bigint")
+		r.s("::bigint")
+	})
+	return newDyn(binOp{a: d, b: b, op: op}, d.Label())
+}
+
+func isGoInteger(v any) bool {
+	switch reflect.ValueOf(v).Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32:
+		return true
+	}
+	return false
+}
+
 func (d DynExpr) bin(op, label string, v any) DynExpr {
 	if err := d.Err(); err != nil {
 		return dynFail(err)
@@ -454,20 +481,20 @@ func (d DynExpr) Not() DynExpr {
 }
 
 // Add is d + v.
-func (d DynExpr) Add(v any) DynExpr { return d.bin(" + ", d.Label(), v) }
+func (d DynExpr) Add(v any) DynExpr { return d.arith(" + ", v) }
 
 // Sub is d - v.
-func (d DynExpr) Sub(v any) DynExpr { return d.bin(" - ", d.Label(), v) }
+func (d DynExpr) Sub(v any) DynExpr { return d.arith(" - ", v) }
 
 // Mul is d * v.
-func (d DynExpr) Mul(v any) DynExpr { return d.bin(" * ", d.Label(), v) }
+func (d DynExpr) Mul(v any) DynExpr { return d.arith(" * ", v) }
 
 // Div is d / v. Integer division truncates; Cast one side to TypeNumeric or TypeFloat64 for a
 // fraction, and wrap the divisor with NullIf(0) where it can be zero.
-func (d DynExpr) Div(v any) DynExpr { return d.bin(" / ", d.Label(), v) }
+func (d DynExpr) Div(v any) DynExpr { return d.arith(" / ", v) }
 
 // Mod is d % v.
-func (d DynExpr) Mod(v any) DynExpr { return d.bin(" % ", d.Label(), v) }
+func (d DynExpr) Mod(v any) DynExpr { return d.arith(" % ", v) }
 
 // Covers is d @> v: an array, range or jsonb d contains v.
 func (d DynExpr) Covers(v any) DynExpr { return d.bin(" @> ", d.Label(), v) }

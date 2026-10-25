@@ -1092,4 +1092,7 @@ func TestDynExpressionsInTypedQueries(t *testing.T) {
 		}
 	}
 	eq(t, must(s.Where(keel.DynOf(s.ProNumber).Eq(keel.DynConst("it's"))).Count(w.ctx, d))(t), int64(0))
+
+	wide := must(keel.IntoOne[int64](w.ctx, d, s.Pick(keel.DynOf(s.Priority).Add(1).Mul(86400).Max())))(t)
+	eq(t, wide, int64(3*86400))
 }
