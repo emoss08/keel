@@ -292,9 +292,9 @@ func TestDynamicSharedParameters(t *testing.T) {
 	q.Select(bucket.As("bucket"), keel.DynCount().As("n")).Group(bucket).Order(bucket.Asc())
 	sql, args, err := q.ToSQL(w.ctx, d)
 	ok(t, err)
-	expr := `CASE WHEN (s."priority" >= $3) THEN $4 ELSE $5 END`
-	if strings.Count(sql, expr) != 3 {
-		t.Fatalf("the CASE renders identically in SELECT, GROUP BY and ORDER BY:\n%s", sql)
+	expr := `CASE WHEN (s."priority" >= $3) THEN $4::text ELSE $5::text END AS c1`
+	if strings.Count(sql, expr) != 1 || !strings.Contains(sql, " GROUP BY 1 ORDER BY 1 ASC") {
+		t.Fatalf("the CASE is selected once, with typed results, and grouped and ordered by position:\n%s", sql)
 	}
 	eq(t, len(args), 5)
 	res := must(q.Run(w.ctx, d))(t)

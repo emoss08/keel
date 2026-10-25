@@ -1,6 +1,7 @@
 package keel
 
 import (
+	"strconv"
 	"strings"
 	"unsafe"
 )
@@ -179,6 +180,16 @@ func (o Order) NullsLast() Order { o.nulls = 1; return o }
 
 func (o Order) writeSQL(r *render) {
 	o.e.writeSQL(r)
+	o.writeDirection(r)
+}
+
+// writeAt orders by the output at position pos of the select list.
+func (o Order) writeAt(r *render, pos int) {
+	r.s(strconv.Itoa(pos))
+	o.writeDirection(r)
+}
+
+func (o Order) writeDirection(r *render) {
 	if o.desc {
 		r.s(" DESC")
 	} else {

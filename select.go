@@ -2,6 +2,7 @@ package keel
 
 import (
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/emoss08/keel/schema"
@@ -266,6 +267,8 @@ func (q *query) renderSelect(r *render, sn *lnode, o selectOpts) *selectPlan {
 		}
 	})
 
+	projected := !o.selectOne && !o.countOnly &&
+		((sn.spec == q && q.projection()) || (o.exact && len(q.exprs) > 0))
 	sel := r.section(func() {
 		if o.selectOne {
 			r.s("1")
@@ -292,12 +295,12 @@ func (q *query) renderSelect(r *render, sn *lnode, o selectOpts) *selectPlan {
 			}
 			r.s(") ")
 		}
-		if (sn.spec == q && q.projection()) || (o.exact && len(q.exprs) > 0) {
+		if projected {
 			for i, e := range q.exprs {
 				if i > 0 {
 					r.s(", ")
 				}
-				e.writeSQL(r)
+				writeOutput(r, e)
 			}
 			return
 		}
@@ -349,7 +352,18 @@ func (q *query) renderSelect(r *render, sn *lnode, o selectOpts) *selectPlan {
 
 	var group, having, windows, order []byte
 	if sn.spec == q {
-		group = r.section(func() { writeExprs(r, q.group) })
+		group = r.section(func() {
+			for i, e := range q.group {
+				if i > 0 {
+					r.s(", ")
+				}
+				if pos := outputPosition(projected, q.exprs, e); pos > 0 {
+					r.s(strconv.Itoa(pos))
+					continue
+				}
+				e.writeSQL(r)
+			}
+		})
 		having = r.section(func() { r.preds(q.having, false) })
 		windows = r.section(func() { writeWindows(r, q.windows) })
 	}
@@ -358,6 +372,10 @@ func (q *query) renderSelect(r *render, sn *lnode, o selectOpts) *selectPlan {
 			for i, ord := range sn.spec.order {
 				if i > 0 {
 					r.s(", ")
+				}
+				if pos := outputPosition(projected && sn.spec == q, q.exprs, ord.e); pos > 0 {
+					ord.writeAt(r, pos)
+					continue
 				}
 				ord.writeSQL(r)
 			}

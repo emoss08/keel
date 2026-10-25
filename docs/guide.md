@@ -2040,17 +2040,27 @@ and `ToExpr` of a generated table take it too. Operands are other expressions or
 `jsonb_build_array`, `jsonb_build_object`, `jsonb_set`, `width_bucket`, `gen_random_uuid`,
 `int4range`, `int8range`, `numrange`, `tstzrange`, and the aggregates `sum`, `avg`, `min`, `max`,
 `count`, `bool_and`, `bool_or`, `string_agg`, `array_agg`, `jsonb_agg`, `jsonb_object_agg`,
-`stddev`, `stddev_samp`, `stddev_pop`, `variance`, `var_samp` and `var_pop`. Arguments of a
-function declared over `"any"` (`concat`, `concat_ws`, `jsonb_build_object`, `jsonb_build_array`)
-give a bound value no type, so cast such a value: `keel.DynLit("k").Cast(keel.TypeString)`. `Cast`
-takes a `keel.ValueType`, never a type name. An unresolved name, an unknown function or a `Filter`
+`stddev`, `stddev_samp`, `stddev_pop`, `variance`, `var_samp` and `var_pop`. `Cast` takes a
+`keel.ValueType`, never a type name. An unresolved name, an unknown function or a `Filter`
 on something that is not an aggregate makes an expression that carries an error: `Err()` reports it
 at once, and a query that uses it fails with it, so a compiler can validate a definition before
 running it.
 
-A literal's type comes from where Postgres sees it; cast it where nothing fixes it (both sides of an
-operator, a CASE result compared with something else). Integer division truncates: cast one side to
+A literal compared with, added to or passed alongside a typed expression takes that expression's
+type, as Postgres infers it. Where nothing gives it one, keel casts it to the type of its Go value:
+an output of the select list (`Pick(keel.DynLit(0))` is `$1::bigint`), the results of a CASE whose
+results are all literals, the elements of an `ARRAY` that are all literals, and the arguments of the
+functions declared over `"any"` (`concat`, `concat_ws`, `jsonb_build_object`,
+`jsonb_build_array`). An integer is `bigint`, a `uint64` `numeric`, a float `double precision`, a
+bool `boolean`, a string `text`, a `time.Time` `timestamptz`, a `[]byte` `bytea` and a slice of one
+of them its array; a type with methods (a `Valuer`, a `time.Duration`, a decimal) is left to
+Postgres. `Cast` sets any other type. Integer division truncates: cast one side to
 `keel.TypeNumeric` or `keel.TypeFloat64`, and guard a divisor that can be zero with `NullIf(0)`.
+
+`Group` and `Order` name an expression the select list already holds by its position: assign the
+expression to a variable, pass the same value to `Pick` and to `Group` or `Order`, and the
+statement reads `GROUP BY 2` instead of repeating it, so the two always match. A bare column is
+written by name.
 
 ```go
 revenue := q.Path("total").Sum()

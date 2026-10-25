@@ -180,6 +180,7 @@ func DynArray(vs ...any) DynExpr {
 		}
 		ops[i] = e
 	}
+	typedIfAllLiterals(ops)
 	return newDyn(exprFunc(func(r *render) {
 		r.s("ARRAY[")
 		writeExprs(r, ops)
@@ -717,6 +718,12 @@ type dynFunc struct {
 	agg      bool
 }
 
+// anyArgFuncs are the functions whose parameters are of type "any", so a literal argument is cast
+// to the type its Go value implies instead of resolving to text.
+var anyArgFuncs = map[string]bool{
+	"concat": true, "concat_ws": true, "jsonb_build_array": true, "jsonb_build_object": true,
+}
+
 // dynFuncs is the allow-list of functions DynFunc calls.
 var dynFuncs = map[string]dynFunc{
 	"abs": {1, 1, false}, "ceil": {1, 1, false}, "floor": {1, 1, false}, "round": {1, 2, false},
@@ -776,6 +783,9 @@ func DynFunc(name string, args ...any) DynExpr {
 			return dynFail(err)
 		}
 		ops[i] = e
+		if anyArgFuncs[name] {
+			ops[i] = typed(e)
+		}
 	}
 	if f.agg {
 		if len(ops) == 0 {
@@ -865,7 +875,21 @@ func (b DynCaseBuilder) end(els Expr) DynExpr {
 	if len(b.whens) == 0 {
 		return dynFail(errf("CASE needs at least one When"))
 	}
-	whens := b.whens
+	results := make([]Expr, 0, len(b.whens)+1)
+	for _, w := range b.whens {
+		results = append(results, w.then)
+	}
+	if els != nil {
+		results = append(results, els)
+	}
+	typedIfAllLiterals(results)
+	whens := make([]dynWhen, len(b.whens))
+	for i, w := range b.whens {
+		whens[i] = dynWhen{cond: w.cond, then: results[i]}
+	}
+	if els != nil {
+		els = results[len(whens)]
+	}
 	return newDyn(exprFunc(func(r *render) {
 		r.s("CASE")
 		for _, w := range whens {
