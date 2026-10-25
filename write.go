@@ -358,7 +358,16 @@ func (h Handle[T]) CreateOrSkip(ctx context.Context, db *DB, rows []T, targets .
 func (h Handle[T]) InsertFrom(ctx context.Context, db *DB, src subquery,
 	cols ...Column,
 ) (int64, error) {
-	return db.insertFrom(ctx, h.Ref, src, cols, nil)
+	return db.insertFrom(ctx, h.Ref, src, cols, nil, nil)
+}
+
+// InsertFromSQL renders the statement InsertFrom sends, without running it.
+func (h Handle[T]) InsertFromSQL(ctx context.Context, db *DB, src subquery,
+	cols ...Column,
+) (string, []any, error) {
+	var out renderedSQL
+	_, err := db.insertFrom(ctx, h.Ref, src, cols, nil, &out)
+	return out.sql, out.args, err
 }
 
 // UpsertFrom inserts the rows of src into cols, as InsertFrom does, and resolves rows that
@@ -370,7 +379,22 @@ func (h Handle[T]) InsertFrom(ctx context.Context, db *DB, src subquery,
 func (h Handle[T]) UpsertFrom(ctx context.Context, db *DB, src subquery, c Conflict,
 	cols ...Column,
 ) (int64, error) {
-	return db.insertFrom(ctx, h.Ref, src, cols, &c)
+	return db.insertFrom(ctx, h.Ref, src, cols, &c, nil)
+}
+
+// UpsertFromSQL renders the statement UpsertFrom sends, without running it.
+func (h Handle[T]) UpsertFromSQL(ctx context.Context, db *DB, src subquery, c Conflict,
+	cols ...Column,
+) (string, []any, error) {
+	var out renderedSQL
+	_, err := db.insertFrom(ctx, h.Ref, src, cols, &c, &out)
+	return out.sql, out.args, err
+}
+
+// renderedSQL is a statement rendered instead of run.
+type renderedSQL struct {
+	sql  string
+	args []any
 }
 
 // hookCtx returns the context a write's hooks run with: ctx carrying the runner's implicit
@@ -1149,7 +1173,7 @@ func (db *DB) deleteRow(ctx context.Context, ref *Ref, row unsafe.Pointer) error
 }
 
 func (db *DB) insertFrom(ctx context.Context, ref *Ref, src subquery,
-	cols []Column, conflict *Conflict,
+	cols []Column, conflict *Conflict, out *renderedSQL,
 ) (int64, error) {
 	t := ref.Table
 	if len(cols) == 0 {
@@ -1229,6 +1253,10 @@ func (db *DB) insertFrom(ctx context.Context, ref *Ref, src subquery,
 		return 0, run.close(ctx, r.err)
 	}
 	s := &stmt{sql: string(r.buf), args: r.argsCopy(), op: "insert", table: t.Name}
+	if out != nil {
+		out.sql, out.args = s.sql, s.args
+		return 0, run.close(ctx, nil)
+	}
 	n, err := run.bulk(ctx, s, t, "", nil, true)
 	return n, run.close(ctx, err)
 }

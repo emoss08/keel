@@ -184,6 +184,12 @@ func (q *Query[T]) Order(os ...Order) *Query[T] {
 	return q
 }
 
+// Distinct returns each distinct row once: SELECT DISTINCT.
+func (q *Query[T]) Distinct() *Query[T] {
+	q.q.distinct = true
+	return q
+}
+
 // Group adds GROUP BY expressions.
 func (q *Query[T]) Group(es ...Expr) *Query[T] {
 	q.q.group = append(q.q.group, es...)

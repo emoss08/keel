@@ -2061,6 +2061,8 @@ and `ToExpr` of a generated table take it too. Operands are other expressions or
 | arrays, ranges, jsonb | `keel.DynArray(vs...)` (`ARRAY[…]`), `At(i)` (`d[i]`), `Covers(v)` (`@>`), `CoveredBy(v)` (`<@`); on a jsonb column `Path(keys...)` (`#>`, jsonb) beside `Text(keys...)` (`#>>`, text); on a text[] column `Remove(v)` assigns `array_remove(col, v)` |
 | collation | `Collate("C")`: `d COLLATE "C"` |
 | constants | `keel.DynConst(v)`: an integer, float, bool or string written into the SQL text, for an expression that must match an expression index or a partial index predicate; everything else is a bound `DynLit` |
+| distinct and ordered aggregates | `Agg.Distinct()` and `DynExpr.Distinct()` (`array_agg(DISTINCT e)`), `DynExpr.OrderBy(orders...)` on any aggregate `DynFunc` (`jsonb_agg(e ORDER BY …)`) |
+| array of a subquery | `keel.ArrayOf(q)`: `ARRAY(SELECT …)`, an empty array when no row matches; `Query.Distinct()` makes it distinct |
 | ordered aggregates | `keel.ArrayAgg(e)`, `keel.StringAgg(e, sep)` with `OrderBy(orders...)`; `keel.PercentileCont(f, order)`, `keel.PercentileDisc(f, order)`, `keel.Mode(order)` (`WITHIN GROUP`); all take `Filter` |
 | functions | `keel.DynFunc(name, args...)` from an allow-list |
 | aggregates | `Sum`, `Avg`, `Min`, `Max`, `Count`, `CountDistinct`, `keel.DynCount()`, `Filter(pred)`, `Over(window)` |
@@ -2605,6 +2607,8 @@ n, err := tg.InsertFrom(ctx, db,
 
 `InsertFrom` does not fill `autoid`, `autocreate` or `autoupdate` columns and runs no hooks: pick
 those values in the query.
+
+`InsertFromSQL` and `UpsertFromSQL` render the statement without running it, for a test.
 
 `UpsertFrom` is `InsertFrom` with a conflict clause, `INSERT INTO t AS alias (cols) SELECT … ON
 CONFLICT …`, for rollups that fold a query's rows into a table keyed by a unique index. It takes the

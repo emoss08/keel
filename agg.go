@@ -129,6 +129,9 @@ func Grouping(es ...Expr) Agg {
 // array_agg(e ORDER BY …), string_agg(e, sep ORDER BY …).
 func (a Agg) OrderBy(os ...Order) Agg { a.order = slices.Clip(os); return a }
 
+// Distinct aggregates the distinct values of the argument: array_agg(DISTINCT e).
+func (a Agg) Distinct() Agg { a.distinct = true; return a }
+
 // Filter restricts the rows an aggregate sees: count(*) FILTER (WHERE p).
 func (a Agg) Filter(p Pred) Agg { a.filter = p; return a }
 

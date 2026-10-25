@@ -714,6 +714,29 @@ func (d DynExpr) Filter(p Pred) DynExpr {
 	return dynAgg(d.n.agg.Filter(p), d.Label())
 }
 
+// Distinct aggregates the distinct values of d's argument: array_agg(DISTINCT e). d must be an
+// aggregate.
+func (d DynExpr) Distinct() DynExpr {
+	if err := d.Err(); err != nil {
+		return d
+	}
+	if d.n.agg == nil {
+		return dynFail(errf("Distinct needs an aggregate, %s is not one", d.Label()))
+	}
+	return dynAgg(d.n.agg.Distinct(), d.Label())
+}
+
+// OrderBy orders the rows an aggregate reads: jsonb_agg(e ORDER BY …). d must be an aggregate.
+func (d DynExpr) OrderBy(os ...Order) DynExpr {
+	if err := d.Err(); err != nil {
+		return d
+	}
+	if d.n.agg == nil {
+		return dynFail(errf("OrderBy needs an aggregate, %s is not one", d.Label()))
+	}
+	return dynAgg(d.n.agg.OrderBy(os...), d.Label())
+}
+
 // Over turns an aggregate or window function into a window function over w: a running or moving
 // aggregate, a rank, an offset or a frame value.
 func (d DynExpr) Over(w Window) DynExpr {
@@ -763,6 +786,9 @@ var dynFuncs = map[string]dynFunc{
 	"numrange": {2, 3, false}, "tstzrange": {2, 3, false}, "array_agg": {1, 1, true},
 	"jsonb_agg": {1, 1, true}, "jsonb_object_agg": {2, 2, true},
 	"unnest": {1, -1, false}, "generate_series": {2, 3, false},
+	"jsonb_each": {1, 1, false}, "jsonb_each_text": {1, 1, false}, "jsonb_array_elements": {1, 1, false},
+	"jsonb_array_elements_text": {1, 1, false}, "jsonb_object_keys": {1, 1, false},
+	"ln": {1, 1, false}, "exp": {1, 1, false}, "log": {1, 2, false},
 	"sum": {1, 1, true}, "avg": {1, 1, true}, "min": {1, 1, true}, "max": {1, 1, true},
 	"count": {0, 1, true}, "bool_and": {1, 1, true}, "bool_or": {1, 1, true},
 	"string_agg": {2, 2, true}, "stddev": {1, 1, true}, "stddev_samp": {1, 1, true},
@@ -778,7 +804,9 @@ var dynFuncs = map[string]dynFunc{
 // jsonb_extract_path_text, jsonb_typeof, jsonb_array_length, cardinality, array_to_string,
 // array_append, array_remove, array_position, regexp_replace, jsonb_build_array,
 // jsonb_build_object, jsonb_set, width_bucket, gen_random_uuid, int4range, int8range, numrange,
-// tstzrange, and the set-returning unnest and generate_series, for keel.Rows.
+// tstzrange, ln, exp, log, and the set-returning unnest, generate_series, jsonb_each,
+// jsonb_each_text, jsonb_array_elements, jsonb_array_elements_text and jsonb_object_keys, for
+// keel.Rows.
 // Aggregates, which take Filter and Over: sum, avg, min, max, count (count() is count(*)),
 // bool_and, bool_or, string_agg, stddev, stddev_samp, stddev_pop, variance, var_samp, var_pop,
 // array_agg, jsonb_agg, jsonb_object_agg.

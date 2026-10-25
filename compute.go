@@ -208,6 +208,21 @@ func aggKind(a Agg) (schema.Kind, bool) {
 // The subquery is scoped like any statement: it gets its tables' tenant predicates.
 func Scalar(q subquery) Expr { return scalarExpr{q: q} }
 
+// ArrayOf is the array of the values of a query that picks one expression: ARRAY(SELECT …), an
+// empty array when the query returns no rows, where array_agg would be NULL. A correlated query
+// collects a row's related values, distinct with Distinct:
+//
+//	keel.ArrayOf(st.Pick(st.City).Where(st.ShipmentID.EqCol(s.ID)).Distinct())
+func ArrayOf(q subquery) Expr { return arrayExpr{q: q} }
+
+type arrayExpr struct{ q subquery }
+
+func (e arrayExpr) writeSQL(r *render) {
+	r.s("ARRAY(")
+	e.q.writeSubquery(r, false)
+	r.b(')')
+}
+
 // scalarExpr is a scalar subquery.
 type scalarExpr struct{ q subquery }
 

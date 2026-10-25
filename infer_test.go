@@ -136,3 +136,41 @@ func TestEnumConstantsAreWrittenIntoTheStatement(t *testing.T) {
 	}
 	eq(t, len(args), 3)
 }
+
+func TestDistinctAggregatesArraysAndOrderedJSONAggregates(t *testing.T) {
+	d := renderDB(t)
+	ctx := tenantCtx("org_1", "bu_1")
+	s := fleetdb.Shipments
+	m := fleetdb.Moves
+	sql, _, err := s.Pick(
+		s.ID,
+		keel.DynOf(keel.ArrayAgg(s.Status)).Distinct(),
+		keel.DynFunc("jsonb_agg", s.ProNumber).OrderBy(s.CreatedAt.Desc()),
+		keel.ArrayOf(m.Pick(m.Status).Where(m.ShipmentID.EqCol(s.ID)).Distinct()),
+		keel.DynFunc("ln", s.Weight),
+	).Group(s.ID).ToSQL(ctx, d)
+	ok(t, err)
+	for _, want := range []string{
+		`array_agg(DISTINCT s."status")`, `jsonb_agg(s."pro_number" ORDER BY s."created_at" DESC)`,
+		`ARRAY(SELECT DISTINCT m."status" FROM "moves" m`, `ln(s."weight")`,
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("%s\nlacks %s", sql, want)
+		}
+	}
+}
+
+func TestUpsertFromSQLRendersWithoutRunning(t *testing.T) {
+	d := renderDB(t)
+	ctx := tenantCtx("org_1", "bu_1")
+	c := fleetdb.Contacts
+	src := keel.Rows("src", []string{"id", "name", "score"}, keel.DynLit("con_1"), keel.DynLit("n"), keel.DynLit(1))
+	sql, args, err := c.UpsertFromSQL(ctx, d, src,
+		keel.OnConflict(c.OrganizationID, c.BusinessUnitID, c.Name).Set(c.Score.Add(1)).UpdateWhere(c.Score.Lt(3)),
+		c.ID, c.Name, c.Score)
+	ok(t, err)
+	if !strings.Contains(sql, `ON CONFLICT ("organization_id", "business_unit_id", "name") DO UPDATE SET "score" = c."score" + $`) ||
+		!strings.Contains(sql, ` WHERE c."score" < $`) || len(args) == 0 {
+		t.Fatalf("%s %v", sql, args)
+	}
+}
