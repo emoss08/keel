@@ -277,7 +277,8 @@ func (q *query) renderSelect(r *render, sn *lnode, o selectOpts) *selectPlan {
 		}
 	})
 
-	projected := !o.selectOne && !o.countOnly && o.keysOf == nil &&
+	distinctCount := o.countOnly && q.distinct && sn.spec == q
+	projected := !o.selectOne && (!o.countOnly || distinctCount) && o.keysOf == nil &&
 		((sn.spec == q && q.projection()) || (o.exact && len(q.exprs) > 0))
 	sel := r.section(func() {
 		if o.keysOf != nil {
@@ -296,10 +297,20 @@ func (q *query) renderSelect(r *render, sn *lnode, o selectOpts) *selectPlan {
 			r.s("1")
 			return
 		}
-		if o.countOnly {
-			if len(q.group) > 0 || o.countCap > 0 || len(q.distinctOn) > 0 {
+		if o.countOnly && !distinctCount {
+			switch {
+			case len(q.distinctOn) > 0 && sn.spec == q:
+				r.s("DISTINCT ON (")
+				for i, e := range q.distinctOn {
+					if i > 0 {
+						r.s(", ")
+					}
+					e.writeSQL(r)
+				}
+				r.s(") 1")
+			case len(q.group) > 0 || o.countCap > 0 || len(q.distinctOn) > 0:
 				r.s("1")
-			} else {
+			default:
 				r.s("count(*)")
 			}
 			return

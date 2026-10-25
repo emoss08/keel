@@ -263,7 +263,7 @@ func (q *query) countStmt(ctx context.Context, db *DB, sc *scopeState, limit int
 	if r.err != nil {
 		return nil, r.err
 	}
-	if limit > 0 || len(q.group) > 0 || len(q.distinctOn) > 0 {
+	if limit > 0 || len(q.group) > 0 || len(q.distinctOn) > 0 || q.distinct {
 		r.s("SELECT count(*) FROM (")
 		r.buf = append(r.buf, inner...)
 		r.s(") c")

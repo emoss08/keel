@@ -205,3 +205,21 @@ func ExampleQuery_CountEstimate() {
 		fmt.Println("about", c.N, "shipments")
 	}
 }
+
+func TestCountsHonourDistinct(t *testing.T) {
+	d := db(t)
+	w := seed(t, 8)
+	s := fleetdb.Shipments
+
+	byCustomer := func() *keel.Query[*fleet.Shipment] { return s.DistinctOn(s.CustomerID) }
+	eq(t, must(byCustomer().Count(w.ctx, d))(t), int64(3))
+	eq(t, must(byCustomer().CountUpTo(w.ctx, d, 2))(t), int64(2))
+	eq(t, must(byCustomer().CountEstimate(w.ctx, d, 10))(t), keel.RowCount{N: 3, Exact: true})
+
+	prefixes := func() *keel.Query[*fleet.Shipment] { return s.Pick(s.ProNumber.Left(7)) }
+	eq(t, must(prefixes().Count(w.ctx, d))(t), int64(8))
+	eq(t, must(prefixes().Distinct().Count(w.ctx, d))(t), int64(1))
+	eq(t, must(prefixes().Distinct().CountUpTo(w.ctx, d, 5))(t), int64(1))
+	eq(t, must(prefixes().Distinct().CountEstimate(w.ctx, d, 5))(t),
+		keel.RowCount{N: 1, Exact: true})
+}
