@@ -170,6 +170,145 @@ func valueAuditEntry(p unsafe.Pointer, c int32) any {
 	return nil
 }
 
+// badgesTable is the schema of fleet.Badge.
+var badgesTable = schema.Table{
+	Name:   "badges",
+	Quoted: `"badges"`,
+	Alias:  "b",
+	Model:  "fleet.Badge",
+	Label:  `Badge`,
+	Plural: `Badges`,
+	Doc:    `Badge has columns whose database defaults fill an insert that leaves them unset.`,
+	Columns: []schema.Column{
+		{Name: "id", Quoted: `"id"`, Field: "ID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagAutoID, Label: `ID`},
+		{Name: "organization_id", Quoted: `"organization_id"`, Field: "OrganizationID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagTenant, Label: `Organization ID`},
+		{Name: "business_unit_id", Quoted: `"business_unit_id"`, Field: "BusinessUnitID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagTenant, Label: `Business Unit ID`},
+		{Name: "name", Quoted: `"name"`, Field: "Name", Kind: schema.KindString, Flags: 0, Label: `Name`},
+		{Name: "level", Quoted: `"level"`, Field: "Level", Kind: schema.KindInt32, Flags: schema.FlagNullable | schema.FlagDefault, Label: `Level`},
+		{Name: "color", Quoted: `"color"`, Field: "Color", Kind: schema.KindString, Flags: schema.FlagNullZero | schema.FlagDefault, Label: `Color`},
+		{Name: "note", Quoted: `"note"`, Field: "Note", Kind: schema.KindOther, Flags: schema.FlagNullable | schema.FlagDefault, Label: `Note`},
+	},
+	PK:         []int32{0, 1, 2},
+	Tenant:     []int32{1, 2},
+	Select:     []int32{0, 1, 2, 3, 4, 5, 6},
+	Insert:     []int32{0, 1, 2, 3, 4, 5, 6},
+	Update:     []int32{3, 4, 5, 6},
+	Returning:  nil,
+	Version:    -1,
+	AutoID:     0,
+	AutoCreate: -1,
+	AutoUpdate: -1,
+	IDPrefix:   "bdg_",
+	New:        newBadge,
+	NewN:       newNBadge,
+	Size:       unsafe.Sizeof(fleet.Badge{}),
+	Ptr:        ptrBadge,
+	Value:      valueBadge,
+}
+
+var badgesRef = keel.Ref{Table: &badgesTable}
+
+// BadgesTable is the table of fleet.Badge.
+type BadgesTable struct {
+	keel.Handle[fleet.Badge]
+	ID             keelkinds.IdsIDCol
+	OrganizationID keelkinds.IdsIDCol
+	BusinessUnitID keelkinds.IdsIDCol
+	Name           keel.StringCol
+	Level          keel.Int32Col
+	Color          keel.StringCol
+	Note           keelkinds.SqlNullStringCol
+}
+
+// Badges references the badges table.
+var Badges = &BadgesTable{
+	Handle:         keel.Handle[fleet.Badge]{Ref: &badgesRef},
+	ID:             keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: &badgesRef, Index: 0}}},
+	OrganizationID: keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: &badgesRef, Index: 1}}},
+	BusinessUnitID: keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: &badgesRef, Index: 2}}},
+	Name:           keel.StringCol{Col: keel.Col{Ref: &badgesRef, Index: 3}},
+	Level:          keel.Int32Col{Col: keel.Col{Ref: &badgesRef, Index: 4}},
+	Color:          keel.StringCol{Col: keel.Col{Ref: &badgesRef, Index: 5}},
+	Note:           keelkinds.SqlNullStringCol{AnyCol: keel.AnyCol{Col: keel.Col{Ref: &badgesRef, Index: 6}}},
+}
+
+// BuildBadges builds the handle of badges for ref. Generated relation and alias methods call it.
+func BuildBadges(r *keel.Ref) *BadgesTable {
+	return &BadgesTable{
+		Handle:         keel.Handle[fleet.Badge]{Ref: r},
+		ID:             keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: r, Index: 0}}},
+		OrganizationID: keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: r, Index: 1}}},
+		BusinessUnitID: keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: r, Index: 2}}},
+		Name:           keel.StringCol{Col: keel.Col{Ref: r, Index: 3}},
+		Level:          keel.Int32Col{Col: keel.Col{Ref: r, Index: 4}},
+		Color:          keel.StringCol{Col: keel.Col{Ref: r, Index: 5}},
+		Note:           keelkinds.SqlNullStringCol{AnyCol: keel.AnyCol{Col: keel.Col{Ref: r, Index: 6}}},
+	}
+}
+
+// BadgesSchema returns the schema of badges.
+func BadgesSchema() *schema.Table { return &badgesTable }
+
+// As returns a handle that references badges under its own alias.
+func (t *BadgesTable) As(alias string) *BadgesTable { return keel.Alias(t.Ref, alias, BuildBadges) }
+
+// Get returns the badges row with the given key, or keel.ErrNotFound.
+func (t *BadgesTable) Get(ctx context.Context, db *keel.DB, key ids.ID) (*fleet.Badge, error) {
+	return t.Where(t.ID.Eq(key)).One(ctx, db)
+}
+
+func newBadge() unsafe.Pointer { return unsafe.Pointer(new(fleet.Badge)) }
+
+func newNBadge(n int) unsafe.Pointer { return unsafe.Pointer(unsafe.SliceData(make([]fleet.Badge, n))) }
+
+func ptrBadge(p unsafe.Pointer, c int32) any {
+	r := (*fleet.Badge)(p)
+	switch c {
+	case 0:
+		return (*string)(unsafe.Pointer(&r.ID))
+	case 1:
+		return (*string)(unsafe.Pointer(&r.OrganizationID))
+	case 2:
+		return (*string)(unsafe.Pointer(&r.BusinessUnitID))
+	case 3:
+		return &r.Name
+	case 4:
+		return &r.Level
+	case 5:
+		return &r.Color
+	case 6:
+		return &r.Note
+	}
+	return nil
+}
+
+func valueBadge(p unsafe.Pointer, c int32) any {
+	r := (*fleet.Badge)(p)
+	switch c {
+	case 0:
+		return string(r.ID)
+	case 1:
+		return string(r.OrganizationID)
+	case 2:
+		return string(r.BusinessUnitID)
+	case 3:
+		return r.Name
+	case 4:
+		if r.Level == nil {
+			return nil
+		}
+		return *r.Level
+	case 5:
+		if r.Color == "" {
+			return nil
+		}
+		return r.Color
+	case 6:
+		return r.Note
+	}
+	return nil
+}
+
 // contactsTable is the schema of fleet.Contact.
 var contactsTable = schema.Table{
 	Name:   "contacts",

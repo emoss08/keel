@@ -170,6 +170,8 @@ func TestGenerateErrors(t *testing.T) {
 		{"no models", "type A struct{ X int }\n", "no models"},
 		{"unexported model", "type a struct {\n\tkeel.Table ~keel:\"a\"~\n\tID string ~keel:\"id,pk\"~\n}\n", ": a: models must be exported"},
 		{"nullzero pointer", oneA(`P *string ~keel:"p,nullzero"~`), field(3) + ": A.P: nullzero needs a non-pointer field"},
+		{"default on a field that cannot be unset", oneA(`P string ~keel:"p,default"~`),
+			field(3) + ": A.P: default needs a field that can be unset"},
 		{"nullzero pk", oneA(`ID string ~keel:"id,pk,nullzero"~`), field(3) + ": A.…nullzero excludes pk"},
 		{"nullzero tenant", oneA(`T string ~keel:"t,tenant,nullzero"~`), field(3) + ": A.…nullzero excludes pk, tenant"},
 		{"nullzero not comparable", "type S struct{ X []int }\n\n" + oneA(`S S ~keel:"s,jsonb,nullzero"~`),

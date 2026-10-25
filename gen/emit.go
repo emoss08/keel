@@ -216,7 +216,7 @@ func flagNames(f schema.ColFlag) string {
 		{schema.FlagReadOnly, "FlagReadOnly"}, {schema.FlagNoSelect, "FlagNoSelect"},
 		{schema.FlagNullable, "FlagNullable"}, {schema.FlagJSONB, "FlagJSONB"}, {schema.FlagAutoID, "FlagAutoID"},
 		{schema.FlagNullZero, "FlagNullZero"}, {schema.FlagComputed, "FlagComputed"},
-		{schema.FlagJSONNumber, "FlagJSONNumber"},
+		{schema.FlagJSONNumber, "FlagJSONNumber"}, {schema.FlagDefault, "FlagDefault"},
 	}
 	var parts []string
 	for _, n := range names {

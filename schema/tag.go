@@ -211,6 +211,7 @@ var columnFlags = map[string]ColFlag{
 	"pk": FlagPK, "tenant": FlagTenant, "version": FlagVersion, "autocreate": FlagAutoCreate,
 	"autoupdate": FlagAutoUpdate, "readonly": FlagReadOnly, "noselect": FlagNoSelect, "jsonb": FlagJSONB,
 	"nullzero": FlagNullZero, "computed": FlagComputed, "jsonnumber": FlagJSONNumber,
+	"default": FlagDefault,
 }
 
 // columnOption sets one column option.
@@ -326,6 +327,9 @@ func (ft *FieldTag) checkColumn() error {
 	case ft.Flags.Has(FlagNullZero) && ft.Flags&(FlagPK|FlagTenant|FlagVersion|FlagAutoCreate|FlagAutoUpdate|
 		FlagAutoID) != 0:
 		return fmt.Errorf("nullzero excludes pk, tenant, version, autoid, autocreate and autoupdate")
+	case ft.Flags.Has(FlagDefault) && ft.Flags&(FlagPK|FlagTenant|FlagVersion|FlagAutoCreate|FlagAutoUpdate|
+		FlagAutoID|FlagReadOnly|FlagComputed) != 0:
+		return fmt.Errorf("default excludes pk, tenant, version, autoid, autocreate, autoupdate, readonly and computed")
 	case ft.Flags.Has(FlagJSONB) && ft.TSVector:
 		return fmt.Errorf("jsonb and tsvector exclude each other")
 	case ft.Flags.Has(FlagJSONNumber) && !ft.Flags.Has(FlagJSONB):

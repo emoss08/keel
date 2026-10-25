@@ -484,8 +484,11 @@ func hasIsZero(t types.Type) bool {
 }
 
 // checkNullZero refuses nullzero on a column whose Go type already stores nil as NULL: a pointer
-// or a Null… scanner.
+// or a Null… scanner. It refuses default on a field that cannot be unset.
 func checkNullZero(c *column) error {
+	if c.tag.Flags.Has(schema.FlagDefault) && !c.nullable && !c.tag.Flags.Has(schema.FlagNullZero) {
+		return fmt.Errorf("default needs a field that can be unset: a pointer, a Null… type or nullzero")
+	}
 	if !c.tag.Flags.Has(schema.FlagNullZero) {
 		return nil
 	}

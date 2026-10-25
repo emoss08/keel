@@ -3,6 +3,7 @@ package fleet
 
 import (
 	"context"
+	"database/sql"
 	"strings"
 	"time"
 
@@ -294,4 +295,17 @@ type AuditEntry struct {
 	Result         []any          `keel:"result,jsonb,jsonnumber,nullzero"`
 	Raw            *any           `keel:"raw,jsonb,jsonnumber"`
 	Meta           map[string]any `keel:"meta,jsonb"`
+}
+
+// Badge has columns whose database defaults fill an insert that leaves them unset.
+type Badge struct {
+	keel.Table `keel:"badges"`
+
+	ID             ids.ID         `keel:"id,pk,autoid:bdg_"`
+	OrganizationID ids.ID         `keel:"organization_id,pk,tenant"`
+	BusinessUnitID ids.ID         `keel:"business_unit_id,pk,tenant"`
+	Name           string         `keel:"name"`
+	Level          *int32         `keel:"level,default"`
+	Color          string         `keel:"color,nullzero,default"`
+	Note           sql.NullString `keel:"note,default"`
 }

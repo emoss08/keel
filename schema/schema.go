@@ -46,6 +46,9 @@ const (
 	// FlagJSONNumber decodes a jsonb column's JSON with numbers in interface values kept as
 	// json.Number instead of float64 (the tag's jsonnumber option).
 	FlagJSONNumber
+	// FlagDefault inserts the column's database default when the field is unset: a nil pointer, a
+	// NULL Null… value or a nullzero field's zero value (the tag's default option).
+	FlagDefault
 )
 
 // Has reports whether every flag in f2 is set.

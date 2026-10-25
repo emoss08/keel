@@ -33,6 +33,7 @@ type columnTypes struct {
 type columnType struct {
 	sql   string
 	array string
+	def   string
 }
 
 // firstUserOID is the first OID Postgres gives objects created after initdb (FirstNormalObjectId):
@@ -69,6 +70,9 @@ func (db *DB) columnTypes(ctx context.Context, t *schema.Table) ([]columnType, e
 		if c.Kind != schema.KindOther {
 			typ.array = ""
 		}
+		if c.Flags.Has(schema.FlagDefault) && typ.def == "" {
+			return nil, errf("%s.%s is tagged default but has no database default", t.Name, c.Name)
+		}
 		types[i] = typ
 	}
 	db.types.mu.Lock()
@@ -84,9 +88,11 @@ func (db *DB) columnTypes(ctx context.Context, t *schema.Table) ([]columnType, e
 // each extension base type that conn has a codec for, and for its array.
 func readColumnTypes(ctx context.Context, conn *pgx.Conn, t *schema.Table) (map[string]columnType, error) {
 	rows, err := conn.Query(ctx, `SELECT a.attname, format_type(a.atttypid, a.atttypmod), a.atttypid, ty.typtype,
-	       ty.typarray, coalesce(format_type(ty.typarray, NULL), '')
+	       ty.typarray, coalesce(format_type(ty.typarray, NULL), ''),
+	       coalesce(pg_get_expr(d.adbin, d.adrelid), '')
 	  FROM pg_attribute a
 	  JOIN pg_type ty ON ty.oid = a.atttypid
+	  LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
 	 WHERE a.attrelid = $1::regclass AND a.attnum > 0 AND NOT a.attisdropped`, t.Quoted)
 	if err != nil {
 		return nil, fmt.Errorf("keel: read column types of %s: %w", t.Name, err)
@@ -95,12 +101,12 @@ func readColumnTypes(ctx context.Context, conn *pgx.Conn, t *schema.Table) (map[
 	m := conn.TypeMap()
 	byName := map[string]columnType{}
 	for rows.Next() {
-		var name, typ, kind, array string
+		var name, typ, kind, array, def string
 		var oid, arrayOID uint32
-		if err := rows.Scan(&name, &typ, &oid, &kind, &arrayOID, &array); err != nil {
+		if err := rows.Scan(&name, &typ, &oid, &kind, &arrayOID, &array, &def); err != nil {
 			return nil, err
 		}
-		ct := columnType{sql: typ}
+		ct := columnType{sql: typ, def: def}
 		if kind == "b" && oid >= firstUserOID && arrayOID != 0 && registered(m, oid) && registered(m, arrayOID) {
 			ct.array = array
 		}
@@ -393,11 +399,20 @@ func (db *DB) writeUnnestSource(r *render, t *schema.Table, types []columnType, 
 		if i > 0 {
 			r.s(", ")
 		}
+		def := t.Columns[c].Flags.Has(schema.FlagDefault)
+		if def {
+			r.s("coalesce(")
+		}
 		r.s("u.")
 		r.s(t.Columns[c].Quoted)
 		if arrays[i].cast != "" {
 			r.s("::")
 			r.s(arrays[i].cast)
+		}
+		if def {
+			r.s(", ")
+			r.s(types[c].def)
+			r.b(')')
 		}
 	}
 	r.s(" FROM unnest(")

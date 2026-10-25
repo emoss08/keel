@@ -3,6 +3,8 @@
 package keelkinds
 
 import (
+	"database/sql"
+
 	"github.com/emoss08/keel"
 	"github.com/emoss08/keel/internal/testmodels/ids"
 )
@@ -23,3 +25,20 @@ func (c IdsIDCol) Between(lo, hi ids.ID) keel.Pred {
 func (c IdsIDCol) To(v ids.ID) keel.Assignment  { return c.StringCol.To(string(v)) }
 func (c IdsIDCol) In(vs ...ids.ID) keel.Pred    { return c.StringCol.In(keel.Strings(vs)...) }
 func (c IdsIDCol) NotIn(vs ...ids.ID) keel.Pred { return c.StringCol.NotIn(keel.Strings(vs)...) }
+
+// SqlNullStringCol is a column of sql.NullString values.
+type SqlNullStringCol struct{ keel.AnyCol }
+
+func (c SqlNullStringCol) Eq(v sql.NullString) keel.Pred  { return c.AnyCol.Eq(v) }
+func (c SqlNullStringCol) Ne(v sql.NullString) keel.Pred  { return c.AnyCol.Ne(v) }
+func (c SqlNullStringCol) Gt(v sql.NullString) keel.Pred  { return c.AnyCol.Gt(v) }
+func (c SqlNullStringCol) Gte(v sql.NullString) keel.Pred { return c.AnyCol.Gte(v) }
+func (c SqlNullStringCol) Lt(v sql.NullString) keel.Pred  { return c.AnyCol.Lt(v) }
+func (c SqlNullStringCol) Lte(v sql.NullString) keel.Pred { return c.AnyCol.Lte(v) }
+func (c SqlNullStringCol) IsDistinctFrom(v sql.NullString) keel.Pred {
+	return c.AnyCol.IsDistinctFrom(v)
+}
+func (c SqlNullStringCol) Between(lo, hi sql.NullString) keel.Pred { return c.AnyCol.Between(lo, hi) }
+func (c SqlNullStringCol) To(v sql.NullString) keel.Assignment     { return c.AnyCol.To(v) }
+func (c SqlNullStringCol) In(vs ...sql.NullString) keel.Pred       { return c.AnyCol.In(vs) }
+func (c SqlNullStringCol) NotIn(vs ...sql.NullString) keel.Pred    { return c.AnyCol.NotIn(vs) }

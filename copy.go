@@ -48,6 +48,12 @@ func (db *DB) copyRows(ctx context.Context, t *schema.Table, rows []unsafe.Point
 		if err := db.prepareInsert(hctx, run.sc, t, th, row, st); err != nil {
 			return 0, run.close(ctx, err)
 		}
+		for _, c := range t.Insert {
+			if t.Columns[c].Flags.Has(schema.FlagDefault) && unsetAt(t, row, c) {
+				return 0, run.close(ctx, errf("Copy cannot apply the database default of %s.%s; set it "+
+					"or use CreateMany", t.Name, t.Columns[c].Name))
+			}
+		}
 	}
 	conn, err := run.started(ctx)
 	if err != nil {

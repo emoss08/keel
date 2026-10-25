@@ -12,6 +12,7 @@ import (
 func All() []*schema.Table {
 	return []*schema.Table{
 		fleetdb.AuditEntriesSchema(),
+		fleetdb.BadgesSchema(),
 		fleetdb.ContactsSchema(),
 		fleetdb.CustomersSchema(),
 		fleetdb.DepotsSchema(),

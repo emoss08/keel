@@ -2,6 +2,7 @@ package keel
 
 import (
 	"context"
+	"database/sql/driver"
 	"fmt"
 	"reflect"
 	"slices"
@@ -527,6 +528,10 @@ func (db *DB) insertStmts(ctx context.Context, t *schema.Table, rows []unsafe.Po
 			for i, c := range t.Insert {
 				if i > 0 {
 					r.s(", ")
+				}
+				if t.Columns[c].Flags.Has(schema.FlagDefault) && unsetAt(t, chunk[0], c) {
+					r.s("DEFAULT")
+					continue
 				}
 				r.colArg(&t.Columns[c], t.Value(chunk[0], c))
 			}
@@ -1311,6 +1316,20 @@ func (db *DB) stampsFor(t *schema.Table) stamps {
 		st.updated = stampValue(t.Columns[t.AutoUpdate].Kind, now)
 	}
 	return st
+}
+
+// unsetAt reports whether row holds no value for column col: Value returns nil for a nil pointer
+// and a nullzero field's zero value, and a Null… value reports NULL through driver.Valuer.
+func unsetAt(t *schema.Table, row unsafe.Pointer, col int32) bool {
+	v := t.Value(row, col)
+	if v == nil {
+		return true
+	}
+	if vr, ok := v.(driver.Valuer); ok {
+		x, err := vr.Value()
+		return err == nil && x == nil
+	}
+	return false
 }
 
 // zeroAt reports whether a column of row holds its zero value, reading through the field pointer
