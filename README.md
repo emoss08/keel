@@ -235,13 +235,14 @@ latest, err := s.Load(m.Order(m.Sequence.Desc()).Limit(1)).Limit(50).List(ctx, d
 
 ### Pagination
 
-Keyset pages with an opaque cursor and an optional capped total in the same round trip; `Each` walks
-a large set at constant memory.
+Keyset pages with an opaque cursor and an optional total in the same round trip, exact up to a
+limit and the planner's estimate above it with `Estimate()`; `Each` walks a large set at constant
+memory.
 
 ```go
 page, err := s.Where(s.Hazmat.IsTrue()).Order(s.CreatedAt.Desc()).
-    Page(ctx, db, keel.After(cursor, 50).Total(10_000))
-// page.Items, page.Next ("" on the last page), page.Total, page.TotalCapped
+    Page(ctx, db, keel.After(cursor, 50).Total(10_000).Estimate())
+// page.Items, page.Next ("" on the last page), page.Total, page.TotalExact
 
 err = s.Where(s.Hazmat.IsTrue()).Each(ctx, db, 500, func(ctx context.Context, batch []*fleet.Shipment) error {
     return nil

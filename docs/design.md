@@ -296,13 +296,14 @@ Builders are mutable and chainable; `Clone` copies one. `ToSQL` renders the main
 | `First` | the first row by the query's order, `ErrNotFound` when none |
 | `List` | rows; returns `ErrUnbounded` without `Limit` |
 | `All` | every row; for sets known to be small |
-| `Page` | a keyset page with an opaque cursor, a cursor per row (`CursorAt`) and an optional capped total, counted in the same round trip |
+| `Page` | a keyset page with an opaque cursor, a cursor per row (`CursorAt`) and an optional total in the same round trip: exact up to its limit (`TotalExact`), and above it the limit or, with `Estimate()`, the planner's estimate |
 | `Count`, `CountUpTo`, `Exists` | scalars |
+| `CountEstimate(ctx, db, exactUpTo)` | a `keel.RowCount{N, Exact}`: exact up to `exactUpTo` (`SELECT count(*) FROM (SELECT 1 … LIMIT exactUpTo+1)`), above it the top plan node's row estimate from `EXPLAIN (FORMAT JSON)` of the same rows, sent in the same round trip with the same text and bound arguments |
 | `Each` | keyset batches at constant memory |
 | `Update`, `Delete` | bulk writes over the query's filter; rows affected. A query without `Where` is refused |
 | `UpdateReturning` | a bulk update that returns the updated rows, with their loads, from one statement |
 | `keel.Into[R]`, `keel.IntoOne[R]` | projections: the picked expressions fill `R`'s exported fields in order |
-| `keel.Batch(ctx, db, items...)` | independent reads in one round trip: `ListInto`, `AllInto`, `OneInto`, `FirstInto`, `PageInto`, `CountInto`, `CountUpToInto`, `ExistsInto`, `IntoSlice`, `IntoValue` each pair a query with a typed destination and keep their terminal's checks; the relation loads of all items share one round trip per level; destinations are filled only when every item succeeded. The terminals above are one-item batches |
+| `keel.Batch(ctx, db, items...)` | independent reads in one round trip: `ListInto`, `AllInto`, `OneInto`, `FirstInto`, `PageInto`, `CountInto`, `CountUpToInto`, `CountEstimateInto`, `ExistsInto`, `IntoSlice`, `IntoValue` each pair a query with a typed destination and keep their terminal's checks; the relation loads of all items share one round trip per level; destinations are filled only when every item succeeded. The terminals above are one-item batches |
 | `Explain(ctx, db, opts)` | the main statement's plan: total cost, estimated rows and EXPLAIN's JSON; with `Analyze`, actual rows and timings from `EXPLAIN (ANALYZE, BUFFERS)` run in a transaction (or savepoint) that is rolled back |
 
 ### Expressions

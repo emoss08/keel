@@ -64,7 +64,7 @@ func TestBatchItemsMatchTerminals(t *testing.T) {
 	eq(t, slices.Equal(pros(page.Items), pros(want.Items)), true)
 	eq(t, page.Next, want.Next)
 	eq(t, page.Total, int64(12))
-	eq(t, page.TotalCapped, false)
+	eq(t, page.TotalExact, true)
 	var next keel.Page[*fleet.Shipment]
 	ok(t, keel.Batch(w.ctx, d, keel.PageInto(paged(), keel.After(page.Next, 5), &next)))
 	eq(t, next.Items[0].ProNumber, "PRO-0005")

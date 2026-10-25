@@ -991,6 +991,7 @@ open := base.Clone().Where(s.Status.Ne(fleet.StatusDelivered))
 | `All` | every row; for sets known to be small |
 | `Count` | the number of rows (of groups, for a grouped query) |
 | `CountUpTo(ctx, db, limit)` | the number of rows, counting no further than `limit` |
+| `CountEstimate(ctx, db, exactUpTo)` | a `keel.RowCount{N, Exact}`: exact up to `exactUpTo`, the planner's estimate above it; see [Estimated counts](#estimated-counts) |
 | `Exists` | whether any row matches |
 | `Page(ctx, db, req)` | a keyset page; see [Pagination](#pagination) |
 | `Each(ctx, db, size, fn)` | every row in keyset batches at constant memory |
@@ -1008,6 +1009,7 @@ tags, err := fleetdb.Tags.Query().All(ctx, db)
 open := s.Where(s.Status.In(fleet.StatusNew, fleet.StatusAssigned))
 n, err := open.Count(ctx, db)
 upTo, err := open.CountUpTo(ctx, db, 1000)
+about, err := open.CountEstimate(ctx, db, 1000) // {N: 1204, Exact: true} or {N: 1180000, Exact: false}
 exists, err := open.Exists(ctx, db)
 ```
 
@@ -1849,8 +1851,9 @@ Many-to-many loads do not take a `Limit`.
 ### Keyset pages
 
 `Page(ctx, db, keel.After(cursor, size))` returns the page of `size` rows after `cursor`; an empty
-cursor asks for the first page. `Total(limit)` also counts the matching rows, up to `limit`, in the
-same round trip.
+cursor asks for the first page. `Total(limit)` also counts the matching rows, exactly up to
+`limit`, in the same round trip; `Total(limit).Estimate()` makes a total past the limit the
+planner's estimate instead of the limit (see [Estimated counts](#estimated-counts)).
 
 ```go
 page, err := s.
@@ -1864,8 +1867,8 @@ page, err := s.
 |---|---|
 | `Items` | the rows, `[]*T`, with their loads |
 | `Next` | the cursor of the following page; empty on the last page |
-| `Total` | the number of matching rows when the request asked for it, capped at its limit |
-| `TotalCapped` | `Total` stopped at the limit ("10,000+") |
+| `Total` | the number of matching rows when the request asked for it: exact up to its limit; past it the limit ("10,000+"), or with `Estimate()` the planner's estimate, at least the limit plus one ("about 1.2M") |
+| `TotalExact` | `Total` is the exact number of matching rows; false when no total was asked for or more rows matched than the limit |
 | `CursorAt(i)` | the cursor that resumes after `Items[i]`: a GraphQL connection's edge cursor |
 
 `CursorAt(i)` encodes row `i`'s order values in the format of `Next` (which is the cursor of the
@@ -1914,6 +1917,44 @@ an `OR` chain that places NULLs as the order does, writing an expression in pare
 [Performance notes](#performance-notes) for the index; a page ordered by a relation's column is
 served by the relation's index only as a join, so order a large table by its own columns (a
 denormalised copy of the related value, kept by a trigger) when it must page fast at any depth.
+
+### Estimated counts
+
+An exact count of a large set reads every matching row. A list header rarely needs it: "1,204
+shipments" for a small set and "about 1.2M" for a large one is what a person reads.
+`CountEstimate(ctx, db, exactUpTo)` and `Total(limit).Estimate()` give that in one round trip:
+
+```go
+c, err := s.Where(s.Status.In(fleet.StatusNew, fleet.StatusAssigned)).CountEstimate(ctx, db, 1000)
+// c.Exact: c.N rows matched, counted; else c.N is the planner's estimate, at least 1001
+
+page, err := s.Order(s.CreatedAt.Desc()).
+    Page(ctx, db, keel.After(cursor, 50).Total(1000).Estimate())
+// page.TotalExact, page.Total as above
+```
+
+| `keel.RowCount` field | Meaning |
+|---|---|
+| `N` | the number of rows: counted when `Exact`, else the planner's estimate, never less than `exactUpTo+1` |
+| `Exact` | no more than `exactUpTo` rows matched, so `N` was counted |
+
+How it runs: keel renders the query's rows once, as `SELECT 1 FROM … WHERE …` (with its joins,
+groups and tenant predicates, without its order, `Limit` and `Offset`, as `CountUpTo` counts),
+and sends two statements in the same round trip with the same text and bound arguments:
+
+- `SELECT count(*) FROM (SELECT 1 … LIMIT exactUpTo+1) c`, which stops after `exactUpTo+1` rows;
+- `EXPLAIN (FORMAT JSON) SELECT 1 …`, which plans the same rows without running them. The plan
+  is built for the bound values (a prepared `EXPLAIN` plans its query on every run with the
+  parameters it is given), and keel reads the top plan node's `Plan Rows`.
+
+When the count reached `exactUpTo+1`, the result is the estimate, raised to `exactUpTo+1` when the
+statistics put it lower. The estimate is as good as the table's statistics (`ANALYZE`, autovacuum)
+and the planner's selectivity for the filter: close for a filter on indexed or analysed columns,
+rough for correlated predicates or expressions. Use it for display, never for logic. A grouped
+query estimates its number of groups. `CountEstimateInto` is the `Batch` item; on a dynamic query
+`CountEstimate` and `DynCountEstimateInto` wrap the query (`SELECT count(*) FROM (SELECT 1 FROM
+(query) d LIMIT exactUpTo+1) c`), so its `Limit` bounds both the count and the estimate.
+`Estimate()` without `Total` fails the page.
 
 ### Each
 
@@ -1975,6 +2016,7 @@ err := keel.Batch(ctx, db,
 | `keel.FirstInto(q, &row)` | `First` |
 | `keel.PageInto(q, req, &page)` | `Page`, with its total when `req` asks for one |
 | `keel.CountInto(q, &n)`, `keel.CountUpToInto(q, limit, &n)` | `Count`, `CountUpTo` |
+| `keel.CountEstimateInto(q, exactUpTo, &c)`, `keel.DynCountEstimateInto(dq, exactUpTo, &c)` | `CountEstimate`, `DynQuery.CountEstimate` |
 | `keel.ExistsInto(q, &ok)` | `Exists` |
 | `keel.IntoSlice[R](q, &rs)`, `keel.IntoValue[R](q, &r)` | `keel.Into`, `keel.IntoOne` |
 
@@ -2196,10 +2238,12 @@ expressions, and the result's columns take the first part's labels. A query used
 
 ### Reading results
 
-`Run` returns every row; `Count` counts them; `Exists` reports whether there is any
+`Run` returns every row; `Count` counts them; `CountEstimate(ctx, db, exactUpTo)` counts them
+exactly up to `exactUpTo` and returns the planner's estimate above it, as the typed one does (the
+count wraps the query, so its `Limit` bounds both); `Exists` reports whether there is any
 (`SELECT EXISTS (query)`, which stops at the first row: the check behind a "does this filter match
 anything" answer, without reading a row or counting); `Page` reads a keyset page; `Stream` yields
-batches; `DynInto`, `DynCountInto`, `DynExistsInto` and `DynPageInto` are `Batch` items, so a
+batches; `DynInto`, `DynCountInto`, `DynCountEstimateInto`, `DynExistsInto` and `DynPageInto` are `Batch` items, so a
 report, its row count and the values of a dynamic pivot share one round trip. Every terminal
 applies the query's scope, tenant predicates and interceptors.
 
@@ -3890,8 +3934,9 @@ CREATE INDEX idx_shipments_created ON shipments (organization_id, business_unit_
   `m.Order(m.Sequence.Asc())`. Many-to-many loads filter the join table on its local key and join
   it to the target on the remote key and the tenant columns: index the join table
   `(local_fk, tenant columns)`.
-- `CountUpTo` and `Total(limit)` stop counting at the limit; prefer them to an exact `Count` on
-  large tables.
+- `CountUpTo`, `CountEstimate` and `Total(limit)` stop counting at the limit; prefer them to an
+  exact `Count` on large tables. `CountEstimate` and `Total(limit).Estimate()` add an `EXPLAIN` to
+  the same round trip (planning, no execution), so "about 1.2M" costs a capped count and a plan.
 
 ### Decoding
 

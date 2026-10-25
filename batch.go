@@ -3,9 +3,9 @@ package keel
 import "context"
 
 // BatchItem is one read of a Batch with its typed destination. ListInto, AllInto, OneInto,
-// FirstInto, PageInto, CountInto, CountUpToInto and ExistsInto read what the query terminal of the
-// same name returns; IntoSlice and IntoValue read what Into and IntoOne return. An item holds no
-// result, so it can run in more than one Batch.
+// FirstInto, PageInto, CountInto, CountUpToInto, CountEstimateInto and ExistsInto read what the
+// query terminal of the same name returns; IntoSlice and IntoValue read what Into and IntoOne
+// return. An item holds no result, so it can run in more than one Batch.
 type BatchItem struct {
 	prepare func(ctx context.Context, run *runner) (*read, error)
 }
@@ -80,8 +80,8 @@ func FirstInto[T any](q *Query[T], dst *T) BatchItem {
 	}}
 }
 
-// PageInto reads one keyset page into dst, as Page does; a requested total is counted in the
-// same round trip.
+// PageInto reads one keyset page into dst, as Page does; a requested total (and its estimate) is
+// counted in the same round trip.
 func PageInto[T any](q *Query[T], p PageRequest, dst *Page[T]) BatchItem {
 	if dst == nil {
 		return noDestination("PageInto")
@@ -106,6 +106,48 @@ func CountUpToInto[T any](q *Query[T], limit int64, dst *int64) BatchItem {
 		return noDestination("CountUpToInto")
 	}
 	return countItem(&q.q, limit, func(n int64) { *dst = n })
+}
+
+// CountEstimateInto stores the number of matching rows, counted exactly up to exactUpTo and
+// estimated by the planner above it, in dst, as CountEstimate does. Its count and EXPLAIN join
+// the batch's round trip.
+func CountEstimateInto[T any](q *Query[T], exactUpTo int64, dst *RowCount) BatchItem {
+	if dst == nil {
+		return noDestination("CountEstimateInto")
+	}
+	return BatchItem{prepare: func(ctx context.Context, run *runner) (*read, error) {
+		e, err := newEstimate(exactUpTo)
+		if err != nil {
+			return nil, err
+		}
+		stmts, err := q.q.estimateStmts(ctx, run, e)
+		if err != nil {
+			return nil, err
+		}
+		return &read{stmts: stmts, timeout: q.q.timeout, finish: func() { *dst = e.count() }}, nil
+	}}
+}
+
+// DynCountEstimateInto stores the number of rows the dynamic query returns, counted exactly up
+// to exactUpTo and estimated by the planner above it, in dst, as DynQuery.CountEstimate does.
+func DynCountEstimateInto(q *DynQuery, exactUpTo int64, dst *RowCount) BatchItem {
+	if dst == nil {
+		return noDestination("DynCountEstimateInto")
+	}
+	return BatchItem{prepare: func(ctx context.Context, run *runner) (*read, error) {
+		if q == nil {
+			return nil, errf("DynCountEstimateInto: nil dynamic query")
+		}
+		e, err := newEstimate(exactUpTo)
+		if err != nil {
+			return nil, err
+		}
+		stmts, err := q.estimateStmts(ctx, run, e)
+		if err != nil {
+			return nil, err
+		}
+		return &read{stmts: stmts, timeout: q.q.timeout, finish: func() { *dst = e.count() }}, nil
+	}}
 }
 
 // ExistsInto stores whether any row matches in dst, as Exists does.

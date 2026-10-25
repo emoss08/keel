@@ -922,7 +922,7 @@ func ExampleQuery_Page() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Println(len(page.Items), page.Total, page.TotalCapped)
+	fmt.Println(len(page.Items), page.Total, page.TotalExact)
 	if page.Next != "" {
 		fmt.Println("next page:", page.Next)
 	}

@@ -317,7 +317,11 @@ func TestPage(t *testing.T) {
 
 	capped := must(s.Order(s.ProNumber.Asc()).Page(w.ctx, d, keel.After("", 5).Total(10)))(t)
 	eq(t, capped.Total, int64(10))
-	eq(t, capped.TotalCapped, true)
+	eq(t, capped.TotalExact, false)
+
+	exact := must(s.Order(s.ProNumber.Asc()).Page(w.ctx, d, keel.After("", 5).Total(25)))(t)
+	eq(t, exact.Total, int64(25))
+	eq(t, exact.TotalExact, true)
 }
 
 func TestPageNullableOrder(t *testing.T) {
