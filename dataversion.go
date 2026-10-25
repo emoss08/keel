@@ -35,10 +35,28 @@ const versionTableSQL = `CREATE TABLE IF NOT EXISTS keel_data_versions (
 ) WITH (fillfactor = 70)`
 
 // versionUpsertSQL bumps the versions of a chunk of pairs in one statement, locking the rows in
-// key order so that concurrent flushes from many processes cannot deadlock.
-const versionUpsertSQL = `INSERT INTO keel_data_versions AS v (tenant_key, table_name, version, changed_at)
-SELECT k, t, 1, now() FROM unnest($1::text[], $2::text[]) AS u(k, t) ORDER BY k COLLATE "C", t COLLATE "C"
-ON CONFLICT (tenant_key, table_name) DO UPDATE SET version = v.version + 1, changed_at = now()`
+// key order so that concurrent flushes from many processes cannot deadlock. It returns the new
+// versions and, in the same statement, notifies them on versionChannel for the result caches of
+// every process: one notification per group ($3) of pairs, a JSON array of [tenant key, table,
+// version] that the versioner keeps under the payload limit, or notifyAll for a pair too large
+// for a payload (group -1). Notifications are delivered when the statement commits.
+const versionUpsertSQL = `WITH u AS (SELECT k, t, g FROM unnest($1::text[], $2::text[], $3::int4[]) AS u(k, t, g)),
+w AS (INSERT INTO keel_data_versions AS v (tenant_key, table_name, version, changed_at)
+SELECT k, t, 1, now() FROM u ORDER BY k COLLATE "C", t COLLATE "C"
+ON CONFLICT (tenant_key, table_name) DO UPDATE SET version = v.version + 1, changed_at = now()
+RETURNING v.tenant_key, v.table_name, v.version),
+n AS (SELECT pg_notify('keel_data_versions', CASE WHEN u.g < 0 THEN '*'
+  ELSE jsonb_agg(jsonb_build_array(w.tenant_key, w.table_name, w.version))::text END) AS sent
+  FROM w JOIN u ON u.k COLLATE "C" = w.tenant_key AND u.t COLLATE "C" = w.table_name GROUP BY u.g)
+SELECT w.tenant_key, w.table_name, w.version, (SELECT count(*) FROM n) FROM w`
+
+// A notification payload must be shorter than 8000 bytes; the versioner fills one with pairs up
+// to notifyBudget bytes, counting notifyPairBytes for each pair's brackets, quotes, separators
+// and version beyond its escaped tenant key and table name.
+const (
+	notifyBudget    = 7000
+	notifyPairBytes = 48
+)
 
 // DataVersionsConfig configures data versions: a counter per tenant and table that keel bumps
 // after a write to the table commits, for caches keyed on the data they read. keel keeps them in
@@ -120,11 +138,24 @@ func (v *versioner) close() {
 	<-v.done
 }
 
-// add queues pairs for the next write.
+// add queues pairs a committed write changed for the next write, and bumps their local epochs in
+// the result cache, under the same lock as a flush takes the queue, so a flush covers exactly the
+// epochs it marks.
 func (v *versioner) add(set versionSet) {
 	if v == nil {
 		return
 	}
+	v.mu.Lock()
+	for k := range set {
+		v.pending[k] = struct{}{}
+	}
+	v.db.cache.bumped(set)
+	v.mu.Unlock()
+}
+
+// requeue returns the pairs of a failed write to the queue; their epochs were bumped when they
+// were first queued.
+func (v *versioner) requeue(set versionSet) {
 	v.mu.Lock()
 	for k := range set {
 		v.pending[k] = struct{}{}
@@ -140,22 +171,25 @@ func (v *versioner) flush(ctx context.Context) error {
 	v.mu.Lock()
 	set := v.pending
 	v.pending = versionSet{}
+	marks, gen := v.db.cache.marks(set)
 	v.mu.Unlock()
 	if len(set) == 0 {
 		return nil
 	}
-	err := v.write(ctx, set)
+	versions, err := v.write(ctx, set)
 	if err != nil {
-		v.add(set)
+		v.requeue(set)
 		return fmt.Errorf("keel: write data versions: %w", err)
 	}
+	v.db.cache.flushed(marks, gen, versions)
 	return nil
 }
 
-// write upserts set in key order, versionChunk pairs per statement, in one round trip.
-func (v *versioner) write(ctx context.Context, set versionSet) error {
+// write upserts set in key order, versionChunk pairs per statement, in one round trip, and
+// returns the versions it wrote.
+func (v *versioner) write(ctx context.Context, set versionSet) (map[versionKey]int64, error) {
 	if err := v.ensure(ctx); err != nil {
-		return err
+		return nil, err
 	}
 	keys := make([]versionKey, 0, len(set))
 	for k := range set {
@@ -167,6 +201,7 @@ func (v *versioner) write(ctx context.Context, set versionSet) error {
 		}
 		return strings.Compare(a.table, b.table)
 	})
+	written := make(map[versionKey]int64, len(keys))
 	b := &pgx.Batch{}
 	stmts := make([]*stmt, 0, (len(keys)+versionChunk-1)/versionChunk)
 	for start := 0; start < len(keys); start += versionChunk {
@@ -176,7 +211,19 @@ func (v *versioner) write(ctx context.Context, set versionSet) error {
 		for i, k := range chunk {
 			tenants[i], tables[i] = k.tenant, k.table
 		}
-		s := &stmt{sql: versionUpsertSQL, args: []any{tenants, tables}, op: "insert", table: versionTable}
+		s := &stmt{sql: versionUpsertSQL, args: []any{tenants, tables, notifyGroups(chunk)}, op: "insert",
+			table: versionTable}
+		s.scan = func(rows pgx.Rows) error {
+			for rows.Next() {
+				var k versionKey
+				var version, sent int64
+				if err := rows.Scan(&k.tenant, &k.table, &version, &sent); err != nil {
+					return err
+				}
+				written[k] = version
+			}
+			return nil
+		}
 		stmts = append(stmts, s)
 		b.Queue(s.sql, s.args...)
 	}
@@ -186,14 +233,51 @@ func (v *versioner) write(ctx context.Context, set versionSet) error {
 	br := db.pool.SendBatch(qctx, b)
 	var err error
 	for _, s := range stmts {
-		if s.tag, err = br.Exec(); err != nil {
+		if err = readOne(br, s); err != nil {
 			break
 		}
 	}
 	if closeErr := br.Close(); err == nil {
 		err = closeErr
 	}
-	return db.endEvents(events, stmts, time.Since(start), err)
+	if err = db.endEvents(events, stmts, time.Since(start), err); err != nil {
+		return nil, err
+	}
+	return written, nil
+}
+
+// notifyGroups splits a chunk of pairs, in order, into the groups versionUpsertSQL notifies one
+// payload each: consecutive pairs up to notifyBudget bytes of payload. A pair too large for any
+// payload gets group -1, which notifies notifyAll.
+func notifyGroups(chunk []versionKey) []int32 {
+	groups := make([]int32, len(chunk))
+	group, used := int32(0), 0
+	for i, k := range chunk {
+		size := jsonTextBytes(k.tenant) + jsonTextBytes(k.table) + notifyPairBytes
+		if size > notifyBudget {
+			groups[i] = -1
+			continue
+		}
+		if used+size > notifyBudget {
+			group++
+			used = 0
+		}
+		used += size
+		groups[i] = group
+	}
+	return groups
+}
+
+// jsonTextBytes bounds the bytes s takes as a JSON string's contents: a quote, backslash or
+// control character is escaped in at most six bytes.
+func jsonTextBytes(s string) int {
+	n := len(s)
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; c < 0x20 || c == '"' || c == '\\' {
+			n += 5
+		}
+	}
+	return n
 }
 
 // ensure creates keel_data_versions when it does not exist, under a transaction-scoped advisory

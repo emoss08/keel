@@ -120,6 +120,7 @@ the request context.
 | `Replicas` | `[]keel.ReplicaConfig` | streaming replicas (`DSN` or `Pool`, and a `Weight`) that reads marked with `keel.OnReplica` run on; see [Read replicas](#read-replicas) |
 | `MaxReplicaLag` | `time.Duration` | how far behind the primary a replica may be and still serve reads; defaults to 2s |
 | `DataVersions` | `keel.DataVersionsConfig` | `Enabled`, `Interval` (default 1s) and `OnError` of the per-tenant, per-table change counters; off by default; see [Data versions](#data-versions) |
+| `Cache` | `*keel.CacheConfig` | the result cache: `Local`, `Shared`, `Key`, `MaxEntryBytes` and `OnError`; needs `DataVersions`; nil (the default) turns it off; see [Result cache](#result-cache) |
 | `LoadStrategy` | `keel.LoadStrategy` | how relation trees load: `keel.LoadPipelined` (default, every level in the read's round trip) or `keel.LoadPerLevel`; see [One round trip](#one-round-trip) |
 | `ReadIsolation` | `keel.Isolation` | the isolation level of explicit `Read` transactions that pass none: zero leaves the server's default (read committed), `keel.RepeatableRead` gives every statement of a `Read` one snapshot; see [Isolation](#isolation) |
 | `AwaitReadCommit` | `bool` | makes read-only transactions wait for the reply to their `COMMIT`, as writes do; see [Read-only transactions end without waiting](#read-only-transactions-end-without-waiting) |
@@ -474,6 +475,68 @@ CREATE TABLE keel_data_versions (
 ```
 
 The fill factor keeps a bump, which changes no indexed column, a heap-only update.
+
+The versioner also notifies the versions it writes on the channel `keel_data_versions`, in the
+same statement, so the [result cache](#result-cache) of every process learns about a change
+without asking.
+
+### Result cache
+
+`Config.Cache` keeps query results in memory (and, optionally, in a store every process shares)
+and serves a query that asks for it without a round trip while no table it read has changed for
+the tenant. It is built on data versions, which must be on.
+
+```go
+cfg.DataVersions = keel.DataVersionsConfig{Enabled: true}
+cfg.Cache = &keel.CacheConfig{
+    Local:  keel.LRU(256 << 20),                     // default keel.LRU(64 MiB)
+    Shared: rediscache.New(redisClient{rdb}, ""),     // optional: keel/cache/rediscache
+    Key:    func(ctx context.Context) string { return readScopeOf(ctx) },
+    OnError: func(err error) { log.Printf("result cache: %v", err) },
+}
+```
+
+```go
+s := fleetdb.Shipments
+open, err := s.Where(s.Status.Eq(fleet.StatusNew)).
+    Load(s.Customer(), s.Moves()).
+    Order(s.CreatedAt.Desc()).Limit(50).
+    Cache(keel.TTL(5 * time.Minute)).
+    List(ctx, db)
+```
+
+- `Cache` works on `One`, `First`, `List`, `All`, `Count`, `CountUpTo`, `CountEstimate`, `Exists`
+  and `Page`, and on their `Batch` items: a batch is served from the cache when every item asks,
+  for the shortest TTL. `keel.TTL` (default one minute) only bounds how long an unused entry
+  stays; an entry is never served after a table it read changed.
+- The entry is keyed by the statements, their arguments, the tenant and `Key(ctx)`, and checked
+  against the version of every table the read touched: the base table, joins, relation loads,
+  subqueries, `Any` and `None`, CTEs. A table only a `keel.Raw` fragment reads is invisible: name
+  it with `keel.AlsoReads("table")`.
+- `Key` returns what else the rows depend on that the scope does not capture. With `OnBegin`
+  setting row-level security from a user's permissions, two users of one tenant may see different
+  rows, so `Open` refuses a cache without `Key` when `OnBegin` is set. Return the encoded settings
+  OnBegin applies.
+- A write of this process is visible to its next cached read at once, before the versions are
+  flushed. A write of another process is visible after its `DataVersions.Interval` and the
+  notification's delivery (milliseconds).
+- Entries hold the raw result Postgres sent, relation loads included, and every hit decodes it
+  into new rows: callers never share structs, and `AfterLoad` hooks run on each hit.
+- The cache is bypassed inside a `Write`, inside a `Read` at `RepeatableRead` or `Serializable`
+  (it would break the snapshot), in a joined transaction, under a system scope, for a query with
+  `Lock`, and while the listener is reconnecting. A read-committed `Read` uses it. A miss read on a
+  replica is served but not stored.
+- `Shared` takes any store with `Get(ctx, key) ([]byte, bool, error)` and `Set(ctx, key, value,
+  ttl) error`: `keel/cache/rediscache` wraps a Redis client through the same three-method adapter
+  (`Get`, `Set`, `Del`) as `keel/analytics/cache`, and the stores of `keel/analytics/cache` fit
+  as they are. A local miss reads it; an entry read while this process had unflushed writes to its
+  tables stays local. Store errors are misses, reported to `OnError`.
+- The listener is one dedicated connection per `DB` that runs `LISTEN keel_data_versions`; behind
+  a transaction-mode pooler, give the pool a direct connection. Hits decode on up to `GOMAXPROCS`
+  decoder connections, each opened once (with `AfterConnect`) and closed, so a hit never takes a
+  pooled connection.
+- `db.CacheStats()` returns `Hits`, `Misses`, `Bypasses`, `Errors`, `Bytes` (local), `Versions`
+  (pairs held) and `Listening`.
 
 ## Models
 

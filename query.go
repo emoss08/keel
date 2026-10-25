@@ -138,6 +138,9 @@ type query struct {
 	windows    []namedWindow
 	computes   []compute
 	omit       []Col
+	cache      cacheSpec
+
+	loadStrategy LoadStrategy
 }
 
 type joinClause struct {

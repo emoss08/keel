@@ -34,6 +34,9 @@ type render struct {
 	shared    []sharedArg
 	sharedMap map[argKey]int
 	ctes      []cteName
+
+	// reads collects the tables the statement reads, for a terminal the result cache may serve.
+	reads *readSet
 }
 
 // cteName is the name a statement gives a CTE that keel names: its base name, numbered when the
@@ -48,6 +51,7 @@ type cteName struct {
 // the statement uses that base and base_2, base_3, … after, so CTEs nested in one statement never
 // shadow each other. Names depend only on the statement's shape.
 func (r *render) tableName(ref *Ref) string {
+	r.reads.add(ref.Table)
 	if !ref.numbered {
 		return ref.Table.Quoted
 	}
@@ -142,6 +146,9 @@ var renderPool = sync.Pool{New: func() any { return &render{buf: make([]byte, 0,
 func newRender(sc *scopeState, ctx context.Context, db *DB) *render {
 	r := renderPool.Get().(*render)
 	r.scope, r.ctx, r.db = sc, ctx, db
+	if db != nil && db.cache != nil {
+		r.reads = readSetFrom(ctx)
+	}
 	return r
 }
 
@@ -161,6 +168,7 @@ func (r *render) recycle() {
 	r.tenantPH = [8]int{}
 	r.ctx = nil
 	r.db = nil
+	r.reads = nil
 	r.bare = false
 	clear(r.shared)
 	r.shared = r.shared[:0]
@@ -395,6 +403,7 @@ func (r *render) release(bufs ...[]byte) {
 }
 
 func (r *render) push(base *Ref, mode joinMode, allTenants bool) (*scope, string) {
+	r.reads.add(base.Table)
 	alias := r.newAlias(aliasBase(base))
 	sc := &scope{parent: r.sc, joinMode: mode, allTenants: allTenants}
 	sc.refs = append(sc.refs, scoped{ref: base, alias: alias})
@@ -467,6 +476,7 @@ func (r *render) scopeOf(ref *Ref) *scope {
 }
 
 func (r *render) addJoin(sc *scope, ref *Ref, parentAlias string, selected bool) string {
+	r.reads.add(ref.Table)
 	for _, j := range sc.joins {
 		if j.ref == ref {
 			j.selected = j.selected || selected

@@ -727,10 +727,15 @@ pos := keel.CommitPosition(ctx, db)                 // for keel.OnReplicaAfter i
   `COMMIT` is sent (also when it fails, since it may have committed) and dropped on rollback; or,
   outside a transaction, delivered when the runner closes, even after an error.
 - A per-`DB` goroutine writes the pending set every interval in one statement per 5,000 pairs
-  (`INSERT … SELECT FROM unnest($1, $2) ORDER BY … ON CONFLICT DO UPDATE SET version = version + 1`),
-  on its own connection and never inside a write's transaction, so writes never contend on version
-  rows. Key order prevents deadlocks between processes. Failed pairs return to the set. `Close` and
-  `FlushDataVersions` write the set at once.
+  (`INSERT … SELECT FROM unnest($1, $2, $3) ORDER BY … ON CONFLICT DO UPDATE SET version = version + 1
+  RETURNING …`), on its own connection and never inside a write's transaction, so writes never
+  contend on version rows. Key order prevents deadlocks between processes. Failed pairs return to
+  the set. `Close` and `FlushDataVersions` write the set at once.
+- The same statement `pg_notify`s the versions it wrote on channel `keel_data_versions`, delivered
+  at commit: one payload per group of pairs (`$3`, computed in Go so each payload stays under
+  7,000 bytes of the 8,000 limit), a `jsonb` array of `[tenant key, table, version]`; a pair too
+  large for a payload notifies `*` (reset everything). Every process notifies whether or not it
+  caches, since the result caches of other processes depend on it.
 - Tenant keys are the tenant values of the longest prefix of `TenantColumns` the table has,
   escaped and joined with `/`. A system-scope write records each row's tenant (entity writes read
   the rows; bulk writes and `InsertFrom` wrap the statement in
@@ -742,6 +747,73 @@ pos := keel.CommitPosition(ctx, db)                 // for keel.OnReplicaAfter i
   guide. keel/migrate is not used, so the feature works whichever migration tool an application
   runs.
 - `Exec` cannot see its tables: `MarkChanged` records them.
+
+## Result cache
+
+`Query.Cache(keel.TTL(d), keel.AlsoReads(tables...))` serves `One`, `First`, `List`, `All`,
+`Count`, `CountUpTo`, `CountEstimate`, `Exists` and `Page` and their `Batch` items from
+`Config.Cache` (`Local keel.LocalCache`, default `keel.LRU(64 MiB)`; `Shared keel.SharedCache`;
+`Key func(ctx) string`; `MaxEntryBytes`, default 1 MiB; `OnError`). `Open` refuses a cache
+without `DataVersions.Enabled`, and one without `Key` when `OnBegin` is set (the rows OnBegin's
+settings expose are invisible to the key otherwise). `DB.CacheStats()` reports hits, misses,
+bypasses, errors, local bytes, pairs held and whether the listener is up.
+
+- **Granularity.** One entry per terminal call (`runReads`): every item of a `Batch` must ask,
+  the TTL is the shortest; a mixed batch bypasses. The key is SHA-256 over the format version,
+  the tenant key, `Key(ctx)`, which reads load levels after the first round trip, and the text and
+  arguments of every statement of the first round trip (pipelined loads included). Arguments key
+  by value and type (a `driver.Valuer` by its value, other types by reflection); a function or
+  channel argument bypasses.
+- **Validity.** Renders on the terminal's context add every table they read (each query level's
+  base: the query, subqueries, `Any`/`None`, CTE bodies, loads; joined relations; tables named in
+  `FROM`/`JOIN`) to a read set; `AlsoReads` adds tables only raw SQL reads. Before each round trip
+  of a miss the runner hook stamps the tables added since the last one: for each table and each
+  prefix of the tenant key, the pair's version and, while this process has writes to the pair its
+  version does not show, its local epoch. Stamps are taken before the statement runs, so data is
+  never older than its stamps. The entry holds the tables and stamps; a lookup decodes the entry
+  and compares its stamps with the current ones, so an entry stops matching the moment a table it
+  read changes. Versions only grow; truncating `keel_data_versions` under a running cache would
+  revalidate old entries.
+- **Versions in memory.** A version bus per `DB` holds the pairs the process read, in 64 locked
+  shards of at most 2^20 pairs in all (evicting pairs without local writes). An unknown pair is
+  read from `keel_data_versions` in one round trip on a pool connection; a notification updates a
+  pair the bus holds (and any pair while a read is in flight, so a bump during the read is not
+  lost); versions take the maximum. A hit on known pairs costs no round trip.
+- **Local epochs.** `versioner.add` (every committed write of this process) bumps the epoch of its
+  pairs under the versioner's lock; a flush marks the epochs it took and, once written, marks them
+  clean and takes the returned versions. A stamp with an epoch is never written to the shared
+  store, so a process never serves its own stale data and never shares data keyed by its local
+  state.
+- **Listener.** A dedicated connection (the primary pool's settings and `BeforeConnect`) runs
+  `LISTEN keel_data_versions`; `Open` waits for the first connection and retries in the background
+  when it fails. After 30s without a notification it pings. On loss, and again on reconnect, the
+  bus forgets every version (keeping dirty epochs) and the cache is bypassed until it is back;
+  reconnects back off from 100ms to 5s. Entries survive: a refilled version that still matches
+  revalidates them. It needs a session connection: behind a transaction-mode pooler point the
+  pool at a direct connection.
+- **Entries** hold the raw wire result of every round trip the terminal sent, loads included:
+  per statement the hash of its text, its command tag, its field descriptions and each row's raw
+  values. On a miss the runner hook wraps each statement's scanner so the rows it reads are
+  copied as it reads them. On a hit the runner hook feeds each round trip, in order, from the
+  entry (`replayRows` implements `pgx.Rows`), so the same scanners, plans, relation grouping,
+  `AfterLoad` hooks and cardinality checks run and every caller gets fresh rows. A round trip
+  whose statement count or text hash differs, or a scanner error, fails the hit with
+  `errCacheReplay`; the terminal reruns against the database and refills.
+- **Decoders.** Hits decode on decoder connections: connected with the primary pool's settings,
+  `AfterConnect` run (enums, `LoadTypes`, JSON, the application's codecs), then closed, keeping
+  their type map and plan cache. At most `GOMAXPROCS`, each replaced after the pool's
+  `MaxConnLifetime`, so a hit never takes a pooled connection.
+- **Bypass.** A write transaction, a joined transaction, an explicit `REPEATABLE READ` or
+  `SERIALIZABLE` transaction (a hit would break its snapshot), a system scope, `Lock`, and a down
+  listener bypass. An explicit read-committed `Read` uses the cache; an implicit transaction keel
+  owns (OnBegin, pipelined loads) begins after the lookup, so it does too. A miss read on a replica
+  is not stored (the versions come from the primary).
+- **Stores.** A local miss reads the shared store; a shared hit is validated the same way and
+  copied into the local store. Concurrent misses of one key in a process wait for the first and
+  look again. Shared-store errors are misses, reported to `OnError`.
+- Not covered: `DynQuery` and `Into` projections; data read by raw SQL without `AlsoReads`;
+  writes keel cannot see without `MarkChanged`. Changes by other processes are visible after their
+  flush interval plus the notification's delivery.
 
 ## Hooks
 

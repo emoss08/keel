@@ -124,7 +124,7 @@ func CountEstimateInto[T any](q *Query[T], exactUpTo int64, dst *RowCount) Batch
 		if err != nil {
 			return nil, err
 		}
-		return &read{stmts: stmts, timeout: q.q.timeout, finish: func() { *dst = e.count() }}, nil
+		return &read{stmts: stmts, timeout: q.q.timeout, cache: q.q.cacheTTL(ctx), finish: func() { *dst = e.count() }}, nil
 	}}
 }
 
