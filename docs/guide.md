@@ -930,13 +930,19 @@ it holds:
 
 | Declaration | What it is |
 |---|---|
-| `type ShipmentsTable struct` | the handle type: embeds `keel.Handle[fleet.Shipment]` and has one field per column (`ID`, `ProNumber`, `Status`, …) |
+| `type ShipmentsTable struct` | the handle type: embeds `keel.Handle[*fleet.Shipment]` and has one field per column (`ID`, `ProNumber`, `Status`, …) |
 | `var Shipments` | the base handle, built statically; queries and writes start here |
 | `func (t *ShipmentsTable) Customer() *CustomersTable` | one method per relation, returning the handle of the related table on that path |
 | `func (t *ShipmentsTable) As(alias string) *ShipmentsTable` | a second reference to the table for self-joins and correlated subqueries |
 | `func (t *ShipmentsTable) Get(ctx, db, key ids.ID) (*fleet.Shipment, error)` | fetch by primary key; generated when the key, besides tenant columns, is one non-pointer column |
 | `func BuildShipments(*keel.Ref) *ShipmentsTable` | builds a handle for a reference; relation and alias methods call it |
 | `func ShipmentsSchema() *schema.Table` | the table metadata, written as a static literal with field accessors, hook trampolines, labels, docs, enum values and report facts |
+
+keel's generic types (`Handle`, `Query`, `Page`, `Mutation`, `ListInto` and the other batch items)
+take the model's pointer type: `keel.Query[*fleet.Shipment]`, whose terminals return
+`*fleet.Shipment` and `[]*fleet.Shipment`. Every pointer type shares one shape, so a package that
+can see a hundred handles compiles keel's generic methods once instead of a hundred times; a struct
+type argument panics on first use.
 
 The handle name is the model name in the plural: `Shipment` → `Shipments`, `Address` →
 `Addresses`, `Company` → `Companies`. Named column types declared in a model package get their
@@ -1325,7 +1331,7 @@ rows, err := keel.Into[labelRow](ctx, db, s.LeftJoinLateral(lbl).Pick(s.ProNumbe
 
 `keel.CTE(name, columns, body)` declares `WITH name (columns) AS (body)`. Declare it on the query
 with `With`, then join it, filter on its columns with `Col(name)` (an `AnyCol`), or read it through
-`Query()`, which returns a `*keel.Query[keel.Row]` to read with `keel.Into`. A query over the CTE
+`Query()`, which returns a `*keel.Query[*keel.Row]` to read with `keel.Into`. A query over the CTE
 declares it too.
 
 ```go
@@ -2940,7 +2946,7 @@ Table hooks are registered per `DB` and table, usually at startup, and run in on
 ```go
 s := fleetdb.Shipments
 
-keel.OnCreate(db, s, keel.BeforeWrite, func(ctx context.Context, m *keel.Mutation[fleet.Shipment]) error {
+keel.OnCreate(db, s, keel.BeforeWrite, func(ctx context.Context, m *keel.Mutation[*fleet.Shipment]) error {
     if m.Row.ProNumber == "" {
         return errors.New("shipment needs a PRO number")
     }
@@ -2950,7 +2956,7 @@ keel.OnCreate(db, s, keel.BeforeWrite, func(ctx context.Context, m *keel.Mutatio
     return nil
 })
 
-keel.OnUpdate(db, s, keel.AfterWrite, func(ctx context.Context, m *keel.Mutation[fleet.Shipment]) error {
+keel.OnUpdate(db, s, keel.AfterWrite, func(ctx context.Context, m *keel.Mutation[*fleet.Shipment]) error {
     if m.Old == nil || !m.Changed(s.Status) || m.Old.Status == m.Row.Status {
         return nil
     }
@@ -2958,7 +2964,7 @@ keel.OnUpdate(db, s, keel.AfterWrite, func(ctx context.Context, m *keel.Mutation
     return nil
 }, keel.Needs(s.Status))
 
-keel.OnWrite(db, fleetdb.Customers, keel.Committed, func(ctx context.Context, m *keel.Mutation[fleet.Customer]) error {
+keel.OnWrite(db, fleetdb.Customers, keel.Committed, func(ctx context.Context, m *keel.Mutation[*fleet.Customer]) error {
     log.Printf("customer %s %s; refresh the search index", m.Row.ID, m.Op)
     return nil
 })

@@ -105,7 +105,7 @@ func TestLoadsMatchTenantsWhenIDsCollide(t *testing.T) {
 	s := fleetdb.Shipments
 	m := s.Moves()
 	st := m.Stops()
-	load := func(q *keel.Query[fleet.Shipment]) *keel.Query[fleet.Shipment] {
+	load := func(q *keel.Query[*fleet.Shipment]) *keel.Query[*fleet.Shipment] {
 		return q.Where(s.ID.Eq(c.id("shp"))).
 			Load(s.Customer(), s.BillTo(), m.Order(m.Sequence.Asc()), st.Order(st.Sequence.Asc()), st.Location(),
 				m.FirstStop(), s.Tags(), s.OriginStop(), s.DestinationStop())
@@ -173,7 +173,7 @@ func TestMultiColumnLoadsMatchTenantsWhenIDsCollide(t *testing.T) {
 	l := fleetdb.Leaves
 	en := l.Entries()
 	sys := systemCtx("colliding ids")
-	for _, q := range []*keel.Query[fleet.Leave]{
+	for _, q := range []*keel.Query[*fleet.Leave]{
 		l.AllTenants().Load(en.Order(en.PostedAt.Asc()), l.LastEntry()),
 		l.AllTenants().Load(en.Order(en.PostedAt.Desc()).Limit(5), l.LastEntry()),
 	} {

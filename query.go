@@ -3,17 +3,23 @@ package keel
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"time"
 	"unsafe"
 )
 
-// Handle is embedded in every generated table type. It starts queries and runs writes for model T.
+// Handle is embedded in every generated table type. It starts queries and runs writes for rows of
+// type T, the model's pointer type: Handle[*fleet.Shipment]. Every pointer type shares one shape, so
+// the compiler builds one copy of keel's generic code for all models instead of one per model.
 type Handle[T any] struct {
 	Ref *Ref
 }
 
 // Query starts a query over the table.
-func (h Handle[T]) Query() *Query[T] { return &Query[T]{q: query{ref: h.Ref}} }
+func (h Handle[T]) Query() *Query[T] {
+	mustBeRowPointer[T]()
+	return &Query[T]{q: query{ref: h.Ref}}
+}
 
 // Where starts a query filtered by ps.
 func (h Handle[T]) Where(ps ...Pred) *Query[T] { return h.Query().Where(ps...) }
@@ -357,29 +363,29 @@ func (q *Query[T]) Any(ps ...Pred) Pred { return q.any(ps, false) }
 func (q *Query[T]) None(ps ...Pred) Pred { return q.any(ps, true) }
 
 // One returns the only matching row: ErrNotFound when none matches, ErrNotSingular when more do.
-func (q *Query[T]) One(ctx context.Context, db *DB) (*T, error) {
-	var row *T
+func (q *Query[T]) One(ctx context.Context, db *DB) (T, error) {
+	var row T
 	err := Batch(ctx, db, OneInto(q, &row))
 	return row, err
 }
 
 // First returns the first row in the query's order, or ErrNotFound.
-func (q *Query[T]) First(ctx context.Context, db *DB) (*T, error) {
-	var row *T
+func (q *Query[T]) First(ctx context.Context, db *DB) (T, error) {
+	var row T
 	err := Batch(ctx, db, FirstInto(q, &row))
 	return row, err
 }
 
 // List returns the matching rows. The query must have a Limit.
-func (q *Query[T]) List(ctx context.Context, db *DB) ([]*T, error) {
-	var rows []*T
+func (q *Query[T]) List(ctx context.Context, db *DB) ([]T, error) {
+	var rows []T
 	err := Batch(ctx, db, ListInto(q, &rows))
 	return rows, err
 }
 
 // All returns every matching row. Use it only for sets known to be small.
-func (q *Query[T]) All(ctx context.Context, db *DB) ([]*T, error) {
-	var rows []*T
+func (q *Query[T]) All(ctx context.Context, db *DB) ([]T, error) {
+	var rows []T
 	err := Batch(ctx, db, AllInto(q, &rows))
 	return rows, err
 }
@@ -420,9 +426,9 @@ func (q *Query[T]) Update(ctx context.Context, db *DB, sets ...Assignment) (int6
 // columns are always read, every default column when the table has update hooks, which receive
 // the same rows). The update's tenant predicate and interceptors choose the rows; read
 // interceptors do not apply to them. Limit, Offset, Lock, Group and DistinctOn are refused.
-func (q *Query[T]) UpdateReturning(ctx context.Context, db *DB, sets ...Assignment) ([]*T, error) {
-	var rows []*T
-	err := q.q.updateReturning(ctx, db, sets, func(row unsafe.Pointer) { rows = append(rows, (*T)(row)) })
+func (q *Query[T]) UpdateReturning(ctx context.Context, db *DB, sets ...Assignment) ([]T, error) {
+	var rows []T
+	err := q.q.updateReturning(ctx, db, sets, func(row unsafe.Pointer) { rows = append(rows, fromPtr[T](row)) })
 	if err != nil {
 		return nil, err
 	}
@@ -474,7 +480,7 @@ func errf(format string, args ...any) error { return fmt.Errorf("keel: "+format,
 // Each runs the query page by page in keyset order and calls fn with each batch of at most size
 // rows, holding one batch in memory at a time.
 func (q *Query[T]) Each(ctx context.Context, db *DB, size int,
-	fn func(ctx context.Context, batch []*T) error,
+	fn func(ctx context.Context, batch []T) error,
 ) error {
 	cursor := ""
 	for {
@@ -508,4 +514,18 @@ func (q *Query[T]) ToSQL(ctx context.Context, db *DB) (string, []any, error) {
 		return "", nil, r.err
 	}
 	return string(r.buf), r.argsCopy(), nil
+}
+
+// fromPtr converts the address of a model row to T, the row's pointer type.
+func fromPtr[T any](p unsafe.Pointer) T { return *(*T)(unsafe.Pointer(&p)) }
+
+// toPtr returns the address a row of pointer type T holds.
+func toPtr[T any](row T) unsafe.Pointer { return *(*unsafe.Pointer)(unsafe.Pointer(&row)) }
+
+// mustBeRowPointer panics unless T is a pointer type, the only type argument keel's generic types
+// take: they convert rows to T through unsafe.Pointer.
+func mustBeRowPointer[T any]() {
+	if t := reflect.TypeFor[T](); t.Kind() != reflect.Pointer {
+		panic("keel: the type argument " + t.String() + " must be the model's pointer type (*" + t.String() + ")")
+	}
 }

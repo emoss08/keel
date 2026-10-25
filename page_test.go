@@ -13,7 +13,7 @@ import (
 
 // pageAll reads every page of the query built by q, size rows at a time, and returns the rows in
 // page order, checking that every cursor of every page resumes right after its row.
-func pageAll(t *testing.T, ctx context.Context, q func() *keel.Query[fleet.Shipment], size int) []*fleet.Shipment {
+func pageAll(t *testing.T, ctx context.Context, q func() *keel.Query[*fleet.Shipment], size int) []*fleet.Shipment {
 	t.Helper()
 	d := db(t)
 	var all []*fleet.Shipment
@@ -46,7 +46,7 @@ func TestPageCursorAt(t *testing.T) {
 	d := db(t)
 	w := seed(t, 13)
 	s := fleetdb.Shipments
-	q := func() *keel.Query[fleet.Shipment] { return s.Order(s.Weight.Desc(), s.ProNumber.Asc()) }
+	q := func() *keel.Query[*fleet.Shipment] { return s.Order(s.Weight.Desc(), s.ProNumber.Asc()) }
 	got := pageAll(t, w.ctx, q, 4)
 	want := must(q().Limit(100).List(w.ctx, d))(t)
 	samePros(t, got, want)
@@ -55,7 +55,7 @@ func TestPageCursorAt(t *testing.T) {
 	eq(t, last.Next, "")
 	end := must(s.Order(s.ProNumber.Asc()).Page(w.ctx, d, keel.After(last.CursorAt(len(last.Items)-1), 5)))(t)
 	eq(t, len(end.Items), 0)
-	eq(t, keel.Page[fleet.Shipment]{Items: last.Items}.CursorAt(0), "")
+	eq(t, keel.Page[*fleet.Shipment]{Items: last.Items}.CursorAt(0), "")
 }
 
 func TestPageRelationOrder(t *testing.T) {
@@ -81,7 +81,7 @@ func TestPageRelationOrder(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			q := func() *keel.Query[fleet.Shipment] { return s.Load(s.Customer()).Order(c.order...) }
+			q := func() *keel.Query[*fleet.Shipment] { return s.Load(s.Customer()).Order(c.order...) }
 			got := pageAll(t, w.ctx, q, 3)
 			want := must(s.Order(append(c.order, c.tie)...).Limit(100).List(w.ctx, d))(t)
 			samePros(t, got, want)

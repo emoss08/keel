@@ -18,19 +18,21 @@ import (
 
 // Create inserts row. The autoid column, the tenant columns and the autocreate and autoupdate
 // columns are filled first; readonly columns are read back.
-func (h Handle[T]) Create(ctx context.Context, db *DB, row *T) error {
-	return db.insert(ctx, h.Ref.Table, []unsafe.Pointer{unsafe.Pointer(row)})
+func (h Handle[T]) Create(ctx context.Context, db *DB, row T) error {
+	mustBeRowPointer[T]()
+	return db.insert(ctx, h.Ref.Table, []unsafe.Pointer{toPtr(row)})
 }
 
 // CreateMany inserts rows with as few statements as Postgres's parameter limit allows, all sent
 // in one round trip.
-func (h Handle[T]) CreateMany(ctx context.Context, db *DB, rows []*T) error {
+func (h Handle[T]) CreateMany(ctx context.Context, db *DB, rows []T) error {
+	mustBeRowPointer[T]()
 	if len(rows) == 0 {
 		return nil
 	}
 	ps := make([]unsafe.Pointer, len(rows))
 	for i, r := range rows {
-		ps[i] = unsafe.Pointer(r)
+		ps[i] = toPtr(r)
 	}
 	return db.insert(ctx, h.Ref.Table, ps)
 }
@@ -40,21 +42,24 @@ func (h Handle[T]) CreateMany(ctx context.Context, db *DB, rows []*T) error {
 // there first. cols narrows the columns written; the autoupdate column is always written.
 // Interceptors' predicates join the primary key in the WHERE clause: a row they exclude is not
 // written, and Save reports it as ErrConflict on a table with a version column, else ErrNotFound.
-func (h Handle[T]) Save(ctx context.Context, db *DB, row *T, cols ...Column) error {
-	return db.save(ctx, h.Ref, unsafe.Pointer(row), cols, false)
+func (h Handle[T]) Save(ctx context.Context, db *DB, row T, cols ...Column) error {
+	mustBeRowPointer[T]()
+	return db.save(ctx, h.Ref, toPtr(row), cols, false)
 }
 
 // SaveExcept is Save writing every updatable column except cols: the columns a caller must never
 // overwrite from a row it read (secrets, columns another process maintains). The autoupdate column
 // is always written.
-func (h Handle[T]) SaveExcept(ctx context.Context, db *DB, row *T, cols ...Column) error {
-	return db.save(ctx, h.Ref, unsafe.Pointer(row), cols, true)
+func (h Handle[T]) SaveExcept(ctx context.Context, db *DB, row T, cols ...Column) error {
+	mustBeRowPointer[T]()
+	return db.save(ctx, h.Ref, toPtr(row), cols, true)
 }
 
 // DeleteRow deletes row by its primary key. Interceptors' predicates join the primary key in the
 // WHERE clause. It returns ErrNotFound when no row was deleted, including a row they exclude.
-func (h Handle[T]) DeleteRow(ctx context.Context, db *DB, row *T) error {
-	return db.deleteRow(ctx, h.Ref, unsafe.Pointer(row))
+func (h Handle[T]) DeleteRow(ctx context.Context, db *DB, row T) error {
+	mustBeRowPointer[T]()
+	return db.deleteRow(ctx, h.Ref, toPtr(row))
 }
 
 // Conflict is the ON CONFLICT clause of an upsert. Its methods return a changed copy.
@@ -312,13 +317,14 @@ func (c *Conflict) assignment(ci int32) *Assignment {
 // columns back. Inserted rows run the create hooks and updated rows the update hooks; outside a
 // transaction the upsert runs in an implicit one when the table has AfterWrite hooks for either,
 // so a failing hook rolls every row back.
-func (h Handle[T]) Upsert(ctx context.Context, db *DB, rows []*T, c Conflict) ([]bool, error) {
+func (h Handle[T]) Upsert(ctx context.Context, db *DB, rows []T, c Conflict) ([]bool, error) {
+	mustBeRowPointer[T]()
 	if len(rows) == 0 {
 		return nil, nil
 	}
 	ps := make([]unsafe.Pointer, len(rows))
 	for i, r := range rows {
-		ps[i] = unsafe.Pointer(r)
+		ps[i] = toPtr(r)
 	}
 	return db.upsert(ctx, h.Ref, ps, c)
 }
@@ -327,13 +333,14 @@ func (h Handle[T]) Upsert(ctx context.Context, db *DB, rows []*T, c Conflict) ([
 // expressions, as OnConflict takes them), and returns how many were inserted. Without targets it
 // skips rows that violate any unique constraint (ON CONFLICT DO NOTHING). Inserted rows run the
 // create hooks; skipped rows run none.
-func (h Handle[T]) CreateOrSkip(ctx context.Context, db *DB, rows []*T, targets ...Expr) (int64, error) {
+func (h Handle[T]) CreateOrSkip(ctx context.Context, db *DB, rows []T, targets ...Expr) (int64, error) {
+	mustBeRowPointer[T]()
 	if len(rows) == 0 {
 		return 0, nil
 	}
 	ps := make([]unsafe.Pointer, len(rows))
 	for i, r := range rows {
-		ps[i] = unsafe.Pointer(r)
+		ps[i] = toPtr(r)
 	}
 	ins, err := db.upsert(ctx, h.Ref, ps, OnConflict(targets...).DoNothing())
 	var n int64

@@ -56,12 +56,12 @@ type Mutation[T any] struct {
 	Op Op
 	// Row is the row as written: the entity passed to an entity write, or the row returned by a
 	// bulk write. For DeleteRow it is the entity passed, which may hold only the primary key.
-	Row *T
+	Row T
 	// Old holds the stored values, before the write, of the columns the table's hooks declared
 	// with Needs: for every update (Save, an Upsert's conflicting rows, bulk updates) and every
 	// delete (DeleteRow, bulk deletes). Other fields are zero. Nil for creates, and when no hook
 	// of the table declared Needs.
-	Old *T
+	Old T
 
 	changed []int32
 }
@@ -185,6 +185,7 @@ func (h Handle[T]) handle() Handle[T] { return h }
 func register[T any](db *DB, t tabler[T], ops []Op, phase Phase,
 	fn func(ctx context.Context, m *Mutation[T]) error, opts []HookOption,
 ) {
+	mustBeRowPointer[T]()
 	e := &hookEntry{phase: phase}
 	for _, op := range ops {
 		e.ops[op] = true
@@ -194,7 +195,7 @@ func register[T any](db *DB, t tabler[T], ops []Op, phase Phase,
 	}
 	e.fn = func(ctx context.Context, m *mutation) error {
 		return fn(ctx, &Mutation[T]{
-			Op: m.op, Row: (*T)(m.row), Old: (*T)(m.old), changed: m.changed,
+			Op: m.op, Row: fromPtr[T](m.row), Old: fromPtr[T](m.old), changed: m.changed,
 		})
 	}
 	db.hooks.add(t.TableRef().Table, e)

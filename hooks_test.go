@@ -103,7 +103,7 @@ func TestInterceptorOnRelationPathGuardsSave(t *testing.T) {
 func TestUpsertUpdateHookRollsBack(t *testing.T) {
 	d := openDB(t, nil)
 	c := fleetdb.Customers
-	keel.OnUpdate(d, c, keel.AfterWrite, func(context.Context, *keel.Mutation[fleet.Customer]) error {
+	keel.OnUpdate(d, c, keel.AfterWrite, func(context.Context, *keel.Mutation[*fleet.Customer]) error {
 		return errors.New("refused")
 	})
 	ctx := newTenant()
@@ -123,7 +123,7 @@ func TestMutationOldOnEveryUpdateAndDelete(t *testing.T) {
 	c := fleetdb.Customers
 	var mu sync.Mutex
 	var log []string
-	record := func(_ context.Context, m *keel.Mutation[fleet.Customer]) error {
+	record := func(_ context.Context, m *keel.Mutation[*fleet.Customer]) error {
 		mu.Lock()
 		defer mu.Unlock()
 		if m.Old == nil {
@@ -166,7 +166,7 @@ func TestAfterWriteHookJoinsTheImplicitTransaction(t *testing.T) {
 	ctx := newTenant()
 	tags := 0
 	fail := false
-	keel.OnCreate(d, fleetdb.Customers, keel.AfterWrite, func(ctx context.Context, m *keel.Mutation[fleet.Customer]) error {
+	keel.OnCreate(d, fleetdb.Customers, keel.AfterWrite, func(ctx context.Context, m *keel.Mutation[*fleet.Customer]) error {
 		if !keel.InTx(ctx, d) {
 			t.Error("an AfterWrite hook of an implicit transaction ran outside it")
 		}
@@ -183,7 +183,7 @@ func TestAfterWriteHookJoinsTheImplicitTransaction(t *testing.T) {
 		return err
 	})
 	boom := errors.New("boom")
-	keel.OnCreate(d, fleetdb.Customers, keel.AfterWrite, func(context.Context, *keel.Mutation[fleet.Customer]) error {
+	keel.OnCreate(d, fleetdb.Customers, keel.AfterWrite, func(context.Context, *keel.Mutation[*fleet.Customer]) error {
 		if fail {
 			return boom
 		}

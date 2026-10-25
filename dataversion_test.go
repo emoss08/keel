@@ -269,7 +269,7 @@ func TestDataVersionsSystemScopeBulkWriteWithHooks(t *testing.T) {
 	d := versionsDB(t, time.Hour, nil)
 	c := fleetdb.Customers
 	var seen int
-	keel.OnUpdate(d, c, keel.AfterWrite, func(context.Context, *keel.Mutation[fleet.Customer]) error {
+	keel.OnUpdate(d, c, keel.AfterWrite, func(context.Context, *keel.Mutation[*fleet.Customer]) error {
 		seen++
 		return nil
 	})

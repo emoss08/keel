@@ -328,7 +328,7 @@ Model hooks are methods on the model (`BeforeSave`, `AfterLoad`, …). Table hoo
 after it inside the transaction, or after commit, and can ask for the previous values of columns:
 
 ```go
-keel.OnUpdate(db, s, keel.AfterWrite, func(ctx context.Context, m *keel.Mutation[fleet.Shipment]) error {
+keel.OnUpdate(db, s, keel.AfterWrite, func(ctx context.Context, m *keel.Mutation[*fleet.Shipment]) error {
     if m.Old == nil || !m.Changed(s.Status) || m.Old.Status == m.Row.Status {
         return nil
     }

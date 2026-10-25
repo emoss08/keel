@@ -25,13 +25,14 @@ import (
 // Config.OnBegin is set, after the OnBegin statements, when the table has AfterWrite hooks, or
 // when the context is marked with OnReplica on a DB with replicas, so that its commit position
 // is read with COMMIT.
-func (h Handle[T]) Copy(ctx context.Context, db *DB, rows []*T) (int64, error) {
+func (h Handle[T]) Copy(ctx context.Context, db *DB, rows []T) (int64, error) {
+	mustBeRowPointer[T]()
 	if len(rows) == 0 {
 		return 0, nil
 	}
 	ps := make([]unsafe.Pointer, len(rows))
 	for i, r := range rows {
-		ps[i] = unsafe.Pointer(r)
+		ps[i] = toPtr(r)
 	}
 	return db.copyRows(ctx, h.Ref.Table, ps)
 }

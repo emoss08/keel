@@ -362,14 +362,14 @@ func (e *emitter) emitPackage(p *pkgModels) ([]byte, error) {
 		w("var %s = %s.Ref{Table: &%s}\n\n", refVar, keel, tblVar)
 
 		w("// %s is the table of %s.\n", handle, model)
-		w("type %s struct {\n\t%s.Handle[%s]\n", handle, keel, model)
+		w("type %s struct {\n\t%s.Handle[*%s]\n", handle, keel, model)
 		for _, c := range m.columns {
 			w("\t%s %s\n", c.field, e.colType(im, c))
 		}
 		w("}\n\n")
 
 		w("// %s references the %s table.\n", m.plural, m.table)
-		w("var %s = &%s{\n\tHandle: %s.Handle[%s]{Ref: &%s},\n", m.plural, handle, keel, model, refVar)
+		w("var %s = &%s{\n\tHandle: %s.Handle[*%s]{Ref: &%s},\n", m.plural, handle, keel, model, refVar)
 		for _, c := range m.columns {
 			w("\t%s: %s,\n", c.field, e.colLit(im, c, "&"+refVar))
 		}
@@ -377,7 +377,7 @@ func (e *emitter) emitPackage(p *pkgModels) ([]byte, error) {
 
 		w("// %s builds the handle of %s for ref. Generated relation and alias methods call it.\n",
 			build, m.table)
-		w("func %s(r *%s.Ref) *%s {\n\treturn &%s{\n\t\tHandle: %s.Handle[%s]{Ref: r},\n", build, keel,
+		w("func %s(r *%s.Ref) *%s {\n\treturn &%s{\n\t\tHandle: %s.Handle[*%s]{Ref: r},\n", build, keel,
 			handle, handle, keel, model)
 		for _, c := range m.columns {
 			w("\t\t%s: %s,\n", c.field, e.colLit(im, c, "r"))

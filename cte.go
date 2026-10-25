@@ -79,7 +79,7 @@ func (c *CTETable) Col(name string) AnyCol {
 func (c *CTETable) TableRef() *Ref { return c.ref }
 
 // Query starts a query over the CTE's rows. Pick what to read and run it with Into.
-func (c *CTETable) Query() *Query[Row] { return &Query[Row]{q: query{ref: c.ref}} }
+func (c *CTETable) Query() *Query[*Row] { return &Query[*Row]{q: query{ref: c.ref}} }
 
 // Row is the row type of a query over a CTE or a compound query; read such queries with Into.
 type Row struct{}

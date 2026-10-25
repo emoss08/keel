@@ -211,19 +211,19 @@ func TestCopyTableHooks(t *testing.T) {
 		log = append(log, s)
 		mu.Unlock()
 	}
-	keel.OnCreate(d, c, keel.BeforeWrite, func(_ context.Context, m *keel.Mutation[fleet.Customer]) error {
+	keel.OnCreate(d, c, keel.BeforeWrite, func(_ context.Context, m *keel.Mutation[*fleet.Customer]) error {
 		m.Row.Code = "HOOK-" + m.Row.Code
 		add("before " + m.Row.Code)
 		return nil
 	})
-	keel.OnCreate(d, c, keel.AfterWrite, func(_ context.Context, m *keel.Mutation[fleet.Customer]) error {
+	keel.OnCreate(d, c, keel.AfterWrite, func(_ context.Context, m *keel.Mutation[*fleet.Customer]) error {
 		add("after " + m.Row.Code)
 		if m.Row.Name == "reject" {
 			return errors.New("rejected")
 		}
 		return nil
 	})
-	keel.OnCreate(d, c, keel.Committed, func(_ context.Context, m *keel.Mutation[fleet.Customer]) error {
+	keel.OnCreate(d, c, keel.Committed, func(_ context.Context, m *keel.Mutation[*fleet.Customer]) error {
 		add("committed " + m.Row.Code)
 		return nil
 	})

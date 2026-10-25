@@ -34,7 +34,7 @@ func Batch(ctx context.Context, db *DB, items ...BatchItem) error {
 }
 
 // ListInto reads the query's rows into dst, as List does. The query must have a Limit.
-func ListInto[T any](q *Query[T], dst *[]*T) BatchItem {
+func ListInto[T any](q *Query[T], dst *[]T) BatchItem {
 	if dst == nil {
 		return noDestination("ListInto")
 	}
@@ -42,41 +42,41 @@ func ListInto[T any](q *Query[T], dst *[]*T) BatchItem {
 		if q.q.limit <= 0 {
 			return nil, ErrUnbounded
 		}
-		return fetchInto(ctx, run, &q.q, fetchOpts{}, anyRows, func(rows []*T) { *dst = rows })
+		return fetchInto(ctx, run, &q.q, fetchOpts{}, anyRows, func(rows []T) { *dst = rows })
 	}}
 }
 
 // AllInto reads every matching row into dst, as All does.
-func AllInto[T any](q *Query[T], dst *[]*T) BatchItem {
+func AllInto[T any](q *Query[T], dst *[]T) BatchItem {
 	if dst == nil {
 		return noDestination("AllInto")
 	}
 	return BatchItem{prepare: func(ctx context.Context, run *runner) (*read, error) {
-		return fetchInto(ctx, run, &q.q, fetchOpts{}, anyRows, func(rows []*T) { *dst = rows })
+		return fetchInto(ctx, run, &q.q, fetchOpts{}, anyRows, func(rows []T) { *dst = rows })
 	}}
 }
 
 // OneInto reads the only matching row into dst, as One does: the batch fails with ErrNotFound
 // when none matches and ErrNotSingular when more do.
-func OneInto[T any](q *Query[T], dst **T) BatchItem {
+func OneInto[T any](q *Query[T], dst *T) BatchItem {
 	if dst == nil {
 		return noDestination("OneInto")
 	}
 	return BatchItem{prepare: func(ctx context.Context, run *runner) (*read, error) {
 		return fetchInto(ctx, run, &q.q, fetchOpts{limit: 2, sizeHint: 1}, oneRow,
-			func(rows []*T) { *dst = rows[0] })
+			func(rows []T) { *dst = rows[0] })
 	}}
 }
 
 // FirstInto reads the first row in the query's order into dst, as First does: the batch fails
 // with ErrNotFound when no row matches.
-func FirstInto[T any](q *Query[T], dst **T) BatchItem {
+func FirstInto[T any](q *Query[T], dst *T) BatchItem {
 	if dst == nil {
 		return noDestination("FirstInto")
 	}
 	return BatchItem{prepare: func(ctx context.Context, run *runner) (*read, error) {
 		return fetchInto(ctx, run, &q.q, fetchOpts{limit: 1, sizeHint: 1}, firstRow,
-			func(rows []*T) { *dst = rows[0] })
+			func(rows []T) { *dst = rows[0] })
 	}}
 }
 

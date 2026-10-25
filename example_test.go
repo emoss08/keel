@@ -1230,7 +1230,7 @@ func ExampleOnCreate() {
 	db := appDB
 	s := fleetdb.Shipments
 
-	keel.OnCreate(db, s, keel.BeforeWrite, func(ctx context.Context, m *keel.Mutation[fleet.Shipment]) error {
+	keel.OnCreate(db, s, keel.BeforeWrite, func(ctx context.Context, m *keel.Mutation[*fleet.Shipment]) error {
 		if m.Row.ProNumber == "" {
 			return errors.New("shipment needs a PRO number")
 		}
@@ -1245,7 +1245,7 @@ func ExampleOnUpdate() {
 	db := appDB
 	s := fleetdb.Shipments
 
-	keel.OnUpdate(db, s, keel.AfterWrite, func(ctx context.Context, m *keel.Mutation[fleet.Shipment]) error {
+	keel.OnUpdate(db, s, keel.AfterWrite, func(ctx context.Context, m *keel.Mutation[*fleet.Shipment]) error {
 		if m.Old == nil || !m.Changed(s.Status) || m.Old.Status == m.Row.Status {
 			return nil
 		}
@@ -1258,7 +1258,7 @@ func ExampleOnWrite() {
 	db := appDB
 	c := fleetdb.Customers
 
-	keel.OnWrite(db, c, keel.Committed, func(ctx context.Context, m *keel.Mutation[fleet.Customer]) error {
+	keel.OnWrite(db, c, keel.Committed, func(ctx context.Context, m *keel.Mutation[*fleet.Customer]) error {
 		log.Printf("customer %s %s; refresh the search index", m.Row.ID, m.Op)
 		return nil
 	})

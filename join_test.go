@@ -23,7 +23,7 @@ func TestJoinTxRunsInsideAForeignTransaction(t *testing.T) {
 		}
 	})
 	committed := 0
-	keel.OnCreate(d, fleetdb.Customers, keel.Committed, func(context.Context, *keel.Mutation[fleet.Customer]) error {
+	keel.OnCreate(d, fleetdb.Customers, keel.Committed, func(context.Context, *keel.Mutation[*fleet.Customer]) error {
 		committed++
 		return nil
 	})

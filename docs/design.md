@@ -238,7 +238,7 @@ func (s *Shipment) AfterLoad(ctx context.Context) error    // every loaded row, 
 - the `schema.Table` as a static literal: columns, flags, relations, precomputed column sets, and
   accessor functions (`New`, `Ptr` for scanning, `Value` for binding, `Attach` for relations) plus
   hook trampolines;
-- a handle type `ShipmentsTable` embedding `keel.Handle[shipment.Shipment]`, with one field per
+- a handle type `ShipmentsTable` embedding `keel.Handle[*shipment.Shipment]`, with one field per
   column, one method per relation, `As`, and a typed `Get` by primary key when the key, besides its
   tenant columns, is one non-pointer column;
 - a package variable `Shipments` built statically, `BuildShipments`, which relation and alias

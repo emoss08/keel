@@ -34,7 +34,7 @@ func (p PageRequest) Total(limit int64) PageRequest { p.total = limit; return p 
 
 // Page is one keyset page.
 type Page[T any] struct {
-	Items []*T
+	Items []T
 	// Next is the cursor of the following page, empty on the last page.
 	Next string
 	// Total is the number of matching rows when the request asked for it, capped at its limit.
@@ -55,7 +55,7 @@ func (p Page[T]) CursorAt(i int) string {
 	if p.keys == nil {
 		return ""
 	}
-	return p.keys.cursor(unsafe.Pointer(row), i)
+	return p.keys.cursor(toPtr(row), i)
 }
 
 // Page returns the page of rows after the request's cursor. The query's order may name columns of
@@ -106,11 +106,11 @@ func pageRead[T any](ctx context.Context, run *runner, q *query, p PageRequest, 
 		fo.countCap = p.total
 		fo.count = &total
 	}
-	return fetchInto(ctx, run, q, fo, anyRows, func(items []*T) {
+	return fetchInto(ctx, run, q, fo, anyRows, func(items []T) {
 		out := Page[T]{Total: total, TotalCapped: p.total > 0 && total >= p.total, keys: keys}
 		if len(items) > p.size {
 			items = items[:p.size]
-			out.Next = keys.cursor(unsafe.Pointer(items[len(items)-1]), len(items)-1)
+			out.Next = keys.cursor(toPtr(items[len(items)-1]), len(items)-1)
 		}
 		out.Items = items
 		*dst = out

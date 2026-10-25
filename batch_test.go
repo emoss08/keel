@@ -21,19 +21,19 @@ func TestBatchItemsMatchTerminals(t *testing.T) {
 	d := db(t)
 	w := seed(t, 12)
 	s, c := fleetdb.Shipments, fleetdb.Customers
-	list := func() *keel.Query[fleet.Shipment] {
+	list := func() *keel.Query[*fleet.Shipment] {
 		return s.Where(s.Status.In(fleet.StatusNew, fleet.StatusAssigned)).Order(s.ProNumber.Asc()).Limit(4)
 	}
-	hazmat := func() *keel.Query[fleet.Shipment] { return s.Where(s.Hazmat.IsTrue()).Order(s.ProNumber.Asc()) }
-	byStatus := func() *keel.Query[fleet.Shipment] {
+	hazmat := func() *keel.Query[*fleet.Shipment] { return s.Where(s.Hazmat.IsTrue()).Order(s.ProNumber.Asc()) }
+	byStatus := func() *keel.Query[*fleet.Shipment] {
 		return s.Group(s.Status).Pick(s.Status, keel.Count()).Order(s.Status.Asc())
 	}
-	paged := func() *keel.Query[fleet.Shipment] { return s.Order(s.ProNumber.Asc()) }
+	paged := func() *keel.Query[*fleet.Shipment] { return s.Order(s.ProNumber.Asc()) }
 
 	var (
 		rows, all        []*fleet.Shipment
 		one, first       *fleet.Shipment
-		page             keel.Page[fleet.Shipment]
+		page             keel.Page[*fleet.Shipment]
 		n, upTo, hazmats int64
 		exists, missing  bool
 		groups           []statusCount
@@ -65,7 +65,7 @@ func TestBatchItemsMatchTerminals(t *testing.T) {
 	eq(t, page.Next, want.Next)
 	eq(t, page.Total, int64(12))
 	eq(t, page.TotalCapped, false)
-	var next keel.Page[fleet.Shipment]
+	var next keel.Page[*fleet.Shipment]
 	ok(t, keel.Batch(w.ctx, d, keel.PageInto(paged(), keel.After(page.Next, 5), &next)))
 	eq(t, next.Items[0].ProNumber, "PRO-0005")
 
@@ -265,7 +265,7 @@ func TestBatchErrors(t *testing.T) {
 	if err := keel.Batch(w.ctx, d, keel.BatchItem{}); err == nil {
 		t.Fatal("an empty item was accepted")
 	}
-	var page keel.Page[fleet.Shipment]
+	var page keel.Page[*fleet.Shipment]
 	if err := keel.Batch(w.ctx, d, keel.PageInto(s.Query(), keel.After("", 0), &page)); err == nil {
 		t.Fatal("a page without a size was accepted")
 	}

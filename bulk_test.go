@@ -101,7 +101,7 @@ func TestUpdateReturningInterceptorsAndHooks(t *testing.T) {
 	})
 	var mu sync.Mutex
 	var log []string
-	keel.OnUpdate(d, c, keel.AfterWrite, func(ctx context.Context, m *keel.Mutation[fleet.Customer]) error {
+	keel.OnUpdate(d, c, keel.AfterWrite, func(ctx context.Context, m *keel.Mutation[*fleet.Customer]) error {
 		mu.Lock()
 		defer mu.Unlock()
 		if !keel.InTx(ctx, d) {

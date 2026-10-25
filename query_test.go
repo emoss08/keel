@@ -606,3 +606,12 @@ func TestAllTenantsReachesLoadsAndAny(t *testing.T) {
 		t.Fatalf("root without AllTenants: got %v, want ErrAllTenantsRequired", err)
 	}
 }
+
+func TestAHandleOfAStructTypePanics(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil || !strings.Contains(fmt.Sprint(r), "must be the model's pointer type") {
+			t.Fatalf("recovered %v", r)
+		}
+	}()
+	keel.Handle[fleet.Shipment]{Ref: fleetdb.Shipments.Ref}.Query()
+}

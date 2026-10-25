@@ -187,10 +187,10 @@ func (q *query) prepareRows(ctx context.Context, run *runner, fo fetchOpts, emit
 // fetchInto prepares the query's rows read, needing want rows; its finish hands the rows, typed,
 // to set.
 func fetchInto[T any](ctx context.Context, run *runner, q *query, fo fetchOpts, want cardinality,
-	set func(rows []*T),
+	set func(rows []T),
 ) (*read, error) {
-	out := make([]*T, 0, fo.rowHint(q))
-	rd, err := q.prepareRows(ctx, run, fo, func(p unsafe.Pointer) { out = append(out, (*T)(p)) })
+	out := make([]T, 0, fo.rowHint(q))
+	rd, err := q.prepareRows(ctx, run, fo, func(p unsafe.Pointer) { out = append(out, fromPtr[T](p)) })
 	if err != nil {
 		return nil, err
 	}

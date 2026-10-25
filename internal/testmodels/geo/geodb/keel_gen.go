@@ -54,7 +54,7 @@ var placesRef = keel.Ref{Table: &placesTable}
 
 // PlacesTable is the table of geo.Place.
 type PlacesTable struct {
-	keel.Handle[geo.Place]
+	keel.Handle[*geo.Place]
 	ID             keelkinds.IdsIDCol
 	OrganizationID keelkinds.IdsIDCol
 	BusinessUnitID keelkinds.IdsIDCol
@@ -66,7 +66,7 @@ type PlacesTable struct {
 
 // Places references the places table.
 var Places = &PlacesTable{
-	Handle:         keel.Handle[geo.Place]{Ref: &placesRef},
+	Handle:         keel.Handle[*geo.Place]{Ref: &placesRef},
 	ID:             keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: &placesRef, Index: 0}}},
 	OrganizationID: keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: &placesRef, Index: 1}}},
 	BusinessUnitID: keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: &placesRef, Index: 2}}},
@@ -79,7 +79,7 @@ var Places = &PlacesTable{
 // BuildPlaces builds the handle of places for ref. Generated relation and alias methods call it.
 func BuildPlaces(r *keel.Ref) *PlacesTable {
 	return &PlacesTable{
-		Handle:         keel.Handle[geo.Place]{Ref: r},
+		Handle:         keel.Handle[*geo.Place]{Ref: r},
 		ID:             keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: r, Index: 0}}},
 		OrganizationID: keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: r, Index: 1}}},
 		BusinessUnitID: keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: r, Index: 2}}},
@@ -192,7 +192,7 @@ var zonesRef = keel.Ref{Table: &zonesTable}
 
 // ZonesTable is the table of geo.Zone.
 type ZonesTable struct {
-	keel.Handle[geo.Zone]
+	keel.Handle[*geo.Zone]
 	ID             keelkinds.IdsIDCol
 	OrganizationID keelkinds.IdsIDCol
 	BusinessUnitID keelkinds.IdsIDCol
@@ -203,7 +203,7 @@ type ZonesTable struct {
 
 // Zones references the zones table.
 var Zones = &ZonesTable{
-	Handle:         keel.Handle[geo.Zone]{Ref: &zonesRef},
+	Handle:         keel.Handle[*geo.Zone]{Ref: &zonesRef},
 	ID:             keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: &zonesRef, Index: 0}}},
 	OrganizationID: keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: &zonesRef, Index: 1}}},
 	BusinessUnitID: keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: &zonesRef, Index: 2}}},
@@ -215,7 +215,7 @@ var Zones = &ZonesTable{
 // BuildZones builds the handle of zones for ref. Generated relation and alias methods call it.
 func BuildZones(r *keel.Ref) *ZonesTable {
 	return &ZonesTable{
-		Handle:         keel.Handle[geo.Zone]{Ref: r},
+		Handle:         keel.Handle[*geo.Zone]{Ref: r},
 		ID:             keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: r, Index: 0}}},
 		OrganizationID: keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: r, Index: 1}}},
 		BusinessUnitID: keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: r, Index: 2}}},

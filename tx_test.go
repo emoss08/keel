@@ -218,23 +218,23 @@ func TestTableHooks(t *testing.T) {
 		log = append(log, s)
 		mu.Unlock()
 	}
-	keel.OnCreate(d, c, keel.BeforeWrite, func(_ context.Context, m *keel.Mutation[fleet.Customer]) error {
+	keel.OnCreate(d, c, keel.BeforeWrite, func(_ context.Context, m *keel.Mutation[*fleet.Customer]) error {
 		m.Row.Code = "HOOK-" + m.Row.Code
 		add("before create")
 		return nil
 	})
-	keel.OnCreate(d, c, keel.AfterWrite, func(_ context.Context, m *keel.Mutation[fleet.Customer]) error {
+	keel.OnCreate(d, c, keel.AfterWrite, func(_ context.Context, m *keel.Mutation[*fleet.Customer]) error {
 		add("after create " + m.Row.Code)
 		if m.Row.Name == "reject" {
 			return errors.New("rejected")
 		}
 		return nil
 	})
-	keel.OnWrite(d, c, keel.Committed, func(_ context.Context, m *keel.Mutation[fleet.Customer]) error {
+	keel.OnWrite(d, c, keel.Committed, func(_ context.Context, m *keel.Mutation[*fleet.Customer]) error {
 		add("committed " + m.Op.String())
 		return nil
 	})
-	keel.OnUpdate(d, c, keel.AfterWrite, func(_ context.Context, m *keel.Mutation[fleet.Customer]) error {
+	keel.OnUpdate(d, c, keel.AfterWrite, func(_ context.Context, m *keel.Mutation[*fleet.Customer]) error {
 		if m.Changed(c.Name) {
 			add("renamed from " + m.Old.Name + " to " + m.Row.Name)
 		}
