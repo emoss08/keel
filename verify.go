@@ -641,7 +641,7 @@ func sameType(declared, catalog string) bool {
 // search_path), the overloads of the plain function of that name: argument counts, defaults,
 // whether the last argument is variadic, and the result type with domains resolved to their base
 // type.
-const verifyFuncsSQL = `SELECT n.ord, p.pronargs, p.pronargdefaults, p.provariadic <> 0,
+const verifyFuncsSQL = `SELECT n.ord, p.pronargs, p.pronargdefaults, p.provariadic <> 0::oid,
        coalesce(bt.typname::text, ''), coalesce(bt.typcategory::text, ''), coalesce(bt.typtype::text, '')
   FROM unnest($1::text[], $2::text[]) WITH ORDINALITY AS n(nsp, name, ord)
   JOIN pg_proc p ON p.proname = n.name AND p.prokind = 'f'
@@ -736,7 +736,9 @@ func funcDrift(d *FuncDecl, overloads []funcOverload) (Drift, bool) {
 	matched := false
 	for _, o := range overloads {
 		if !o.takes(d.arity) {
-			arities = append(arities, arityText(o))
+			if a := arityText(o); !slices.Contains(arities, a) {
+				arities = append(arities, a)
+			}
 			continue
 		}
 		matched = true
