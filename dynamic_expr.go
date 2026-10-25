@@ -740,6 +740,7 @@ var dynFuncs = map[string]dynFunc{
 	"gen_random_uuid": {0, 0, false}, "int4range": {2, 3, false}, "int8range": {2, 3, false},
 	"numrange": {2, 3, false}, "tstzrange": {2, 3, false}, "array_agg": {1, 1, true},
 	"jsonb_agg": {1, 1, true}, "jsonb_object_agg": {2, 2, true},
+	"unnest": {1, -1, false}, "generate_series": {2, 3, false},
 	"sum": {1, 1, true}, "avg": {1, 1, true}, "min": {1, 1, true}, "max": {1, 1, true},
 	"count": {0, 1, true}, "bool_and": {1, 1, true}, "bool_or": {1, 1, true},
 	"string_agg": {2, 2, true}, "stddev": {1, 1, true}, "stddev_samp": {1, 1, true},
@@ -755,7 +756,7 @@ var dynFuncs = map[string]dynFunc{
 // jsonb_extract_path_text, jsonb_typeof, jsonb_array_length, cardinality, array_to_string,
 // array_append, array_remove, array_position, regexp_replace, jsonb_build_array,
 // jsonb_build_object, jsonb_set, width_bucket, gen_random_uuid, int4range, int8range, numrange,
-// tstzrange.
+// tstzrange, and the set-returning unnest and generate_series, for keel.Rows.
 // Aggregates, which take Filter and Over: sum, avg, min, max, count (count() is count(*)),
 // bool_and, bool_or, string_agg, stddev, stddev_samp, stddev_pop, variance, var_samp, var_pop,
 // array_agg, jsonb_agg, jsonb_object_agg.

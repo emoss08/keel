@@ -1110,3 +1110,29 @@ func TestDynExpressionsInTypedQueries(t *testing.T) {
 	wide := must(keel.IntoOne[int64](w.ctx, d, s.Pick(keel.DynOf(s.Priority).Add(1).Mul(86400).Max())))(t)
 	eq(t, wide, int64(3*86400))
 }
+
+func TestRowsJoinLaterally(t *testing.T) {
+	d := db(t)
+	w := seed(t, 4)
+	s := fleetdb.Shipments
+	type row struct {
+		Pro   string
+		Label *string
+	}
+	lbl := keel.Rows("lbl", []string{"label"}, keel.DynFunc("unnest", s.Labels))
+	rows := must(keel.Into[row](w.ctx, d, s.LeftJoinLateral(lbl).
+		Pick(s.ProNumber, lbl.Col("label")).
+		Where(s.ProNumber.Eq("PRO-0001")).
+		Order(s.ProNumber.Asc())))(t)
+	eq(t, len(rows), 1)
+	eq(t, *rows[0].Label, "lane-1")
+
+	n := keel.Rows("n", []string{"i"}, keel.DynFunc("generate_series", keel.DynConst(1), keel.DynConst(3)))
+	count := must(keel.IntoOne[int64](w.ctx, d, s.JoinLateral(n).Pick(keel.Count())))(t)
+	eq(t, count, int64(12))
+
+	bad := keel.Rows("bad", []string{"a", "b"}, keel.DynConst(1))
+	if _, err := keel.Into[row](w.ctx, d, s.JoinLateral(bad).Pick(s.ProNumber, bad.Col("a"))); err == nil {
+		t.Fatal("a Rows with fewer expressions than columns rendered")
+	}
+}

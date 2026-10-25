@@ -1277,6 +1277,16 @@ rows, err := keel.Into[moveEnd](ctx, db, m.
     Where(m.ShipmentID.Eq("shp_01")))
 ```
 
+`keel.Rows(name, columns, exprs...)` is a lateral source computed by expressions, usually the
+set-returning `unnest` or `generate_series`: `(SELECT expr AS "col", …) name`. Several set-returning
+functions zip, row i of each making row i. Each expression may read the row it joins:
+
+```go
+s := fleetdb.Shipments
+lbl := keel.Rows("lbl", []string{"label"}, keel.DynFunc("unnest", s.Labels))
+rows, err := keel.Into[labelRow](ctx, db, s.LeftJoinLateral(lbl).Pick(s.ProNumber, lbl.Col("label")))
+```
+
 ### Common table expressions
 
 `keel.CTE(name, columns, body)` declares `WITH name (columns) AS (body)`. Declare it on the query
