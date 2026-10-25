@@ -12,6 +12,7 @@ import (
 	"github.com/emoss08/keel/analytics/cache"
 	"github.com/emoss08/keel/internal/testmodels/fleet"
 	"github.com/emoss08/keel/internal/testmodels/fleet/fleetdb"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // cacheDB opens a DB on the test database with data versions and the result cache on. Versions
@@ -325,9 +326,16 @@ func TestCacheBypasses(t *testing.T) {
 			return nil
 		})
 	})
-	bypassed("RepeatableRead", func() error {
+	bypassed("a RepeatableRead Read that has begun", func() error {
 		return keel.Read(ctx, d, func(ctx context.Context) error {
+			if _, err := c.Query().Count(ctx, d); err != nil {
+				return err
+			}
+			before := d.CacheStats().Bypasses
 			cachedCustomers(t, ctx, d)
+			if d.CacheStats().Bypasses != before+1 {
+				t.Fatal("a begun snapshot transaction was not bypassed")
+			}
 			return nil
 		}, keel.RepeatableRead)
 	})
@@ -353,6 +361,86 @@ func TestCacheBypasses(t *testing.T) {
 	}))
 	eq(t, d.CacheStats().Hits, hits+1)
 	eq(t, rec.statements(), 0)
+}
+
+func TestCacheInsideAnUnbegunSnapshotTransaction(t *testing.T) {
+	rec := &recorder{}
+	d := cacheDB(t, rec, nil)
+	ctx := newTenant()
+	c := fleetdb.Customers
+	ok(t, c.Create(ctx, d, &fleet.Customer{Name: "A", Code: "A"}))
+	ok(t, d.FlushDataVersions(context.Background()))
+	cachedCustomers(t, ctx, d)
+
+	ok(t, keel.Read(ctx, d, func(ctx context.Context) error {
+		hits := d.CacheStats().Hits
+		rec.reset()
+		eq(t, len(cachedCustomers(t, ctx, d)), 1)
+		eq(t, d.CacheStats().Hits, hits+1)
+		eq(t, rec.statements(), 0)
+
+		rows := must(c.Order(c.Code.Asc()).All(ctx, d))(t)
+		eq(t, len(rows), 1)
+		level := must(keel.QueryValue[string](ctx, d, "SELECT current_setting('transaction_isolation')"))(t)
+		eq(t, level, "repeatable read")
+
+		bypasses := d.CacheStats().Bypasses
+		eq(t, len(cachedCustomers(t, ctx, d)), 1)
+		eq(t, d.CacheStats().Bypasses, bypasses+1)
+		return nil
+	}, keel.RepeatableRead))
+
+	fresh := newTenant()
+	ok(t, c.Create(fresh, d, &fleet.Customer{Name: "B", Code: "B"}))
+	ok(t, d.FlushDataVersions(context.Background()))
+	ok(t, keel.Read(fresh, d, func(ctx context.Context) error {
+		misses := d.CacheStats().Misses
+		eq(t, len(cachedCustomers(t, ctx, d)), 1)
+		eq(t, d.CacheStats().Misses, misses+1)
+		eq(t, must(keel.QueryValue[string](ctx, d, "SELECT current_setting('transaction_isolation')"))(t),
+			"repeatable read")
+		return nil
+	}, keel.RepeatableRead))
+	hits := d.CacheStats().Hits
+	eq(t, len(cachedCustomers(t, fresh, d)), 1)
+	eq(t, d.CacheStats().Hits, hits+1)
+}
+
+func TestCacheNeverTakesASecondPoolConnection(t *testing.T) {
+	d := cacheDB(t, nil, func(cfg *keel.Config) {
+		pc, err := pgxpool.ParseConfig(testDSN)
+		ok(t, err)
+		pc.MaxConns = 1
+		cfg.Pool = pc
+	})
+	c := fleetdb.Customers
+	bounded := func(ctx context.Context) context.Context {
+		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		t.Cleanup(cancel)
+		return ctx
+	}
+
+	ctx := bounded(newTenant())
+	ok(t, c.Create(ctx, d, &fleet.Customer{Name: "A", Code: "A"}))
+	eq(t, len(cachedCustomers(t, ctx, d)), 1)
+
+	inTx := bounded(newTenant())
+	ok(t, c.Create(inTx, d, &fleet.Customer{Name: "B", Code: "B"}))
+	ok(t, keel.Read(inTx, d, func(ctx context.Context) error {
+		if _, err := c.Query().Count(ctx, d); err != nil {
+			return err
+		}
+		eq(t, len(cachedCustomers(t, ctx, d)), 1)
+		return nil
+	}))
+
+	unbegun := bounded(newTenant())
+	ok(t, c.Create(unbegun, d, &fleet.Customer{Name: "C", Code: "C"}))
+	ok(t, keel.Read(unbegun, d, func(ctx context.Context) error {
+		eq(t, len(cachedCustomers(t, ctx, d)), 1)
+		eq(t, len(cachedCustomers(t, ctx, d)), 1)
+		return nil
+	}, keel.RepeatableRead))
 }
 
 func TestCacheRecoversFromListenerLoss(t *testing.T) {

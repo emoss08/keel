@@ -354,11 +354,17 @@ func (b *versionBus) flushed(marks map[versionKey]uint64, gen uint64, versions m
 	}
 }
 
+// connSource returns the connection a read of versions runs on: the connection of the terminal
+// that needs them, or nil for one of the primary pool's. A terminal that holds a connection, or
+// whose transaction is about to take one, hands over that one, so a read of versions never waits
+// for a second pool connection while its caller holds the first.
+type connSource func(ctx context.Context) (pgConn, error)
+
 // stamps returns the stamps of tables for tenant key tenant: for each table, in order, one per
 // prefix of the key (tenantPrefixes), the order DataVersions sums them in. Pairs the bus does not
-// know are read from keel_data_versions in one round trip, outside every transaction. It fails
+// know are read from keel_data_versions in one round trip, on the connection via returns. It fails
 // with errVersionsReset while the listener is down or when it was lost during the read.
-func (b *versionBus) stamps(ctx context.Context, tenant string, tables []string) ([]pairStamp, error) {
+func (b *versionBus) stamps(ctx context.Context, tenant string, tables []string, via connSource) ([]pairStamp, error) {
 	if !b.up.Load() {
 		return nil, errVersionsReset
 	}
@@ -368,7 +374,7 @@ func (b *versionBus) stamps(ctx context.Context, tenant string, tables []string)
 	if len(missing) == 0 {
 		return out, nil
 	}
-	if err := b.fill(ctx, missing); err != nil {
+	if err := b.fill(ctx, missing, via); err != nil {
 		return nil, err
 	}
 	if missing = b.read(prefixes, tables, out); len(missing) > 0 {
@@ -399,15 +405,32 @@ func (b *versionBus) read(prefixes, tables []string, out []pairStamp) []versionK
 }
 
 // fill reads the stored versions of keys from keel_data_versions, a pair without a row being at
-// version 0. Notifications that arrive during the read are kept even for pairs the bus did not
+// version 0, on the connection via returns (inside the caller's transaction when it has one: a
+// plain SELECT, and under REPEATABLE READ a snapshot no newer than the data the terminal reads),
+// or on one of the primary pool's when via is nil or returns none. When the table does not exist
+// yet every version is 0; it is never created here, so the read cannot fail the caller's
+// transaction. Notifications that arrive during the read are kept even for pairs the bus did not
 // hold, so a version bumped while the read was in flight is not lost.
-func (b *versionBus) fill(ctx context.Context, keys []versionKey) error {
+func (b *versionBus) fill(ctx context.Context, keys []versionKey, via connSource) error {
 	db := b.db
 	if db.versions == nil || db.pool == nil {
 		return errVersionsReset
 	}
-	if err := db.versions.ensure(ctx); err != nil {
-		return err
+	var conn pgConn
+	if via != nil {
+		c, err := via(ctx)
+		if err != nil {
+			return err
+		}
+		conn = c
+	}
+	if conn == nil {
+		pc, err := db.pool.Acquire(ctx)
+		if err != nil {
+			return fmt.Errorf("keel: read data versions: %w", err)
+		}
+		defer pc.Release()
+		conn = pc
 	}
 	gen := b.gen.Load()
 	b.filling.Add(1)
@@ -434,15 +457,21 @@ func (b *versionBus) fill(ctx context.Context, keys []versionKey) error {
 		}
 		return nil
 	}
-	stmts := []*stmt{s}
-	events, qctx := db.startEvents(ctx, nil, false, stmts)
-	start := time.Now()
-	rows, err := db.pool.Query(qctx, s.sql, s.args...)
-	if err == nil {
-		err = scanRows(rows, s)
+	exists, err := db.versions.exists(ctx, conn)
+	if err != nil {
+		return fmt.Errorf("keel: find %s: %w", versionTable, err)
 	}
-	if err = db.endEvents(events, stmts, time.Since(start), err); err != nil {
-		return fmt.Errorf("keel: read data versions: %w", err)
+	if exists {
+		stmts := []*stmt{s}
+		events, qctx := db.startEvents(ctx, nil, false, stmts)
+		start := time.Now()
+		rows, err := conn.Query(qctx, s.sql, s.args...)
+		if err == nil {
+			err = scanRows(rows, s)
+		}
+		if err = db.endEvents(events, stmts, time.Since(start), err); err != nil {
+			return fmt.Errorf("keel: read data versions: %w", err)
+		}
 	}
 	if !b.up.Load() || b.gen.Load() != gen {
 		return errVersionsReset

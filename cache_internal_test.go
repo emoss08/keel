@@ -167,7 +167,7 @@ func TestVersionBusEpochsAndNotifications(t *testing.T) {
 	}
 	stamps := func() []pairStamp {
 		t.Helper()
-		st, err := b.stamps(t.Context(), "o/b", tables)
+		st, err := b.stamps(t.Context(), "o/b", tables, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -210,7 +210,7 @@ func TestVersionBusEpochsAndNotifications(t *testing.T) {
 
 	b.bump(versionSet{pair: {}})
 	b.apply(notifyAll)
-	if _, err := b.stamps(t.Context(), "o/b", tables); err == nil {
+	if _, err := b.stamps(t.Context(), "o/b", tables, nil); err == nil {
 		t.Fatal("a reset bus still knew versions")
 	}
 	if st := b.shard(pair).m[pair]; st == nil || st.dirty() == 0 || st.known {
@@ -218,7 +218,7 @@ func TestVersionBusEpochsAndNotifications(t *testing.T) {
 	}
 
 	b.down()
-	if _, err := b.stamps(t.Context(), "o/b", tables); err == nil {
+	if _, err := b.stamps(t.Context(), "o/b", tables, nil); err == nil {
 		t.Fatal("a bus that is down served versions")
 	}
 }

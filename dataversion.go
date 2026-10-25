@@ -310,6 +310,38 @@ func (v *versioner) ensure(ctx context.Context) error {
 	return nil
 }
 
+// exists reports whether keel_data_versions exists, asking on conn until it has been seen once.
+// It never creates the table, so it is safe on a connection inside a caller's transaction.
+func (v *versioner) exists(ctx context.Context, conn pgConn) (bool, error) {
+	v.readyMu.Lock()
+	ready := v.ready
+	v.readyMu.Unlock()
+	if ready {
+		return true, nil
+	}
+	var found bool
+	rows, err := conn.Query(ctx, "SELECT to_regclass('"+versionTable+"') IS NOT NULL")
+	if err != nil {
+		return false, err
+	}
+	for rows.Next() {
+		if err := rows.Scan(&found); err != nil {
+			rows.Close()
+			return false, err
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	if found {
+		v.readyMu.Lock()
+		v.ready = true
+		v.readyMu.Unlock()
+	}
+	return found, nil
+}
+
 // FlushDataVersions writes the pending data versions now instead of at the next interval, for
 // tests and before a planned shutdown (Close also flushes). It does nothing when data versions
 // are off.

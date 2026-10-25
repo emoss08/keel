@@ -71,8 +71,11 @@ func AlsoReads(tables ...string) CacheOption {
 // data versions of every table they read (the base table, joins, relation loads, subqueries, Any
 // and None, CTEs, and AlsoReads) are unchanged for the tenant. A Batch is served from the cache
 // only when every item's query asks for it, for the shortest of their TTLs. The cache is bypassed
-// inside a write transaction, a REPEATABLE READ or SERIALIZABLE transaction and a joined one,
-// under a system scope, for a query with Lock, and while the cache's listener is disconnected.
+// inside a write transaction, a joined one and a REPEATABLE READ or SERIALIZABLE one that has
+// already begun (sent a statement, so its snapshot is taken), under a system scope, for a query
+// with Lock, and while the cache's listener is disconnected. A snapshot transaction that has not
+// begun is served from the cache, and a hit leaves it unbegun: its snapshot is taken by its first
+// statement that reads the database.
 // Without Config.Cache it does nothing.
 func (q *Query[T]) Cache(opts ...CacheOption) *Query[T] {
 	spec := cacheSpec{on: true, ttl: defaultCacheTTL}
@@ -365,20 +368,33 @@ func cachedTTL(reads []*read) time.Duration {
 	return ttl
 }
 
-// applies reports whether the cache may serve a terminal on run: not under a system scope, not
-// inside a transaction other than a read-only READ COMMITTED one keel or the caller began (an
-// implicit transaction keel owns begins with the terminal, after the lookup), and only while the
-// listener is connected.
+// applies reports whether the cache may serve a terminal on run: not under a system scope, only
+// while the listener is connected, and inside a transaction the caller opened only when it is
+// read-only, not joined from another data layer, and either READ COMMITTED (each statement takes
+// its own snapshot, after the stamps) or a snapshot transaction that has not begun (its snapshot
+// is taken by this terminal's round trip, after the stamps, or by a later one). An implicit
+// transaction keel owns begins with the terminal, after the lookup.
 func (c *resultCache) applies(run *runner) bool {
 	if run.sc.system || !c.bus.up.Load() {
 		return false
 	}
 	if tx := run.tx; tx != nil && !run.own {
-		if !tx.readOnly || tx.joined || tx.snapshot() {
+		if !tx.readOnly || tx.joined || tx.begun && tx.snapshot() {
 			return false
 		}
 	}
 	return true
+}
+
+// via returns the connection the terminal's reads of versions run on: the runner's own (its
+// transaction's, begun or about to begin with the terminal's round trip, or the pool connection
+// its statements will use), so the cache never takes a second pool connection while the caller
+// holds one. A runner on a replica reads them on the primary (nil), since a replica's versions lag.
+func (cr *cacheRun) via(ctx context.Context) (pgConn, error) {
+	if cr.run.replica() != nil {
+		return nil, nil
+	}
+	return cr.run.acquire(ctx)
 }
 
 // hit looks the entry up, in the local store and then the shared one, and takes it when every
@@ -423,7 +439,7 @@ func (cr *cacheRun) valid(raw []byte) *cacheEntry {
 	if e.prefixes != cr.prefixes {
 		return nil
 	}
-	cur, err := cr.c.bus.stamps(cr.ctx, cr.tenant, e.tables)
+	cur, err := cr.c.bus.stamps(cr.ctx, cr.tenant, e.tables, cr.via)
 	if err != nil {
 		if !errors.Is(err, errVersionsReset) {
 			cr.c.report(err)
@@ -443,12 +459,18 @@ func (cr *cacheRun) valid(raw []byte) *cacheEntry {
 
 // batch is the runner's hook for each round trip of the terminal. On a hit it feeds the
 // statements their stored results and reports done; on a miss it stamps the tables the
-// statements read that are not stamped yet, before they are sent, and records their results.
+// statements read that are not stamped yet, before they are sent, and records their results. A
+// later round trip of a snapshot transaction that has begun reads the snapshot taken before any
+// stamp it could take now, so one that reads a table not stamped yet makes the result unstorable.
 func (cr *cacheRun) batch(stmts []*stmt) (bool, error) {
 	if cr.entry != nil {
 		return true, cr.replay(stmts)
 	}
 	if cr.noStore {
+		return false, nil
+	}
+	if tx := cr.run.tx; tx != nil && tx.begun && tx.snapshot() && cr.stamped < len(cr.reads.names) {
+		cr.noStore = true
 		return false, nil
 	}
 	if err := cr.stamp(); err != nil {
@@ -472,7 +494,7 @@ func (cr *cacheRun) stamp() error {
 	if cr.stamped == len(names) {
 		return nil
 	}
-	st, err := cr.c.bus.stamps(cr.ctx, cr.tenant, names[cr.stamped:])
+	st, err := cr.c.bus.stamps(cr.ctx, cr.tenant, names[cr.stamped:], cr.via)
 	if err != nil {
 		return err
 	}

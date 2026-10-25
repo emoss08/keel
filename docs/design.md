@@ -808,7 +808,12 @@ bypasses, errors, local bytes, pairs held and whether the listener is up.
   revalidate old entries.
 - **Versions in memory.** A version bus per `DB` holds the pairs the process read, in 64 locked
   shards of at most 2^20 pairs in all (evicting pairs without local writes). An unknown pair is
-  read from `keel_data_versions` in one round trip on a pool connection; a notification updates a
+  read from `keel_data_versions` in one round trip on the terminal's own connection: its
+  transaction's (begun, or about to begin with the terminal's round trip, before `BEGIN`), else the
+  pool connection the runner then sends on, so the cache never waits for a second pool connection
+  while its caller holds one (a runner on a replica reads them on a primary connection). Until the
+  table has been seen it is looked up with `to_regclass` first and never created there, so the
+  read cannot fail the caller's transaction; a missing table is version 0. A notification updates a
   pair the bus holds (and any pair while a read is in flight, so a bump during the read is not
   lost); versions take the maximum. A hit on known pairs costs no round trip.
 - **Local epochs.** `versioner.add` (every committed write of this process) bumps the epoch of its
@@ -836,10 +841,18 @@ bypasses, errors, local bytes, pairs held and whether the listener is up.
   their type map and plan cache. At most `GOMAXPROCS`, each replaced after the pool's
   `MaxConnLifetime`, so a hit never takes a pooled connection.
 - **Bypass.** A write transaction, a joined transaction, an explicit `REPEATABLE READ` or
-  `SERIALIZABLE` transaction (a hit would break its snapshot), a system scope, `Lock`, and a down
-  listener bypass. An explicit read-committed `Read` uses the cache; an implicit transaction keel
-  owns (OnBegin, pipelined loads) begins after the lookup, so it does too. A miss read on a replica
-  is not stored (the versions come from the primary).
+  `SERIALIZABLE` transaction that has begun (its snapshot is older than the current stamps), a
+  system scope, `Lock`, and a down listener bypass. An explicit read-committed `Read` uses the
+  cache. A snapshot transaction that has not begun does too: transactions begin with their first
+  statement, so a hit sends nothing and leaves it unbegun (its snapshot is taken by its first
+  statement that reaches the database, later than the hit's data), and a miss begins it in its own
+  round trip, after the stamps, and is stored. In a snapshot transaction that has begun, a later
+  round trip of a miss (a level loaded per level) that reads a table not stamped yet makes the
+  result unstorable, since its snapshot predates any stamp taken now. An implicit transaction keel
+  owns (OnBegin, pipelined loads) begins after the lookup, so it uses the cache. A miss read on a
+  replica is not stored (the versions come from the primary).
+- **Decoders and the pool.** Decoder connections are opened with `pgx.ConnectConfig`, never taken
+  from the application's pool.
 - **Stores.** A local miss reads the shared store; a shared hit is validated the same way and
   copied into the local store. Concurrent misses of one key in a process wait for the first and
   look again. Shared-store errors are misses, reported to `OnError`.

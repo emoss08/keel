@@ -522,10 +522,14 @@ open, err := s.Where(s.Status.Eq(fleet.StatusNew)).
   notification's delivery (milliseconds).
 - Entries hold the raw result Postgres sent, relation loads included, and every hit decodes it
   into new rows: callers never share structs, and `AfterLoad` hooks run on each hit.
-- The cache is bypassed inside a `Write`, inside a `Read` at `RepeatableRead` or `Serializable`
-  (it would break the snapshot), in a joined transaction, under a system scope, for a query with
-  `Lock`, and while the listener is reconnecting. A read-committed `Read` uses it. A miss read on a
-  replica is served but not stored.
+- The cache is bypassed inside a `Write`, in a joined transaction, inside a `Read` at
+  `RepeatableRead` or `Serializable` once it has sent a statement (its snapshot is taken), under a
+  system scope, for a query with `Lock`, and while the listener is reconnecting. A read-committed
+  `Read` uses it, and so does a snapshot `Read` until its first statement: a hit sends nothing and
+  the transaction begins with the first statement that reaches the database, and a miss begins it
+  and stores its result. A miss read on a replica is served but not stored.
+- Reads of versions run on the terminal's own connection (its transaction's, or the one it is
+  about to send on), so the cache never needs a second pool connection, even with a pool of one.
 - `Shared` takes any store with `Get(ctx, key) ([]byte, bool, error)` and `Set(ctx, key, value,
   ttl) error`: `keel/cache/rediscache` wraps a Redis client through the same three-method adapter
   (`Get`, `Set`, `Del`) as `keel/analytics/cache`, and the stores of `keel/analytics/cache` fit
