@@ -248,9 +248,10 @@ func parentKey(parent *schema.Table, rel *schema.Relation, parentAlias string) f
 }
 
 // pickSelect loads a pick relation for every parent key in one statement:
-// SELECT k.k, … FROM unnest($1, …) k CROSS JOIN LATERAL (…pick…) alias. When the load crosses
-// tenants the key list starts with the parents' values of the first hop's tenant columns tenant.
-func pickSelect(r *render, q *query, n *lnode, ix *parentIndex, tenant []int32) *selectPlan {
+// SELECT k.k, … FROM unnest($1, …) k CROSS JOIN LATERAL (…pick…) alias, with o's key subquery and
+// tie-break options. When the load crosses tenants the key list starts with the parents' values
+// of the first hop's tenant columns tenant.
+func pickSelect(r *render, q *query, n *lnode, ix *parentIndex, tenant []int32, o selectOpts) *selectPlan {
 	parent := n.parent.table
 	rel := &parent.Relations[n.rel]
 	keyAlias := r.newAlias("k")
@@ -260,24 +261,23 @@ func pickSelect(r *render, q *query, n *lnode, ix *parentIndex, tenant []int32) 
 		r.s(ix.keyName(i))
 	}
 	key := func(r *render, i int) { keyAt(r, len(tenant)+i) }
-	return q.renderSelect(r, n, selectOpts{
-		prefiltered: true,
-		keyColumn: func(r *render, _ string) {
-			for i := range ix.cols() {
-				if i > 0 {
-					r.s(", ")
-				}
-				keyAt(r, i)
+	o.prefiltered = true
+	o.keyColumn = func(r *render, _ string) {
+		for i := range ix.cols() {
+			if i > 0 {
+				r.s(", ")
 			}
-		},
-		from: func(r *render, alias string) {
-			ix.writeUnnest(r, keyAlias)
-			r.s(" CROSS JOIN LATERAL (")
-			r.writePick(parent, rel, q.allTenants, "", key, tenant, keyAt)
-			r.s(") ")
-			r.s(alias)
-		},
-	})
+			keyAt(r, i)
+		}
+	}
+	o.from = func(r *render, alias string) {
+		ix.writeUnnest(r, keyAlias)
+		r.s(" CROSS JOIN LATERAL (")
+		r.writePick(parent, rel, q.allTenants, "", key, tenant, keyAt)
+		r.s(") ")
+		r.s(alias)
+	}
+	return q.renderSelect(r, n, o)
 }
 
 // pickFromSubquery is the FROM item of a subquery on a pick path (Any, None, Exists, InQuery): the

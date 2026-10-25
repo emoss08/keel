@@ -196,6 +196,16 @@ type selectOpts struct {
 
 	from        func(r *render, alias string)
 	prefiltered bool
+
+	// keysOf, when set, makes the statement select only the columns keyCols of keysOf, one of its
+	// statement nodes: the parent keys a pipelined load reads in a subquery. The statement keeps
+	// its CTEs, joins, filters and keyset, and its order with its limit and offset when it has
+	// them; it drops its other columns, DISTINCT and lock, and the order of an unlimited statement.
+	keysOf  *lnode
+	keyCols []int32
+	// tieBreak are primary key columns of the statement's table appended to its order, so a
+	// limited statement selects the same rows in a pipelined load's key subquery as on its own.
+	tieBreak []int32
 }
 
 // renderSelect writes the SELECT for statement node sn and returns its decoding plan.
@@ -267,9 +277,21 @@ func (q *query) renderSelect(r *render, sn *lnode, o selectOpts) *selectPlan {
 		}
 	})
 
-	projected := !o.selectOne && !o.countOnly &&
+	projected := !o.selectOne && !o.countOnly && o.keysOf == nil &&
 		((sn.spec == q && q.projection()) || (o.exact && len(q.exprs) > 0))
 	sel := r.section(func() {
+		if o.keysOf != nil {
+			ka := r.alias(o.keysOf.ref)
+			for i, c := range o.keyCols {
+				if i > 0 {
+					r.s(", ")
+				}
+				r.s(ka)
+				r.b('.')
+				r.s(o.keysOf.table.Columns[c].Quoted)
+			}
+			return
+		}
 		if o.selectOne {
 			r.s("1")
 			return
@@ -350,6 +372,18 @@ func (q *query) renderSelect(r *render, sn *lnode, o selectOpts) *selectPlan {
 		plan.tail = len(o.tail)
 	})
 
+	limit := o.limit
+	if limit == 0 && sn.spec != nil {
+		limit = sn.spec.limit
+	}
+	if o.countOnly && o.countCap > 0 {
+		limit = o.countCap
+	}
+	offset := int64(0)
+	if sn.spec == q && !o.countOnly {
+		offset = q.offset
+	}
+
 	var group, having, windows, order []byte
 	if sn.spec == q {
 		group = r.section(func() {
@@ -367,7 +401,7 @@ func (q *query) renderSelect(r *render, sn *lnode, o selectOpts) *selectPlan {
 		having = r.section(func() { r.preds(q.having, false) })
 		windows = r.section(func() { writeWindows(r, q.windows) })
 	}
-	if !o.countOnly && sn.spec != nil {
+	if !o.countOnly && sn.spec != nil && (o.keysOf == nil || limit > 0 || offset > 0) {
 		order = r.section(func() {
 			for i, ord := range sn.spec.order {
 				if i > 0 {
@@ -378,6 +412,12 @@ func (q *query) renderSelect(r *render, sn *lnode, o selectOpts) *selectPlan {
 					continue
 				}
 				ord.writeSQL(r)
+			}
+			for _, c := range o.tieBreak {
+				r.s(", ")
+				r.s(alias)
+				r.b('.')
+				r.s(sn.table.Columns[c].Quoted)
 			}
 		})
 	}
@@ -470,22 +510,15 @@ func (q *query) renderSelect(r *render, sn *lnode, o selectOpts) *selectPlan {
 		r.s(" ORDER BY ")
 		r.buf = append(r.buf, order...)
 	}
-	limit := o.limit
-	if limit == 0 && sn.spec != nil {
-		limit = sn.spec.limit
-	}
-	if o.countOnly && o.countCap > 0 {
-		limit = o.countCap
-	}
 	if limit > 0 {
 		r.s(" LIMIT ")
 		r.int(limit)
 	}
-	if sn.spec == q && q.offset > 0 && !o.countOnly {
+	if offset > 0 {
 		r.s(" OFFSET ")
-		r.int(q.offset)
+		r.int(offset)
 	}
-	if sn.spec == q && q.lock != "" && !o.countOnly {
+	if sn.spec == q && q.lock != "" && !o.countOnly && o.keysOf == nil {
 		strength, wait, _ := strings.Cut(q.lock, "\x00")
 		r.b(' ')
 		r.s(strength)

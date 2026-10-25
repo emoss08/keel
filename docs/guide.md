@@ -120,6 +120,7 @@ the request context.
 | `Replicas` | `[]keel.ReplicaConfig` | streaming replicas (`DSN` or `Pool`, and a `Weight`) that reads marked with `keel.OnReplica` run on; see [Read replicas](#read-replicas) |
 | `MaxReplicaLag` | `time.Duration` | how far behind the primary a replica may be and still serve reads; defaults to 2s |
 | `DataVersions` | `keel.DataVersionsConfig` | `Enabled`, `Interval` (default 1s) and `OnError` of the per-tenant, per-table change counters; off by default; see [Data versions](#data-versions) |
+| `LoadStrategy` | `keel.LoadStrategy` | how relation trees load: `keel.LoadPipelined` (default, every level in the read's round trip) or `keel.LoadPerLevel`; see [One round trip](#one-round-trip) |
 | `ReadIsolation` | `keel.Isolation` | the isolation level of explicit `Read` transactions that pass none: zero leaves the server's default (read committed), `keel.RepeatableRead` gives every statement of a `Read` one snapshot; see [Isolation](#isolation) |
 | `AwaitReadCommit` | `bool` | makes read-only transactions wait for the reply to their `COMMIT`, as writes do; see [Read-only transactions end without waiting](#read-only-transactions-end-without-waiting) |
 | `DeadlineTimeouts` | `bool` | every transaction keel begins sets `statement_timeout` to the time left before its context's deadline; see [Plans and timeouts](#plans-and-timeouts) |
@@ -1806,11 +1807,12 @@ How loads run:
 
 - **Belongs-to and has-one** relations are joined into the parent's statement with `LEFT JOIN`.
   A nested to-one path (`m.Shipment().Customer()`) joins each level.
-- **Has-many and many-to-many** relations run one statement per relation per level, filtered by
-  `= ANY($1)` over the parents' keys plus the scope's tenant columns (by the tenant columns and keys
-  together when the load crosses tenants; see [Rules](#rules)). The statements of one level
-  share a round trip, so `Load(s.Customer(), s.Moves().Stops())` costs three round trips: the
-  shipments with their customers, the moves, the stops.
+- **Has-many and many-to-many** relations run one statement per relation per level, filtered on
+  the parents' keys plus the scope's tenant columns (by the tenant columns and keys together when
+  the load crosses tenants; see [Rules](#rules)). By default every level goes in the read's own
+  round trip, so `Load(s.Customer(), s.Moves().Stops())` costs one round trip for three
+  statements: the shipments with their customers, the moves, the stops (see
+  [One round trip](#one-round-trip)).
 - **Pick** relations join into a statement that reads at most two rows without an order and
   otherwise load with the level's to-many relations, one lateral statement per pick for all
   parents' keys (see [Pick relations](#pick-relations)).
@@ -1829,6 +1831,65 @@ Narrow a load by starting a query from the relation handle:
 
 A column of the related table's base handle also works inside a load:
 `m.Where(fleetdb.Moves.Loaded.IsTrue())` is the same as `m.Where(m.Loaded.IsTrue())`.
+
+### One round trip
+
+With the default strategy, `keel.LoadPipelined`, a read and its whole relation tree go to Postgres
+in one round trip. A level does not wait for its parents' keys: it selects them with a subquery
+that repeats the parent level's statement (its filters, joins, order, limit, offset and keyset),
+nested for deeper levels, and keel groups the rows under their parents as they arrive:
+
+```sql
+SELECT s."id", … FROM "shipments" s WHERE s."organization_id" = $1 AND s."business_unit_id" = $2
+  AND s."status" = $3 ORDER BY s."created_at" DESC, s."id" LIMIT 50;
+SELECT m."id", … FROM "moves" m WHERE m."organization_id" = $1 AND m."business_unit_id" = $2
+  AND m."shipment_id" IN (SELECT s."id" FROM "shipments" s WHERE s."organization_id" = $1
+  AND s."business_unit_id" = $2 AND s."status" = $3 ORDER BY s."created_at" DESC, s."id" LIMIT 50)
+  ORDER BY m."sequence" ASC;
+```
+
+Each level reads its parent level again, so every statement must see the same snapshot. keel
+pipelines only where it does:
+
+| Where the read runs | How it loads |
+|---|---|
+| outside a transaction, with or without `OnBegin` | pipelined, in an implicit `REPEATABLE READ READ ONLY` transaction whose `BEGIN` and `COMMIT` ride in the same round trip |
+| `keel.Read` or `keel.Write` with `keel.RepeatableRead` or `keel.Serializable`, or a `Read` under `Config.ReadIsolation = keel.RepeatableRead` | pipelined |
+| a `Read` or `Write` at read committed (the default) | per level |
+| a transaction joined with `JoinTx` | per level: keel cannot know its isolation |
+
+A level also loads per level when its parent level could return other rows the second time it
+runs, and only from there down to the next level that pipelines again:
+
+- the parent statement has a `Limit` or `Offset` and no `Order` (`First`, or `Limit` without
+  `Order`). With an order, keel appends the primary key columns the order lacks as a tie-break
+  (`ORDER BY s."created_at" DESC, s."id"` above), so the order is total; `One` needs no order,
+  since it fails unless the statement returned every row it matched;
+- the parent statement locks (`Lock`; `SKIP LOCKED` would skip other rows), uses `DISTINCT ON`,
+  groups, or is limited and `Distinct`;
+- the parent is a per-parent `Limit` load without an `Order`.
+
+Many-to-many loads, per-parent `Limit` loads and picks pipeline too: their key list is
+`(SELECT DISTINCT * FROM (subquery) kq) AS k(k)` in place of `unnest($1)`. Under a system scope the
+subqueries select the tenant columns with the keys (`(m."organization_id", m."business_unit_id",
+m."shipment_id") IN (SELECT s."organization_id", s."business_unit_id", s."id" FROM …)`).
+`UpdateReturning` loads per level.
+
+keel assumes a statement returns the same rows on the same snapshot. A volatile function
+(`random()`), or a `Limit` without a total order inside a CTE or an explicit lateral join, breaks
+that; give such a query `LoadStrategy(keel.LoadPerLevel)`:
+
+```go
+rows, err := s.LoadStrategy(keel.LoadPerLevel).Load(s.Moves()).List(ctx, db) // one round trip per level
+rows, err = s.Load(m.LoadStrategy(keel.LoadPerLevel).Load(m.Stops())).All(ctx, db) // a load chooses for its subtree
+```
+
+`keel.LoadPerLevel` reads each level's keys from the rows of the level before and binds them
+(`m."shipment_id" = ANY($3)`), one round trip per level, the statements of one level sharing it.
+`Config.LoadStrategy = keel.LoadPerLevel` makes it the default; `LoadStrategy(keel.LoadPipelined)`
+then opts a query in. Pipelining trades round trips for server work: each level re-runs its
+ancestors' filters as a semi-join, which an index on the foreign key and on the parent's filter
+serves; on a slow link or a deep tree the saved round trips dominate.
 
 ### Per-parent limits
 
@@ -2042,7 +2103,9 @@ How a batch runs:
   transaction on the context; else, when `Config.OnBegin` is set, in an implicit transaction whose
   `BEGIN`, `OnBegin` statements and, when no relation loads follow, `COMMIT` ride in the same round
   trip; else on one pooled connection outside a transaction.
-- The to-many relation loads of all items follow, one round trip per level for every item together.
+- The to-many relation loads of all items ride in the same round trip where they pipeline (see
+  [One round trip](#one-round-trip)); levels that load per level follow, one round trip per level
+  for every item together.
 - Each item keeps its terminal's checks: scope errors, interceptors, `AfterLoad` hooks,
   `ErrUnbounded` for a list without a `Limit`, `ErrNotFound` and `ErrNotSingular` for single-row
   items.
@@ -2786,7 +2849,9 @@ context marked with [`OnReplica`](#read-replicas). It runs in an implicit transa
 for a write on a marked context of a `DB` with replicas, which reads its commit position after
 `COMMIT`. A terminal with one statement then sends `BEGIN`, the `OnBegin` statements, the
 statement and `COMMIT` in one round trip; with relation loads, `BEGIN` goes with the first batch and
-`COMMIT` with the last.
+`COMMIT` with the last. A read whose relation loads pipeline (see [One round trip](#one-round-trip))
+runs in an implicit `REPEATABLE READ READ ONLY` transaction even without `OnBegin`, so its levels
+read one snapshot; its `BEGIN` and `COMMIT` share the round trip.
 
 ### Options
 
@@ -4022,9 +4087,10 @@ output and as a progress bar in a terminal.
 
 ### Round trips
 
-- A read is one round trip, plus one per level of to-many loads. A page and its total share one.
-- Independent reads of one request share a round trip with [`keel.Batch`](#batching-reads), and
-  their relation loads share one per level.
+- A read is one round trip, its to-many loads included (see [One round trip](#one-round-trip)),
+  plus one per level that loads per level. A page and its total share one.
+- Independent reads of one request share a round trip with [`keel.Batch`](#batching-reads), their
+  relation loads included.
 - With `OnBegin` set, a lone terminal is still one round trip: `BEGIN`, the `OnBegin` statements,
   the statement and `COMMIT` are pipelined. Across a network each saved round trip is worth its
   latency; see [benchmarks.md](benchmarks.md).

@@ -183,7 +183,8 @@ func TestPickLoadsManyParentsPerKey(t *testing.T) {
 	w := seedPicks(t, newTenant())
 	s := fleetdb.Shipments
 	rec.reset()
-	rows := must(s.Load(s.OriginStop().Location(), s.DestinationStop()).Order(s.ProNumber.Asc()).All(w.ctx, d))(t)
+	rows := must(s.Load(s.OriginStop().Location(), s.DestinationStop()).Order(s.ProNumber.Asc()).
+		LoadStrategy(keel.LoadPerLevel).All(w.ctx, d))(t)
 	eq(t, len(rows), 2)
 	eq(t, stopID(rows[0].OriginStop), w.origin.ID)
 	eq(t, rows[0].OriginStop.Location.City, "Austin")

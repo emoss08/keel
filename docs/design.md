@@ -15,8 +15,8 @@ that is wrong in the same change. [guide.md](guide.md) shows how to use keel;
 - **Little server work per statement.** Values are bind parameters, so a statement shape has one
   text; it is prepared once per connection and Postgres skips parsing and, usually, planning.
 - **One round trip where Postgres allows it.** Transactions start with their first statement, a
-  lone statement runs as one pipelined `BEGIN; …; COMMIT`, and independent statements of one read
-  share a round trip.
+  lone statement runs as one pipelined `BEGIN; …; COMMIT`, independent statements of one read
+  share a round trip, and a read's relation tree loads in the same round trip as the read.
 - **No reflection on the hot path.** `keel gen` writes field accessors for every model; rows decode
   straight from pgx's buffers into struct fields through pgx scan plans cached per connection and
   statement.
@@ -303,7 +303,7 @@ Builders are mutable and chainable; `Clone` copies one. `ToSQL` renders the main
 | `Update`, `Delete` | bulk writes over the query's filter; rows affected. A query without `Where` is refused |
 | `UpdateReturning` | a bulk update that returns the updated rows, with their loads, from one statement |
 | `keel.Into[R]`, `keel.IntoOne[R]` | projections: the picked expressions fill `R`'s exported fields in order |
-| `keel.Batch(ctx, db, items...)` | independent reads in one round trip: `ListInto`, `AllInto`, `OneInto`, `FirstInto`, `PageInto`, `CountInto`, `CountUpToInto`, `CountEstimateInto`, `ExistsInto`, `IntoSlice`, `IntoValue` each pair a query with a typed destination and keep their terminal's checks; the relation loads of all items share one round trip per level; destinations are filled only when every item succeeded. The terminals above are one-item batches |
+| `keel.Batch(ctx, db, items...)` | independent reads in one round trip: `ListInto`, `AllInto`, `OneInto`, `FirstInto`, `PageInto`, `CountInto`, `CountUpToInto`, `CountEstimateInto`, `ExistsInto`, `IntoSlice`, `IntoValue` each pair a query with a typed destination and keep their terminal's checks; the relation loads of all items share that round trip where they pipeline, and one round trip per level otherwise; destinations are filled only when every item succeeded. The terminals above are one-item batches |
 | `Explain(ctx, db, opts)` | the main statement's plan: total cost, estimated rows and EXPLAIN's JSON; with `Analyze`, actual rows and timings from `EXPLAIN (ANALYZE, BUFFERS)` run in a transaction (or savepoint) that is rolled back |
 
 ### Expressions
@@ -386,14 +386,61 @@ columns (hidden ones included) beside its result for `DynResult.CursorAt`.
 Belongs-to and has-one segments are joined into the parent's statement, and so are picks when the
 statement reads at most two rows without an order; other picks load with the level's to-many
 relations, one keyed lateral statement per pick. Has-many and many-to-many segments run one
-statement per relation per level, filtered by `= ANY($1)` over the parent keys plus the scope's
-tenant columns; statements of one level share a round trip. Under a system scope parents of several
-tenants can share a key, so a load between two tenant tables keys on (shared tenant columns,
-relation keys) in its statement, its unnested key lists and the grouping of children under parents
-(`crossTenant`); under a tenant scope the tenant columns are constants and the keys alone match. A to-many load with a
-`Limit` loads at most that many rows per parent through `unnest … CROSS JOIN LATERAL`; many-to-many
-loads take no `Limit`. On a to-one load, `Where` becomes part of the join condition, so a row that
-does not match leaves the relation nil without filtering the parent.
+statement per relation per level, filtered on the parent keys plus the scope's tenant columns.
+Under a system scope parents of several tenants can share a key, so a load between two tenant
+tables keys on (shared tenant columns, relation keys) in its statement, its key lists and the
+grouping of children under parents (`crossTenant`); under a tenant scope the tenant columns are
+constants and the keys alone match. A to-many load with a `Limit` loads at most that many rows per
+parent through `… CROSS JOIN LATERAL (… LIMIT n)`; many-to-many loads take no `Limit`. On a to-one
+load, `Where` becomes part of the join condition, so a row that does not match leaves the relation
+nil without filtering the parent. `AfterLoad` hooks run once every level is loaded, deeper levels
+first.
+
+### Load strategies
+
+`Config.LoadStrategy` (default `LoadPipelined`) and `Query.LoadStrategy` (on a query or a load,
+for its subtree; the nearest choice wins) choose how levels reach the server.
+
+- **`LoadPipelined`**: the read's statement and every level's statement go in one round trip. A
+  level's filter is a subquery over its parent level's own statement rendered again in key mode
+  (`selectOpts.keysOf`): the same CTEs, joins (the loaded to-one joins included, with their load
+  `Where`), filters, interceptors, read filters and keyset, selecting only the parent node's key
+  columns (after the shared tenant columns under a system scope, as `crossTenant` keys them), with
+  its order, limit and offset kept when it is limited and dropped otherwise, and no lock or
+  `DISTINCT`. Deeper levels nest the subqueries. A filter is `fk IN (subquery)` or
+  `(tenant…, fk…) IN (subquery)`; a `Limit` load's and a pick's key list is
+  `(SELECT DISTINCT * FROM (subquery) kq) AS k(k…)`, joined laterally as the unnested arrays are.
+  Children are grouped under parents as before: a load's scanner indexes the parent level's rows,
+  which the pipeline has already decoded, by key before it reads its own.
+- **Snapshot.** The subqueries re-read the parent level, so pipelining runs only where every
+  statement reads one snapshot (`runner.oneSnapshot`): in a transaction at `RepeatableRead` or
+  `Serializable` (`txState.level`, including `Config.ReadIsolation`), or where keel owns the
+  transaction: an implicit read-only transaction not yet begun is begun `REPEATABLE READ READ ONLY`,
+  and a read outside any transaction opens one (`runner.holdSnapshot`), whose `BEGIN` and `COMMIT`
+  ride in the round trip. A read in a `READ COMMITTED` transaction, a `Write` at the default level,
+  and a `JoinTx` transaction (whose level keel cannot know) load per level. A replica guard failure
+  re-runs the round trip on the primary with the same options.
+- **Stable parents.** A level pipelines only when its parent level's statement selects the same
+  rows every time it runs on that snapshot (`query.stableRows`, `stableOrder`). Without a limit or
+  offset it does. With one it does when its order is non-empty: keel appends the primary key
+  columns the order lacks (`selectOpts.tieBreak`; under a tenant scope the key's tenant columns are
+  constants and are not appended) to the statement and to its key subquery; or when the read fails
+  unless it returned every matching row (`One`, limited to two rows). It does not with a limit or
+  offset and no order (`First` or `Limit` without `Order`), a lock (`SKIP LOCKED` skips rows a
+  second read may not), `DISTINCT ON`, `GROUP BY`/`HAVING`, a limited `DISTINCT`, or a per-parent
+  `Limit` load without an order. Such a level's children load per level after the round trip, and
+  the children of that per-level statement pipeline again below it (its keys bound as arrays, its
+  descendants filtered by subqueries over it), so each unstable boundary costs one round trip.
+  Statements are assumed deterministic otherwise: a volatile function or an unordered limit inside
+  a CTE or an explicit lateral join can make a subquery select other rows; such queries say
+  `LoadPerLevel`.
+- Many-to-many loads pipeline with the same key tuple they bind per level (target tenant columns,
+  join table key), and picks and per-parent `Limit` loads take the distinct key subquery in place of
+  `unnest`; all of them can parent further pipelined levels. `UpdateReturning` loads per level: its
+  parent statement is the update.
+- **`LoadPerLevel`**: one round trip per level, each filtered by `= ANY($1)` (or
+  `(cols) IN (SELECT * FROM unnest($1, …))`) over the keys read back from the level before;
+  statements of one level share a round trip.
 
 ## Dynamic queries
 

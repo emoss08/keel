@@ -150,7 +150,7 @@ func TestBatchLoadsRelations(t *testing.T) {
 		keel.CountInto(s.Query(), &n),
 	))
 	eq(t, rec.statements(), 7)
-	eq(t, rec.trips(), 3)
+	eq(t, rec.trips(), 1)
 
 	eq(t, len(ships), 3)
 	eq(t, ships[0].Customer.Code, "C0")

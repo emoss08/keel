@@ -31,7 +31,7 @@ page, err := s.
   lone statement that needs a transaction (for example a row-level security `set_config`) runs as one
   pipelined `BEGIN; …; COMMIT`; a page and its total count share a round trip, as do the
   independent reads of a `keel.Batch`; to-one relations are joined and to-many relations load one
-  statement per level.
+  statement per level, every level in the read's own round trip.
 - **Tenancy by construction.** The tenant comes from the context and is applied to every statement
   on a tenant table: reads, joins, relation loads, subqueries, updates, deletes and inserts. A
   statement without a scope fails; crossing tenants needs a system scope and an explicit
@@ -214,7 +214,8 @@ rows, err := s.Where(
 ### Relations and loads
 
 To-one paths join; to-many paths filter with `Any` and `None` and load one statement per level, with
-optional per-parent limits.
+optional per-parent limits, all in the read's round trip: each level selects its parents' keys
+with a subquery over the parent level's statement.
 
 ```go
 m := s.Moves()
