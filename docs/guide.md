@@ -1722,6 +1722,13 @@ transaction that is rolled back: an implicit read-only one with the `OnBegin` st
 when the context carries a transaction, a savepoint rolled back to in the same round trip, so the
 statement sees the transaction's own writes and a failure leaves the transaction usable.
 
+`GenericPlan` runs `EXPLAIN (GENERIC_PLAN)` (PostgreSQL 16) with the parameters left unbound: the
+plan a prepared statement settles on after its first runs, which cannot use a value to reach a
+partial index or an expression index. A predicate that needs `DynConst` to reach its index shows
+here as the scan it really gets. `plan.Indexes()` and `plan.SeqScans()` list the indexes the plan
+reads and the tables it scans sequentially; [`keeltest.UsesIndex`](#testing-an-application) asserts
+on them.
+
 ## Loading relations
 
 `Load` takes relation paths and fills the relation fields of the returned rows:
@@ -3882,7 +3889,13 @@ The same pattern works for an application:
   `t.Parallel()` against one database.
 - Test system jobs with a system scope, and assert scope errors with `errors.Is`.
 - Assert SQL with `ToSQL` on a `DB` that never connects, and assert round trips with a recording
-  observer.
+  observer. `keeltest.Snapshot(t, sql, args)` compares a rendered statement, formatted by clause
+  with its values listed, with `testdata/keel/<test name>.sql`; `KEEL_UPDATE=1 go test` (or the
+  test binary's own `-update` flag) writes the snapshots, so a change in how keel renders is one
+  reviewed diff of snapshots instead of edits to string assertions.
+- Assert that an index serves a query with `keeltest.UsesIndex(t, ctx, db, q, "idx_name")`: it
+  explains the generic plan with sequential scans switched off, so neither a small test table nor a
+  value that only a custom plan sees can hide a query no index serves.
 - To exercise `Retry`, return `&pgconn.PgError{Code: "40001"}` from the transaction function.
 
 ### Verifying the schema

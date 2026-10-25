@@ -42,6 +42,12 @@ func Inline(sql string, values []any, maxValue, maxElems int) string {
 
 var timeType = reflect.TypeFor[time.Time]()
 
+// Literal writes v as the SQL literal Inline writes for it, cutting a string longer than maxValue
+// characters and a slice longer than maxElems elements.
+func Literal(v any, maxValue, maxElems int) string {
+	return literal(v, maxValue, maxElems)
+}
+
 func literal(v any, maxValue, maxElems int) string {
 	if v == nil {
 		return "NULL"

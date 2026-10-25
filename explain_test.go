@@ -3,12 +3,14 @@ package keel_test
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/emoss08/keel"
 	"github.com/emoss08/keel/internal/testmodels/fleet"
 	"github.com/emoss08/keel/internal/testmodels/fleet/fleetdb"
+	"github.com/emoss08/keel/keeltest"
 )
 
 func TestExplain(t *testing.T) {
@@ -88,4 +90,39 @@ func TestExplain(t *testing.T) {
 	})
 	p = must(typed.Explain(w.ctx, hooked, keel.ExplainOptions{Analyze: true}))(t)
 	eq(t, p.ActualRows, 5.0)
+}
+
+func TestExplainGenericPlanShowsTheIndexAParameterCannotReach(t *testing.T) {
+	d := db(t)
+	ctx := newTenant()
+	b := fleetdb.Badges
+	byParam := b.Pick(b.ID).Where(b.Color.Eq("gold"))
+	byConst := b.Pick(b.ID).Where(keel.DynOf(b.Color).Eq(keel.DynConst("gold")))
+
+	ok(t, keel.Read(ctx, d, func(ctx context.Context) error {
+		custom := must(byParam.Explain(ctx, d, keel.ExplainOptions{}))(t)
+		generic := must(byParam.Explain(ctx, d, keel.ExplainOptions{GenericPlan: true}))(t)
+		constant := must(byConst.Explain(ctx, d, keel.ExplainOptions{GenericPlan: true}))(t)
+		if !slices.Contains(custom.Indexes(), "uq_badges_one_gold") {
+			t.Errorf("the bound value reaches the partial index in a custom plan: %s", custom.JSON)
+		}
+		if slices.Contains(generic.Indexes(), "uq_badges_one_gold") {
+			t.Errorf("the generic plan of a parameter reaches the partial index: %s", generic.JSON)
+		}
+		if !slices.Contains(constant.Indexes(), "uq_badges_one_gold") || len(constant.SeqScans()) > 0 {
+			t.Errorf("the constant reaches the partial index: %s", constant.JSON)
+		}
+		return nil
+	}, keel.Setting("enable_seqscan", "off")))
+
+	keeltest.UsesIndex(t, ctx, d, byConst, "uq_badges_one_gold")
+	keeltest.UsesIndex(t, ctx, d, fleetdb.Shipments.Where(fleetdb.Shipments.Status.Eq(fleet.StatusNew)), "idx_shipments_status")
+
+	if _, err := byParam.Explain(ctx, d, keel.ExplainOptions{GenericPlan: true, Analyze: true}); err == nil {
+		t.Fatal("analyzed a generic plan")
+	}
+	p := must(byParam.Explain(ctx, d, keel.ExplainOptions{GenericPlan: true}))(t)
+	if len(p.SeqScans()) == 0 && len(p.Indexes()) == 0 {
+		t.Fatalf("a plan outside a transaction: %s", p.JSON)
+	}
 }
