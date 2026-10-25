@@ -89,3 +89,35 @@ func TestUpsertFromUpdatesConflictingRowsAndInsertsTheRest(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+
+func TestUpdateWhereCapsAConflictingRow(t *testing.T) {
+	d := db(t)
+	ctx := newTenant()
+	c := fleetdb.Contacts
+	reserve := func() int64 {
+		t.Helper()
+		src := keel.Rows("src", []string{"id", "name", "score"},
+			keel.DynLit("con_capped"), keel.DynLit("capped"), keel.DynLit(1))
+		return must(c.UpsertFrom(ctx, d, src,
+			keel.OnConflict(c.OrganizationID, c.BusinessUnitID, c.Name).
+				Set(c.Score.Add(1)).
+				UpdateWhere(c.Score.Lt(3)),
+			c.ID, c.Name, c.Score))(t)
+	}
+	eq(t, reserve(), int64(1))
+	eq(t, reserve(), int64(1))
+	eq(t, reserve(), int64(1))
+	eq(t, reserve(), int64(0))
+	eq(t, must(c.Where(c.Name.Eq("capped")).One(ctx, d))(t).Score, int64(3))
+
+	_, err := c.Upsert(ctx, d, []*fleet.Contact{{Name: "capped"}},
+		keel.OnConflict(c.OrganizationID, c.BusinessUnitID, c.Name).UpdateWhere(c.Score.Lt(3)))
+	if err == nil || !strings.Contains(err.Error(), "use UpsertFrom") {
+		t.Fatalf("Upsert took UpdateWhere: %v", err)
+	}
+	_, err = c.UpsertFrom(ctx, d, c.Pick(c.ID, c.Name),
+		keel.OnConflict(c.Name).DoNothing().UpdateWhere(c.Score.Lt(3)), c.ID, c.Name)
+	if err == nil || !strings.Contains(err.Error(), "DoNothing and UpdateWhere") {
+		t.Fatalf("DoNothing took UpdateWhere: %v", err)
+	}
+}

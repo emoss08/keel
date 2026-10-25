@@ -43,7 +43,7 @@ func (s *RowsTable) writeSubquery(r *render, _ bool) {
 		if i > 0 {
 			r.s(", ")
 		}
-		e.writeSQL(r)
+		writeOutput(r, e)
 		r.s(" AS ")
 		r.s(schema.Quote(cols[i].Name))
 	}

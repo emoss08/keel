@@ -59,12 +59,13 @@ func (h Handle[T]) DeleteRow(ctx context.Context, db *DB, row *T) error {
 
 // Conflict is the ON CONFLICT clause of an upsert. Its methods return a changed copy.
 type Conflict struct {
-	targets []Expr
-	where   []Pred
-	update  []Col
-	set     []Assignment
-	nothing bool
-	stamp   any
+	targets     []Expr
+	where       []Pred
+	update      []Col
+	set         []Assignment
+	updateWhere []Pred
+	nothing     bool
+	stamp       any
 }
 
 // OnConflict names what an upsert conflicts on, as a unique index declares it: columns of the
@@ -127,6 +128,19 @@ func (c *Conflict) forInsertFrom(ref *Ref, listed []int32, now time.Time) ([]int
 	return c.check(ref)
 }
 
+// UpdateWhere updates a conflicting row only when ps hold: ON CONFLICT … DO UPDATE SET … WHERE ….
+// The table's columns read the stored row and a column's Excluded the proposed row; values bind as
+// anywhere else. A row the condition rejects is neither inserted nor updated, so UpsertFrom does
+// not count it, which makes a capped counter one statement:
+//
+//	keel.OnConflict(u.Day).Set(u.Requests.Add(1)).UpdateWhere(u.Requests.Lt(limit))
+//
+// Upsert refuses it, since it reports every row as inserted or updated.
+func (c Conflict) UpdateWhere(ps ...Pred) Conflict {
+	c.updateWhere = append(slices.Clip(c.updateWhere), ps...)
+	return c
+}
+
 // DoNothing skips a conflicting row instead of updating it: ON CONFLICT … DO NOTHING.
 func (c Conflict) DoNothing() Conflict {
 	c.nothing = true
@@ -153,6 +167,9 @@ func (c *Conflict) check(ref *Ref) ([]int32, error) {
 		}
 	}
 	if c.nothing {
+		if hasPreds(c.updateWhere) {
+			return nil, errf("OnConflict cannot both DoNothing and UpdateWhere")
+		}
 		return nil, nil
 	}
 	var changed []int32
@@ -248,6 +265,10 @@ func (c *Conflict) write(r *render, ref *Ref, changed []int32) {
 		r.b('.')
 		r.s(q)
 		r.s(" + 1")
+	}
+	if hasPreds(c.updateWhere) {
+		r.s(" WHERE ")
+		r.preds(c.updateWhere, false)
 	}
 }
 
@@ -696,6 +717,9 @@ func rowKey(t *schema.Table, row unsafe.Pointer) string {
 
 func (db *DB) upsert(ctx context.Context, ref *Ref, rows []unsafe.Pointer, c Conflict) ([]bool, error) {
 	t := ref.Table
+	if hasPreds(c.updateWhere) {
+		return nil, errf("Upsert cannot take UpdateWhere: a row it rejects is neither inserted nor updated; use UpsertFrom")
+	}
 	changed, err := c.check(ref)
 	if err != nil {
 		return nil, err

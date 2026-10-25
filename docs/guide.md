@@ -2598,6 +2598,23 @@ n, err := d.UpsertFrom(ctx, db,
     d.Provider, d.Endpoint, d.Calls, d.Units)
 ```
 
+`Conflict.UpdateWhere(ps...)` updates a conflicting row only when `ps` hold (`DO UPDATE SET … WHERE
+…`; the table's columns read the stored row, `Excluded` the proposed one). A row it rejects is
+neither inserted nor updated, so `UpsertFrom` does not count it: a capped counter is one statement.
+A `keel.Rows` of values is a one-row source; its literals take the types of their Go values.
+`Upsert` refuses `UpdateWhere`, since it reports every row as inserted or updated.
+
+```go
+src := keel.Rows("req", []string{"extension_type", "day", "requests"},
+    keel.DynLit(kind), keel.DynLit(day), keel.DynLit(1))
+reserved, err := u.UpsertFrom(ctx, db, src,
+    keel.OnConflict(u.OrganizationID, u.BusinessUnitID, u.ExtensionType, u.Day).
+        Set(u.Requests.Add(1)).
+        UpdateWhere(u.Requests.Lt(limit)),
+    u.ExtensionType, u.Day, u.Requests)
+// reserved == 0: the day's cap is reached
+```
+
 ### What is read back
 
 After a write keel reads back only what Postgres may have changed: `readonly` columns, and the
