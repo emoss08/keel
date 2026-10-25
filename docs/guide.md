@@ -859,7 +859,7 @@ go run github.com/emoss08/keel/cmd/keel gen ./internal/...
 |---|---|---|
 | `-out` | `{dir}/{name}db` | directory of each generated package, relative to the module root. `{dir}` is the model package's directory relative to the module root, `{name}` its package name |
 | `-kinds` | `keelkinds` | directory, relative to the module root, of the shared package that holds column types for named types declared outside model packages |
-| `-tables` | `keeltables` | directory, relative to the module root, of the package whose `All()` lists every generated table in name order, for code that works over all of them: `keel.NewRegistry(keeltables.All()...)`, `analytics.Build`, `analyticscli.Config.Tables` |
+| `-tables` | `keeltables` | directory, relative to the module root, of the package whose `All()` lists every generated table in name order, for code that works over all of them: `keel.NewRegistry(keeltables.All()...)`, `analytics.Build`, `analyticscli.Config.Tables`; and whose `Catalog()` finds a table by name (`Table`) or by model (`Model`, false when two packages share the model name) |
 | `-tags` | none | comma-separated build tags used to load the packages |
 | `-check` | `false` | fail, listing the stale files, when generated files are out of date, instead of writing them |
 | `-acronyms` | `ID,URL,API,JSON,UUID` | comma-separated words that labels write in capitals (`PRO,BOL,SCAC,DOT,MC,ID,URL`); replaces the default list |

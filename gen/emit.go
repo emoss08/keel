@@ -509,6 +509,11 @@ func (e *emitter) emitTables(outPath, outName string) ([]byte, error) {
 		fmt.Fprintf(&body, "\t\t%s,\n", en.call)
 	}
 	body.WriteString("\t}\n}\n")
+	syncPkg := im.add("sync", "sync")
+	fmt.Fprintf(&body, "\nvar catalog = %s.OnceValue(func() *%s.Catalog { return %s.NewCatalog(All()) })\n",
+		syncPkg, sch, sch)
+	body.WriteString("\n// Catalog returns every table keel gen generated, found by table name and by model name.\n")
+	fmt.Fprintf(&body, "func Catalog() *%s.Catalog { return catalog() }\n", sch)
 	return finish(outName, im, body.Bytes())
 }
 

@@ -3,6 +3,8 @@
 package keeltables
 
 import (
+	"sync"
+
 	"github.com/emoss08/keel/internal/testmodels/fleet/fleetdb"
 	"github.com/emoss08/keel/internal/testmodels/geo/geodb"
 	"github.com/emoss08/keel/schema"
@@ -29,3 +31,8 @@ func All() []*schema.Table {
 		fleetdb.WorkersSchema(),
 	}
 }
+
+var catalog = sync.OnceValue(func() *schema.Catalog { return schema.NewCatalog(All()) })
+
+// Catalog returns every table keel gen generated, found by table name and by model name.
+func Catalog() *schema.Catalog { return catalog() }
