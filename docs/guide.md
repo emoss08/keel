@@ -2478,8 +2478,10 @@ expressions, and the result's columns take the first part's labels. A query used
 exactly up to `exactUpTo` and returns the planner's estimate above it, as the typed one does (the
 count wraps the query, so its `Limit` bounds both); `Exists` reports whether there is any
 (`SELECT EXISTS (query)`, which stops at the first row: the check behind a "does this filter match
-anything" answer, without reading a row or counting); `Page` reads a keyset page; `Stream` yields
-batches; `DynInto`, `DynCountInto`, `DynCountEstimateInto`, `DynExistsInto` and `DynPageInto` are `Batch` items, so a
+anything" answer, without reading a row or counting); `Page` reads a keyset page, and with
+`keel.After(cursor, n).Total(limit)` (and `.Estimate()`) sets the result's `Total` and
+`TotalExact` as the typed `Page` does, in the same round trip; `Stream` yields batches; `DynInto`,
+`DynCountInto`, `DynCountEstimateInto`, `DynExistsInto` and `DynPageInto` are `Batch` items, so a
 report, its row count and the values of a dynamic pivot share one round trip. Every terminal
 applies the query's scope, tenant predicates and interceptors.
 

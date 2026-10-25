@@ -191,6 +191,41 @@ func TestDynamicCountEstimate(t *testing.T) {
 	}
 }
 
+func TestDynamicPageTotal(t *testing.T) {
+	rec := &recorder{}
+	d := openDB(t, func(cfg *keel.Config) { cfg.Observers = []keel.Observer{rec} })
+	w := seed(t, 9)
+	reg := registry(t)
+	build := func() *keel.DynQuery {
+		q := reg.Query("shipments")
+		return q.Select(q.Path("pro_number")).Order(q.Path("pro_number").Asc())
+	}
+
+	plain := must(build().Page(w.ctx, d, keel.After("", 2)))(t)
+	eq(t, plain.Total, int64(0))
+
+	rec.reset()
+	exact := must(build().Page(w.ctx, d, keel.After("", 2).Total(100)))(t)
+	eq(t, exact.Rows, 2)
+	eq(t, exact.Total, int64(9))
+	eq(t, exact.TotalExact, true)
+	eq(t, rec.statements(), 2)
+	eq(t, rec.trips(), 1)
+
+	capped := must(build().Page(w.ctx, d, keel.After("", 2).Total(4)))(t)
+	eq(t, capped.Total, int64(4))
+	eq(t, capped.TotalExact, false)
+
+	rec.reset()
+	est := must(build().Page(w.ctx, d, keel.After("", 2).Total(4).Estimate()))(t)
+	inexact(t, keel.RowCount{N: est.Total, Exact: est.TotalExact}, 4)
+	eq(t, rec.statements(), 3)
+	eq(t, rec.trips(), 1)
+
+	next := must(build().Page(w.ctx, d, keel.After(exact.Next, 2).Total(100)))(t)
+	eq(t, next.Total, int64(9))
+}
+
 func ExampleQuery_CountEstimate() {
 	ctx, db := requestContext(), appDB
 	s := fleetdb.Shipments

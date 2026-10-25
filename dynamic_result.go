@@ -239,11 +239,14 @@ func clipTo[V any](s []V, n int) []V {
 
 // DynResult is the typed columnar result of a dynamic query: one DynColumn per selected
 // expression, in order, and the number of rows. Next is the cursor of the following page after
-// Page, empty on the last page.
+// Page, empty on the last page. Total and TotalExact are the query's row count when the page
+// request asked for it, as on Page.
 type DynResult struct {
-	Columns []DynColumn
-	Rows    int
-	Next    string
+	Columns    []DynColumn
+	Rows       int
+	Next       string
+	Total      int64
+	TotalExact bool
 
 	arena dynArena
 	keys  []DynColumn
@@ -826,7 +829,9 @@ func DynExistsInto(q *DynQuery, dst *bool) BatchItem {
 	}}
 }
 
-// DynPageInto reads one keyset page of the dynamic query into dst, as Page does.
+// DynPageInto reads one keyset page of the dynamic query into dst, as Page does. A request with
+// Total also counts the query's rows, and with Estimate reads the planner's estimate past the
+// limit, in the same round trip.
 func DynPageInto(q *DynQuery, p PageRequest, dst **DynResult) BatchItem {
 	if dst == nil {
 		return noDestination("DynPageInto")
@@ -846,7 +851,28 @@ func DynPageInto(q *DynQuery, p PageRequest, dst **DynResult) BatchItem {
 		rdr := &dynReader{db: run.db, labels: labels, hint: p.size + 1}
 		var res *DynResult
 		rd := &read{stmts: []*stmt{s}, timeout: q.q.timeout}
-		rd.finish = func() { *dst = res }
+		var est *estimate
+		if p.total > 0 {
+			est = &estimate{upTo: p.total}
+			counts, err := q.estimateStmts(ctx, run, est)
+			if err != nil {
+				return nil, err
+			}
+			if !p.estimate {
+				counts = counts[:1]
+			}
+			rd.stmts = append(rd.stmts, counts...)
+		}
+		rd.finish = func() {
+			if est != nil && res != nil {
+				c := est.count()
+				if !p.estimate && !c.Exact {
+					c.N = p.total
+				}
+				res.Total, res.TotalExact = c.N, c.Exact
+			}
+			*dst = res
+		}
 		s.scan = func(rows pgx.Rows) error {
 			if err := rdr.start(rows); err != nil {
 				return err
