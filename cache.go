@@ -83,6 +83,9 @@ func (q *Query[T]) Cache(opts ...CacheOption) *Query[T] {
 	return q
 }
 
+// Cache starts a query served from the result cache; see Query.Cache.
+func (h Handle[T]) Cache(opts ...CacheOption) *Query[T] { return h.Query().Cache(opts...) }
+
 // cacheTTL returns how long the query's result may be cached: zero when it does not ask, -1 when
 // it asks but cannot be (a Lock). The tables named with AlsoReads join ctx's read set.
 func (q *query) cacheTTL(ctx context.Context) time.Duration {
