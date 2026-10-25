@@ -93,6 +93,19 @@ func TestSortsUnderLimit(t *testing.T) {
 	}
 }
 
+func TestRelations(t *testing.T) {
+	sorts := fixture(t, "page_sorted").SortsUnderLimit()
+	if len(sorts) != 1 || !slices.Equal(sorts[0].Relations(), []Relation{{"public", "big"}}) {
+		t.Fatalf("sorts %+v", sorts)
+	}
+	if got := fixture(t, "joins").Relations(); !slices.Equal(got, []Relation{{"public", "settings"}, {"tms", "stops"}}) {
+		t.Fatalf("relations %v", got)
+	}
+	if rel, rows := largest(nil, nil); rel != (Relation{}) || rows != 0 {
+		t.Fatalf("largest of none: %v %v", rel, rows)
+	}
+}
+
 func TestCheck(t *testing.T) {
 	tuples := map[Relation]float64{
 		{"public", "big"}:      20000,
@@ -118,12 +131,15 @@ func TestCheck(t *testing.T) {
 	}{
 		{"page_sorted", Rules{SeqScanRows: 10000}, "seq-scan:public.big"},
 		{"page_sorted", Rules{SeqScanRows: 20000}, ""},
-		{"page_sorted", Rules{SeqScanRows: 10000, SortLimit: true}, "seq-scan:public.big sort-under-limit"},
+		{"page_sorted", Rules{SeqScanRows: 10000, SortLimit: true}, "seq-scan:public.big sort-under-limit:public.big"},
+		{"page_sorted", Rules{SeqScanRows: 20000, SortLimit: true}, ""},
+		{"page_sorted", Rules{SeqScanRows: -1, SortLimit: true}, "seq-scan:public.big sort-under-limit:public.big"},
 		{"page_sorted", Rules{SeqScanRows: 1e9, MaxCost: 1000}, "cost"},
 		{"page_sorted", Rules{SeqScanRows: 1e9, MaxCost: 2000}, ""},
 		{"index_scan", Rules{SeqScanRows: -1, MaxCost: 1, SortLimit: true}, "cost"},
 		{"index_scan", Rules{SeqScanRows: -1, SortLimit: true}, ""},
-		{"parallel_page", Rules{SeqScanRows: 10000, SortLimit: true}, "seq-scan:tms.shipments sort-under-limit"},
+		{"parallel_page", Rules{SeqScanRows: 10000, SortLimit: true}, "seq-scan:tms.shipments sort-under-limit:tms.shipments"},
+		{"parallel_page", Rules{SeqScanRows: 2e6, SortLimit: true}, ""},
 		{"incremental", Rules{SeqScanRows: -1, SortLimit: true}, ""},
 		{"joins", Rules{SeqScanRows: 10000}, "seq-scan:tms.stops"},
 		{"joins", Rules{SeqScanRows: -1}, "seq-scan:public.settings seq-scan:tms.stops"},
@@ -139,7 +155,7 @@ func TestCheck(t *testing.T) {
 	want := []string{
 		"sequential scan of public.big (about 20,000 rows)",
 		"total cost 1580.85 over 1000",
-		"sort by big.name under a limit: the page is sorted in full, no index gives its order",
+		"sort by big.name under a limit over public.big (about 20,000 rows): the page is sorted in full, no index gives its order",
 	}
 	if len(fs) != len(want) {
 		t.Fatalf("findings %+v", fs)
@@ -149,11 +165,12 @@ func TestCheck(t *testing.T) {
 			t.Errorf("finding %d: %q, want %q", i, f.Detail, want[i])
 		}
 	}
-	if fs[0].Rows != 20000 || fs[1].Cost != 1580.85 || !slices.Equal(fs[2].SortKey, []string{"big.name"}) {
+	if fs[0].Rows != 20000 || fs[1].Cost != 1580.85 || !slices.Equal(fs[2].SortKey, []string{"big.name"}) ||
+		fs[2].Relation != "public.big" || fs[2].Rows != 20000 {
 		t.Fatalf("finding fields %+v", fs)
 	}
 
-	unknown := Check(fixture(t, "page_sorted"), Rules{SeqScanRows: 0}, nil)
+	unknown := Check(fixture(t, "page_sorted"), Rules{SeqScanRows: 0, SortLimit: true}, nil)
 	if len(unknown) != 0 {
 		t.Fatalf("a relation of unknown size counted as non-empty: %+v", unknown)
 	}

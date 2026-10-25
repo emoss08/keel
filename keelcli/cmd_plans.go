@@ -26,7 +26,7 @@ func setupPlans(fs *flag.FlagSet) runner {
 	path := fs.String("shapes", "", "JSON lines `file` of statement shapes, as keel.RecordShapesFile writes it; - reads stdin")
 	seqRows := fs.Float64("seq-scan-rows", 10000, "flag sequential scans of relations with more than `rows` rows (pg_class.reltuples); -1 flags every one")
 	maxCost := fs.Float64("max-cost", 0, "flag plans whose total cost exceeds `cost`; 0 checks no cost")
-	sortLimit := fs.Bool("sort-limit", false, "flag a Sort under a Limit: a page sorted without an index")
+	sortLimit := fs.Bool("sort-limit", false, "flag a Sort under a Limit over a relation with more than -seq-scan-rows rows: a page sorted without an index")
 	return func(ctx context.Context, s *session, args []string) error {
 		if err := noArgs("plans", args); err != nil {
 			return err

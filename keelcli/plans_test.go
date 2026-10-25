@@ -70,7 +70,10 @@ func TestPlansCommand(t *testing.T) {
 	r.lacks(t, "sort-under-limit", "SELECT id, name FROM big WHERE id = $1", "UPDATE big")
 
 	s.run(t, "plans", "-plain", "-sort-limit", "-shapes", all).expect(t, ExitProblems,
-		"sort-under-limit sort by big.name under a limit", "3 findings in 2 of 5 shapes planned")
+		"sort-under-limit sort by big.name under a limit over public.big (about 20,000 rows)",
+		"3 findings in 2 of 5 shapes planned")
+	s.run(t, "plans", "-plain", "-sort-limit", "-seq-scan-rows", "50000", "-shapes", all).
+		expect(t, ExitOK, "No findings: 5 shapes planned")
 	s.run(t, "plans", "-plain", "-seq-scan-rows", "50000", "-shapes", all).
 		expect(t, ExitOK, "No findings: 5 shapes planned; 1 shape could not be planned.")
 	s.run(t, "plans", "-plain", "-seq-scan-rows", "50000", "-max-cost", "0.01", "-shapes", clean).

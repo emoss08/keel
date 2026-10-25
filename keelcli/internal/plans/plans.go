@@ -29,7 +29,9 @@ type Rules struct {
 	SeqScanRows float64
 	// MaxCost flags a plan whose total cost exceeds it; 0 or less checks no cost.
 	MaxCost float64
-	// SortLimit flags a Sort under a Limit: a page sorted in full because no index gives its order.
+	// SortLimit flags a Sort under a Limit, a page sorted in full because no index gives its order,
+	// when the largest relation the sort reads has more rows than SeqScanRows: a sort of a small
+	// reference table is a correct plan.
 	SortLimit bool
 }
 
@@ -167,6 +169,34 @@ func sortsBelow(n Node) []Node {
 // sortedInFull explains a sort-under-limit finding.
 const sortedInFull = ": the page is sorted in full, no index gives its order"
 
+// Relations returns every relation a scan at or below n reads, in plan order, each once.
+func (n Node) Relations() []Relation {
+	var out []Relation
+	n.walk(func(x Node) {
+		if x.Relation == "" {
+			return
+		}
+		r := Relation{Schema: x.Schema, Name: x.Relation}
+		if !slices.Contains(out, r) {
+			out = append(out, r)
+		}
+	})
+	return out
+}
+
+// largest returns the relation of rels with the most rows in tuples and its count, never
+// negative; the zero Relation and 0 when rels is empty.
+func largest(rels []Relation, tuples map[Relation]float64) (Relation, float64) {
+	var top Relation
+	rows := -1.0
+	for _, r := range rels {
+		if n := max(tuples[r], 0); n > rows {
+			top, rows = r, n
+		}
+	}
+	return top, max(rows, 0)
+}
+
 // Check returns the rules root breaks. tuples holds each relation's reltuples; a relation
 // missing from it, or with a negative count (never analyzed), counts as empty.
 func Check(root Node, rules Rules, tuples map[Relation]float64) []Finding {
@@ -185,11 +215,19 @@ func Check(root Node, rules Rules, tuples map[Relation]float64) []Finding {
 	}
 	if rules.SortLimit {
 		for _, s := range root.SortsUnderLimit() {
-			detail := "sort under a limit" + sortedInFull
-			if len(s.SortKey) > 0 {
-				detail = "sort by " + strings.Join(s.SortKey, ", ") + " under a limit" + sortedInFull
+			rel, rows := largest(s.Relations(), tuples)
+			if rows <= rules.SeqScanRows {
+				continue
 			}
-			out = append(out, Finding{Kind: SortUnderLimit, SortKey: s.SortKey, Detail: detail})
+			detail := "sort under a limit"
+			if len(s.SortKey) > 0 {
+				detail = "sort by " + strings.Join(s.SortKey, ", ") + " under a limit"
+			}
+			if rel.Name != "" {
+				detail += fmt.Sprintf(" over %s (about %s rows)", rel, formatCount(rows))
+			}
+			out = append(out, Finding{Kind: SortUnderLimit, Relation: rel.String(), Rows: rows, SortKey: s.SortKey,
+				Detail: detail + sortedInFull})
 		}
 	}
 	return out
@@ -308,7 +346,8 @@ func identByte(c byte) bool {
 // Run explains every shape on conn, outside transactions, and checks each plan against rules. A
 // shape EXPLAIN cannot plan gets a report with its error; a server older than PostgreSQL 16, a
 // lost connection or a canceled context ends the run with an error. The reltuples of every
-// relation scanned sequentially are read in one statement after the plans.
+// relation scanned sequentially, or read under a sort under a limit, are read in one statement
+// after the plans.
 func Run(ctx context.Context, conn *pgx.Conn, shapes []keel.Shape, rules Rules) ([]Report, error) {
 	if err := checkVersion(ctx, conn); err != nil {
 		return nil, err
@@ -333,7 +372,13 @@ func Run(ctx context.Context, conn *pgx.Conn, shapes []keel.Shape, rules Rules) 
 		}
 		roots[i] = &root
 		reports[i].Cost, reports[i].Rows = root.TotalCost, root.PlanRows
-		for _, r := range root.SeqScans() {
+		measured := root.SeqScans()
+		if rules.SortLimit {
+			for _, sn := range root.SortsUnderLimit() {
+				measured = append(measured, sn.Relations()...)
+			}
+		}
+		for _, r := range measured {
 			if !slices.Contains(scanned, r) {
 				scanned = append(scanned, r)
 			}

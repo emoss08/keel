@@ -4475,7 +4475,7 @@ findings select shipments (cost 48213.50, 1,204 rows)
   seq-scan sequential scan of public.shipments (about 2,400,000 rows)
 findings select stops (cost 912.40, 25 rows)
   SELECT st.id FROM stops st WHERE st.organization_id = $1 ORDER BY st.planned_at LIMIT $2
-  sort-under-limit sort by st.planned_at under a limit: the page is sorted in full, no index gives its order
+  sort-under-limit sort by st.planned_at under a limit over public.stops (about 380,000 rows): the page is sorted in full, no index gives its order
 unplanned select tmp_import
   SELECT id FROM tmp_import WHERE batch = $1
   relation "tmp_import" does not exist (SQLSTATE 42P01)
@@ -4500,7 +4500,10 @@ keelcli: plans found 2 findings
   sequential scan. `-max-cost C` flags a plan whose total cost exceeds C (default 0: no limit).
   `-sort-limit` flags a `Sort` under a `Limit`, directly or through `Gather Merge`, `Subquery
   Scan`, `Unique`, `Materialize`, `Result` or `Merge Append`: a page sorted in full because no
-  index gives its order. An `Incremental Sort` passes.
+  index gives its order. It uses the same threshold: the sort is flagged only when the largest
+  relation it reads (by any scan, index scans included) has more than `-seq-scan-rows` rows, so a
+  settings or reference table sorted under a limit passes, and `-seq-scan-rows -1` flags every
+  sort under a limit. An `Incremental Sort` passes.
 - A shape EXPLAIN cannot plan (a temporary table, a parameter whose type Postgres cannot infer) is
   listed with its error and does not fail the run. Any finding exits 3, keelcli's "a check found
   problems"; `-json` writes one document with `shapes`, `findings`, `unplanned` and a report per

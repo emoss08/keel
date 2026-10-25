@@ -938,12 +938,14 @@ before it ships, from the statements the application really sends:
   unbound, the plan is the generic one a prepared statement settles on, and `VERBOSE` names each
   relation's schema. A shape that is not a single statement (checked by a lexer that skips
   literals, quoted identifiers, dollar quotes and comments) is never sent. The `reltuples` of every
-  relation scanned sequentially are then read in one catalog statement. Findings: a `Seq Scan`
+  relation scanned sequentially, or read under a sort under a limit, are then read in one catalog
+  statement. Findings: a `Seq Scan`
   (parallel included) of a relation with more than `-seq-scan-rows` rows (default 10000; never
   analyzed counts as empty; `-1` flags every one); a total cost over `-max-cost`; with
   `-sort-limit`, a `Sort` a `Limit` reads through `Gather`, `Gather Merge`, `Result`,
-  `Subquery Scan`, `Materialize`, `Unique` or `Merge Append` only (an `Incremental Sort`, or a
-  sort feeding an aggregate, is not one). A shape EXPLAIN cannot plan is reported with its error
+  `Subquery Scan`, `Materialize`, `Unique` or `Merge Append` only, when the largest relation the
+  sort reads has more than `-seq-scan-rows` rows (an `Incremental Sort`, a sort feeding an
+  aggregate, or a sort of a small reference table is not one). A shape EXPLAIN cannot plan is reported with its error
   and does not fail the run; any finding exits 3, keelcli's "a check found problems".
   PostgreSQL 16 or later is required.
 
