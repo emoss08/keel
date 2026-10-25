@@ -108,10 +108,11 @@ type routeMark struct {
 // can serve it.
 const unreachable = ^Position(0)
 
-// OnReplica marks ctx so that read terminals (One, First, List, All, Page, Count, CountUpTo, CountEstimate,
-// Exists, Each, Into, IntoOne, Batch) called with it outside a transaction run on a replica
-// within Config.MaxReplicaLag, the least loaded relative to its weight, and on the primary when
-// none qualifies. Explicit transactions keep using the primary unless started with ReplicaTx.
+// OnReplica marks ctx so that read terminals (One, First, List, All, Page, Count, CountUpTo,
+// CountEstimate, Exists, Each, Into, IntoOne, Batch) called with it outside a transaction run on
+// a replica within Config.MaxReplicaLag, the least loaded relative to its weight, and on the
+// primary when none qualifies. Explicit transactions keep using the primary unless started with
+// ReplicaTx.
 //
 // Reads on the context see its own writes: a write made with ctx, or a context derived from it,
 // records the primary's WAL position after its commit, in the commit's round trip, and later
