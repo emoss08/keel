@@ -255,27 +255,10 @@ AfterConnect: func(ctx context.Context, conn *pgx.Conn) error {
 ```
 
 - **Extension types (PostGIS, pgvector):** a column of a Go type that implements `sql.Scanner`
-  and `driver.Valuer` (on the value or on the pointer, as Trenova's `postgis.Point` does) is a
-  custom column (`KindOther`). Register the extension's types and their array types in
-  `AfterConnect` so values travel in binary through a codec; pgvector-go's `pgxvec.RegisterTypes`
-  does it for vectors, and PostGIS's EWKB fits pgx's bytea codec:
-
-```go
-AfterConnect: func(ctx context.Context, conn *pgx.Conn) error {
-    for _, name := range []string{"geometry", "geography"} {
-        var oid, array uint32
-        if err := conn.QueryRow(ctx, `SELECT oid, typarray FROM pg_type WHERE typname = $1`, name).
-            Scan(&oid, &array); err != nil {
-            return err
-        }
-        t := &pgtype.Type{Name: name, OID: oid, Codec: pgtype.ByteaCodec{}}
-        conn.TypeMap().RegisterType(t)
-        conn.TypeMap().RegisterType(&pgtype.Type{Name: "_" + name, OID: array,
-            Codec: &pgtype.ArrayCodec{ElementType: t}})
-    }
-    return nil
-},
-```
+  and `driver.Valuer` (on the value or on the pointer) is a custom column (`KindOther`). Register
+  the extension's types and their array types in `AfterConnect` so values travel in binary through
+  a codec; pgvector-go's `pgxvec.RegisterTypes` does it for vectors, and `keel/postgis` does it for
+  PostGIS (below).
 
   With the codecs registered, every write path binds the type's `Value` (WKB) and every read
   passes the bytes PostGIS sends (EWKB) to `Scan`; bulk inserts send the column as one array of
@@ -283,6 +266,32 @@ AfterConnect: func(ctx context.Context, conn *pgx.Conn) error {
   the table's column types. Without a codec, reads still work (the driver passes the text form to
   `Scan`), and writes need a `Value` that returns the type's text input, as hex EWKB is for
   PostGIS. `Copy` always needs the codec.
+
+#### PostGIS: keel/postgis
+
+`github.com/emoss08/keel/postgis` maps geometry and geography columns and builds spatial SQL:
+
+- `postgis.Point` (a `geometry(Point)` or `geography(Point)`) and `postgis.Geometry` (any shape)
+  scan EWKB and its hex form and write EWKB with SRID 4326. Fields are `*postgis.Point` and
+  `*postgis.Geometry`; nil is NULL.
+- `postgis.Register` registers the types and their arrays: `Config{AfterConnect: postgis.Register}`.
+- keel gen gives such fields `postgis.PointCol` and `postgis.GeometryCol`, with spatial methods:
+  `DWithin(other, meters)`, `Distance(other)`, `Within(g)`, `Contains(g)`, `Intersects(g)`,
+  `Area()`, `Centroid()`, `AsGeoJSON()`, and `SetExpr(e)` to assign a built value. Any library can
+  do the same: when a field's type comes from a package that also exports `<Type>Col` embedding
+  keel's base column kind, keel gen uses that kind.
+- Builders, each a `keel.DynExpr` whose operands are expressions or values bound as parameters:
+  `Pt(lon, lat)`, `FromGeoJSON(json)`, `Buffer(g, meters)`, `ToGeography(g)`, `ToGeometry(g)`,
+  `DWithin(a, b, meters)`, `Distance(a, b)`, `DistanceSphere(a, b)`, `Contains`, `Within`,
+  `Intersects`, `Area`, `Centroid`, `AsGeoJSON`. Distances, radii and areas are in meters, measured
+  through geography, so a GiST index on a geography column serves `DWithin`.
+
+```go
+z := zonedb.Zones
+near, err := z.Where(z.Center.DWithin(postgis.Pt(lon, lat), 2000)).All(ctx, db)
+_, err = z.Where(z.ID.Eq(id)).Update(ctx, db, z.Area.SetExpr(postgis.Buffer(postgis.Pt(lon, lat), 250)))
+_, err = z.Where(z.ID.Eq(id)).Update(ctx, db, z.Area.SetExpr(postgis.FromGeoJSON(polygonJSON)))
+```
 
 ### Read replicas
 

@@ -29,6 +29,7 @@ func All() []*schema.Table {
 		fleetdb.StopsSchema(),
 		fleetdb.TagsSchema(),
 		fleetdb.WorkersSchema(),
+		geodb.ZonesSchema(),
 	}
 }
 

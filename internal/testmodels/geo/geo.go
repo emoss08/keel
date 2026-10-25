@@ -13,6 +13,7 @@ import (
 
 	"github.com/emoss08/keel"
 	"github.com/emoss08/keel/internal/testmodels/ids"
+	"github.com/emoss08/keel/postgis"
 )
 
 // Point is a longitude and latitude.
@@ -101,4 +102,17 @@ type Place struct {
 	Center         Point  `keel:"center,nullzero"`
 	// Distance is the place's distance in meters from a point a query measures from.
 	Distance float64 `keel:"distance,computed"`
+}
+
+// Zone is an area around a center, with columns of keel/postgis types: keel gen gives them
+// postgis.PointCol and postgis.GeometryCol, with the spatial methods.
+type Zone struct {
+	keel.Table `keel:"zones"`
+
+	ID             ids.ID            `keel:"id,pk,autoid:zon_"`
+	OrganizationID ids.ID            `keel:"organization_id,pk,tenant"`
+	BusinessUnitID ids.ID            `keel:"business_unit_id,pk,tenant"`
+	Name           string            `keel:"name"`
+	Center         *postgis.Point    `keel:"center"`
+	Area           *postgis.Geometry `keel:"area"`
 }

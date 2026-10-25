@@ -14,12 +14,12 @@ import (
 )
 
 // TestVerifyGeneratedTables finds no drift between the test models and the test migrations; the
-// PostGIS test creates the places table itself.
+// PostGIS tests create the places and zones tables themselves.
 func TestVerifyGeneratedTables(t *testing.T) {
 	d := db(t)
 	var tables []*schema.Table
 	for _, tb := range keeltables.All() {
-		if tb.Name != "places" {
+		if tb.Name != "places" && tb.Name != "zones" {
 			tables = append(tables, tb)
 		}
 	}

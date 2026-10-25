@@ -10,6 +10,7 @@ import (
 	"github.com/emoss08/keel/internal/testmodels/geo"
 	"github.com/emoss08/keel/internal/testmodels/ids"
 	"github.com/emoss08/keel/internal/testmodels/keelkinds"
+	"github.com/emoss08/keel/postgis"
 	"github.com/emoss08/keel/schema"
 )
 
@@ -148,6 +149,137 @@ func valuePlace(p unsafe.Pointer, c int32) any {
 		return &r.Center
 	case 6:
 		return r.Distance
+	}
+	return nil
+}
+
+// zonesTable is the schema of geo.Zone.
+var zonesTable = schema.Table{
+	Name:   "zones",
+	Quoted: `"zones"`,
+	Alias:  "z",
+	Model:  "geo.Zone",
+	Label:  `Zone`,
+	Plural: `Zones`,
+	Doc:    `Zone is an area around a center, with columns of keel/postgis types: keel gen gives them postgis.PointCol and postgis.GeometryCol, with the spatial methods.`,
+	Columns: []schema.Column{
+		{Name: "id", Quoted: `"id"`, Field: "ID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagAutoID, Label: `ID`},
+		{Name: "organization_id", Quoted: `"organization_id"`, Field: "OrganizationID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagTenant, Label: `Organization ID`},
+		{Name: "business_unit_id", Quoted: `"business_unit_id"`, Field: "BusinessUnitID", Kind: schema.KindString, Flags: schema.FlagPK | schema.FlagTenant, Label: `Business Unit ID`},
+		{Name: "name", Quoted: `"name"`, Field: "Name", Kind: schema.KindString, Flags: 0, Label: `Name`},
+		{Name: "center", Quoted: `"center"`, Field: "Center", Kind: schema.KindOther, Flags: schema.FlagNullable, Label: `Center`},
+		{Name: "area", Quoted: `"area"`, Field: "Area", Kind: schema.KindOther, Flags: schema.FlagNullable, Label: `Area`},
+	},
+	PK:         []int32{0, 1, 2},
+	Tenant:     []int32{1, 2},
+	Select:     []int32{0, 1, 2, 3, 4, 5},
+	Insert:     []int32{0, 1, 2, 3, 4, 5},
+	Update:     []int32{3, 4, 5},
+	Returning:  nil,
+	Version:    -1,
+	AutoID:     0,
+	AutoCreate: -1,
+	AutoUpdate: -1,
+	IDPrefix:   "zon_",
+	New:        newZone,
+	NewN:       newNZone,
+	Size:       unsafe.Sizeof(geo.Zone{}),
+	Ptr:        ptrZone,
+	Value:      valueZone,
+}
+
+var zonesRef = keel.Ref{Table: &zonesTable}
+
+// ZonesTable is the table of geo.Zone.
+type ZonesTable struct {
+	keel.Handle[geo.Zone]
+	ID             keelkinds.IdsIDCol
+	OrganizationID keelkinds.IdsIDCol
+	BusinessUnitID keelkinds.IdsIDCol
+	Name           keel.StringCol
+	Center         postgis.PointCol
+	Area           postgis.GeometryCol
+}
+
+// Zones references the zones table.
+var Zones = &ZonesTable{
+	Handle:         keel.Handle[geo.Zone]{Ref: &zonesRef},
+	ID:             keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: &zonesRef, Index: 0}}},
+	OrganizationID: keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: &zonesRef, Index: 1}}},
+	BusinessUnitID: keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: &zonesRef, Index: 2}}},
+	Name:           keel.StringCol{Col: keel.Col{Ref: &zonesRef, Index: 3}},
+	Center:         postgis.PointCol{AnyCol: keel.AnyCol{Col: keel.Col{Ref: &zonesRef, Index: 4}}},
+	Area:           postgis.GeometryCol{AnyCol: keel.AnyCol{Col: keel.Col{Ref: &zonesRef, Index: 5}}},
+}
+
+// BuildZones builds the handle of zones for ref. Generated relation and alias methods call it.
+func BuildZones(r *keel.Ref) *ZonesTable {
+	return &ZonesTable{
+		Handle:         keel.Handle[geo.Zone]{Ref: r},
+		ID:             keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: r, Index: 0}}},
+		OrganizationID: keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: r, Index: 1}}},
+		BusinessUnitID: keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: r, Index: 2}}},
+		Name:           keel.StringCol{Col: keel.Col{Ref: r, Index: 3}},
+		Center:         postgis.PointCol{AnyCol: keel.AnyCol{Col: keel.Col{Ref: r, Index: 4}}},
+		Area:           postgis.GeometryCol{AnyCol: keel.AnyCol{Col: keel.Col{Ref: r, Index: 5}}},
+	}
+}
+
+// ZonesSchema returns the schema of zones.
+func ZonesSchema() *schema.Table { return &zonesTable }
+
+// As returns a handle that references zones under its own alias.
+func (t *ZonesTable) As(alias string) *ZonesTable { return keel.Alias(t.Ref, alias, BuildZones) }
+
+// Get returns the zones row with the given key, or keel.ErrNotFound.
+func (t *ZonesTable) Get(ctx context.Context, db *keel.DB, key ids.ID) (*geo.Zone, error) {
+	return t.Where(t.ID.Eq(key)).One(ctx, db)
+}
+
+func newZone() unsafe.Pointer { return unsafe.Pointer(new(geo.Zone)) }
+
+func newNZone(n int) unsafe.Pointer { return unsafe.Pointer(unsafe.SliceData(make([]geo.Zone, n))) }
+
+func ptrZone(p unsafe.Pointer, c int32) any {
+	r := (*geo.Zone)(p)
+	switch c {
+	case 0:
+		return (*string)(unsafe.Pointer(&r.ID))
+	case 1:
+		return (*string)(unsafe.Pointer(&r.OrganizationID))
+	case 2:
+		return (*string)(unsafe.Pointer(&r.BusinessUnitID))
+	case 3:
+		return &r.Name
+	case 4:
+		return &r.Center
+	case 5:
+		return &r.Area
+	}
+	return nil
+}
+
+func valueZone(p unsafe.Pointer, c int32) any {
+	r := (*geo.Zone)(p)
+	switch c {
+	case 0:
+		return string(r.ID)
+	case 1:
+		return string(r.OrganizationID)
+	case 2:
+		return string(r.BusinessUnitID)
+	case 3:
+		return r.Name
+	case 4:
+		if r.Center == nil {
+			return nil
+		}
+		return r.Center
+	case 5:
+		if r.Area == nil {
+			return nil
+		}
+		return r.Area
 	}
 	return nil
 }

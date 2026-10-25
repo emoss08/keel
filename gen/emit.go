@@ -112,6 +112,32 @@ type wrapper struct {
 	basic    string
 	scanner  bool
 	valuePtr bool
+	library  bool
+}
+
+// libraryKind reports whether the package of obj, a type keel gen does not generate, declares the
+// column kind of obj itself: an exported <Name>Col struct embedding keel's base kind, as
+// keel/postgis declares PointCol for Point. Generated tables then use that kind, with its methods.
+func libraryKind(obj *types.TypeName, base string) bool {
+	kind, ok := obj.Pkg().Scope().Lookup(obj.Name() + "Col").(*types.TypeName)
+	if !ok || !kind.Exported() {
+		return false
+	}
+	st, ok := kind.Type().Underlying().(*types.Struct)
+	if !ok {
+		return false
+	}
+	for i := range st.NumFields() {
+		f := st.Field(i)
+		if !f.Embedded() {
+			continue
+		}
+		if named, ok := f.Type().(*types.Named); ok && named.Obj().Name() == base &&
+			named.Obj().Pkg() != nil && named.Obj().Pkg().Path() == keelPath {
+			return true
+		}
+	}
+	return false
 }
 
 // emitter writes the files of one generation run.
@@ -140,14 +166,18 @@ func (e *emitter) planWrappers() {
 				}
 				obj := c.named.Obj()
 				w := &wrapper{named: c.named, scanner: c.scanner, basic: c.basic, valuePtr: c.valuePtr}
+				w.base = baseKind(c)
 				if owner, ok := e.pkgs[obj.Pkg().Path()]; ok {
 					w.outPath, w.outName = owner.outPath, owner.outName
 					w.name = obj.Name() + "Col"
+				} else if libraryKind(obj, w.base) {
+					w.outPath, w.outName = obj.Pkg().Path(), obj.Pkg().Name()
+					w.name = obj.Name() + "Col"
+					w.library = true
 				} else {
 					w.outPath, w.outName = e.kinds.outPath, e.kinds.outName
 					w.name = exportedName(obj.Pkg().Name()) + obj.Name() + "Col"
 				}
-				w.base = baseKind(c)
 				e.wrappers[c.named] = w
 			}
 		}

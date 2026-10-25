@@ -13,8 +13,8 @@ import (
 	"github.com/emoss08/keel"
 	"github.com/emoss08/keel/internal/testmodels/geo"
 	"github.com/emoss08/keel/internal/testmodels/geo/geodb"
+	"github.com/emoss08/keel/postgis"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgtype"
 )
 
 // postgisDSN is the PostGIS server the geometry tests run against. They skip when it is
@@ -32,24 +32,17 @@ CREATE TABLE places (
     center geometry(Point),
     CONSTRAINT pk_places PRIMARY KEY (id, organization_id, business_unit_id),
     CONSTRAINT uq_places_name UNIQUE (organization_id, business_unit_id, name)
-)`
-
-// registerPostGIS registers geometry and geography, and their arrays, with pgx's bytea codec, so
-// values travel in the binary format PostGIS sends and receives: WKB in, EWKB out.
-func registerPostGIS(ctx context.Context, conn *pgx.Conn) error {
-	for _, name := range []string{"geometry", "geography"} {
-		var oid, array uint32
-		err := conn.QueryRow(ctx, `SELECT oid, typarray FROM pg_type WHERE typname = $1`, name).Scan(&oid, &array)
-		if err != nil {
-			return err
-		}
-		m := conn.TypeMap()
-		t := &pgtype.Type{Name: name, OID: oid, Codec: pgtype.ByteaCodec{}}
-		m.RegisterType(t)
-		m.RegisterType(&pgtype.Type{Name: "_" + name, OID: array, Codec: &pgtype.ArrayCodec{ElementType: t}})
-	}
-	return nil
-}
+);
+CREATE TABLE zones (
+    id text NOT NULL,
+    organization_id text NOT NULL,
+    business_unit_id text NOT NULL,
+    name text NOT NULL,
+    center geography(Point, 4326),
+    area geometry(Geometry, 4326),
+    CONSTRAINT pk_zones PRIMARY KEY (id, organization_id, business_unit_id)
+);
+CREATE INDEX idx_zones_center ON zones USING gist (center)`
 
 // postgisDB opens a fresh database on the PostGIS server with the places table, dropped after the
 // test, with the PostGIS codecs registered when codecs is set and observers seeing its statements.
@@ -93,7 +86,7 @@ func postgisDB(t *testing.T, codecs bool, observers ...keel.Observer) (*keel.DB,
 	cfg := testConfig(dsn)
 	cfg.Observers = observers
 	if codecs {
-		cfg.AfterConnect = registerPostGIS
+		cfg.AfterConnect = postgis.Register
 	}
 	d, err := keel.Open(ctx, cfg)
 	if err != nil {
@@ -200,5 +193,79 @@ func TestPostGISScannerWithoutCodec(t *testing.T) {
 	rows := must(p.Order(p.Name.Asc()).All(ctx, plain))(t)
 	if rows[0].Geom == nil || !near(*rows[0].Geom, dallas) || !near(rows[0].Center, dallas) || rows[1].Geom != nil {
 		t.Fatalf("text-format scan %+v %+v", rows[0], rows[1])
+	}
+}
+
+func TestPostGISPackageBuildsSpatialQueries(t *testing.T) {
+	d, _ := postgisDB(t, true)
+	ctx := newTenant()
+	z := geodb.Zones
+	dal := &geo.Zone{Name: "dallas", Center: postgis.NewPoint(-96.797, 32.7767)}
+	aus := &geo.Zone{Name: "austin", Center: postgis.NewPoint(-97.7431, 30.2672)}
+	ok(t, z.CreateMany(ctx, d, []*geo.Zone{dal, aus}))
+
+	got := must(z.Where(z.ID.Eq(dal.ID)).One(ctx, d))(t)
+	eq(t, got.Center.Lon(), -96.797)
+	eq(t, got.Center.Lat(), 32.7767)
+
+	_, err := z.Where(z.ID.Eq(dal.ID)).Update(ctx, d,
+		z.Area.SetExpr(postgis.Buffer(postgis.Pt(-96.797, 32.7767), 5000)))
+	ok(t, err)
+	square := `{"type":"Polygon","coordinates":[[[-98,30],[-97,30],[-97,31],[-98,31],[-98,30]]]}`
+	_, err = z.Where(z.ID.Eq(aus.ID)).Update(ctx, d, z.Area.SetExpr(postgis.FromGeoJSON(square)))
+	ok(t, err)
+
+	near := must(z.Where(z.Center.DWithin(postgis.Pt(-96.8, 32.78), 2000)).All(ctx, d))(t)
+	eq(t, len(near), 1)
+	eq(t, near[0].Name, "dallas")
+
+	type measured struct {
+		Name     string
+		Meters   float64
+		Inside   bool
+		Area     float64
+		GeoJSON  string
+		Polygon  *postgis.Geometry
+		Centroid *postgis.Point
+	}
+	rows := must(keel.Into[measured](ctx, d, z.Pick(
+		z.Name,
+		z.Center.Distance(postgis.NewPoint(-96.797, 32.7767)),
+		z.Area.Contains(postgis.Pt(-96.797, 32.7767)),
+		z.Area.Area(),
+		z.Center.AsGeoJSON(),
+		z.Area,
+		z.Area.Centroid(),
+	).Order(z.Name.Asc())))(t)
+	eq(t, len(rows), 2)
+	eq(t, rows[0].Name, "austin")
+	if rows[0].Meters < 280_000 || rows[0].Meters > 300_000 {
+		t.Fatalf("austin is %f m from dallas", rows[0].Meters)
+	}
+	eq(t, rows[1].Meters, 0.0)
+	eq(t, rows[1].Inside, true)
+	eq(t, rows[0].Inside, false)
+	if rows[1].Area < 7.7e7 || rows[1].Area > 7.9e7 {
+		t.Fatalf("a 5 km buffer covers %f m2", rows[1].Area)
+	}
+	if !strings.Contains(rows[0].GeoJSON, `"Point"`) {
+		t.Fatalf("GeoJSON %s", rows[0].GeoJSON)
+	}
+	if rows[0].Polygon == nil || rows[0].Polygon.Geometry.GeoJSONType() != "Polygon" {
+		t.Fatalf("polygon %v", rows[0].Polygon)
+	}
+	if !rows[0].Centroid.IsValid() || math.Abs(rows[0].Centroid.Lon()+97.5) > 1e-6 {
+		t.Fatalf("centroid %v", rows[0].Centroid)
+	}
+
+	within := must(z.Where(z.Center.Within(postgis.FromGeoJSON(square))).All(ctx, d))(t)
+	eq(t, len(within), 1)
+	eq(t, within[0].Name, "austin")
+	intersects := must(z.Where(z.Area.Intersects(postgis.Buffer(postgis.Pt(-97.5, 30.5), 1000))).All(ctx, d))(t)
+	eq(t, len(intersects), 1)
+	sphere := must(keel.IntoOne[float64](ctx, d, z.Pick(
+		postgis.DistanceSphere(postgis.Pt(-96.797, 32.7767), postgis.Pt(-97.7431, 30.2672)).Max())))(t)
+	if sphere < 280_000 || sphere > 300_000 {
+		t.Fatalf("sphere distance %f", sphere)
 	}
 }
