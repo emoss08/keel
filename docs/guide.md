@@ -3128,9 +3128,11 @@ A constraint violation (unique, foreign key, check, not-null, exclusion) comes b
 `*keel.ConstraintError` wrapping the `*pgconn.PgError`: its `Kind`, `Table`, `Constraint`, the
 constraint's `Columns` without the tenant columns, and, when `Config.Tables` lists the table (pass
 `keeltables.All()`), the model (`Model`), the columns' JSON names (`Fields`) and labels (`Labels`),
-and the `Message` the model declares for the constraint. keel reads a table's constraint columns
-from the catalog the first time one of them is violated, on a pool connection of its own, and caches
-them: the key columns in order, then the columns an index's expressions and predicate read, so
+and the `Message` the model declares for the constraint. `Open` reads the constraint columns of
+every table `Config.Tables` lists in one catalog query, so a violation never needs a connection,
+however busy the pool; a table it does not list, or one created after `Open`, is read the first time
+one of its constraints is violated, on a pool connection of its own, and cached. The columns are
+the key columns in order, then the columns an index's expressions and predicate read, so
 `lower(code)` reports `code` and `WHERE is_default` reports `is_default`. A `Field` on the declared
 constraint replaces the resolved fields, for a key led by a reference column or a column hidden from
 JSON.

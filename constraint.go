@@ -95,10 +95,12 @@ var constraintKinds = map[string]ConstraintKind{
 	"23502": ConstraintNotNull, "23P01": ConstraintExclusion,
 }
 
-// constraintCatalog caches the columns of every constraint and unique index of a table, read
-// from the catalog the first time one of its constraints is violated.
+// constraintCatalog caches the columns of every constraint and unique index of a table, keyed by
+// "schema.table", with an empty schema for the current one: read for Config.Tables when the DB
+// opens, and for any other table the first time one of its constraints is violated.
 type constraintCatalog struct {
 	mu     sync.Mutex
+	schema string
 	tables map[string]map[string][]string
 }
 
@@ -177,68 +179,122 @@ func (db *DB) tableNamed(name string) *schema.Table {
 	return db.tablesByName[name]
 }
 
-// constraintColumns returns the columns of the constraint or unique index name on table, read on
-// a connection of its own (the failed statement's transaction is aborted) and cached per table.
-// It returns nil when the catalog cannot be read within a second.
+// constraintColumns returns the columns of the constraint or unique index name on table, from the
+// catalog Open read for Config.Tables, or else read now on a connection of its own (the failed
+// statement's transaction is aborted) and cached per table. It returns nil when the catalog cannot
+// be read within a second.
 func (db *DB) constraintColumns(schemaName, table, name string) []string {
-	key := schemaName + "." + table
-	db.constraints.mu.Lock()
-	byName, ok := db.constraints.tables[key]
-	db.constraints.mu.Unlock()
-	if ok {
+	if byName, ok := db.cachedConstraints(schemaName, table); ok {
 		return slices.Clone(byName[name])
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	rows, err := db.pool.Query(ctx, `SELECT con.conname, array_agg(a.attname ORDER BY k.ord)
-	  FROM pg_constraint con
-	  JOIN pg_class c ON c.oid = con.conrelid
-	  JOIN pg_namespace n ON n.oid = c.relnamespace
-	  CROSS JOIN LATERAL unnest(con.conkey) WITH ORDINALITY AS k(attnum, ord)
-	  JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = k.attnum
-	 WHERE c.relname = $2 AND n.nspname = coalesce(nullif($1, ''), current_schema())
-	 GROUP BY con.conname
-	UNION ALL
-	SELECT i.relname, array_agg(a.attname ORDER BY k.ord)
-	  FROM pg_index x
-	  JOIN pg_class i ON i.oid = x.indexrelid
-	  JOIN pg_class c ON c.oid = x.indrelid
-	  JOIN pg_namespace n ON n.oid = c.relnamespace
-	  CROSS JOIN LATERAL (
-		SELECT u.attnum, u.ord FROM unnest(x.indkey::int2[]) WITH ORDINALITY AS u(attnum, ord)
-		 WHERE u.attnum <> 0
-		UNION ALL
-		SELECT d.refobjsubid::int2, 1000 + d.refobjsubid FROM pg_depend d
-		 WHERE d.classid = 'pg_class'::regclass AND d.objid = x.indexrelid
-		   AND d.refclassid = 'pg_class'::regclass AND d.refobjid = c.oid AND d.refobjsubid > 0
-		   AND d.refobjsubid <> ALL (x.indkey::int2[])
-	  ) AS k(attnum, ord)
-	  JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = k.attnum
-	 WHERE c.relname = $2 AND n.nspname = coalesce(nullif($1, ''), current_schema()) AND x.indisunique
-	   AND NOT EXISTS (SELECT 1 FROM pg_constraint con WHERE con.conindid = x.indexrelid)
-	 GROUP BY i.relname`, schemaName, table)
-	if err != nil {
-		return nil
-	}
-	byName = map[string][]string{}
-	for rows.Next() {
-		var n string
-		var cols []string
-		if rows.Scan(&n, &cols) != nil {
-			rows.Close()
-			return nil
-		}
-		byName[n] = cols
-	}
-	rows.Close()
-	if rows.Err() != nil {
+	if db.loadConstraints(ctx, schemaName, []string{table}) != nil {
 		return nil
 	}
 	db.constraints.mu.Lock()
+	defer db.constraints.mu.Unlock()
+	key := db.constraints.key(schemaName, table)
+	if db.constraints.tables[key] == nil {
+		db.constraints.tables[key] = map[string][]string{}
+	}
+	return slices.Clone(db.constraints.tables[key][name])
+}
+
+func (db *DB) cachedConstraints(schemaName, table string) (map[string][]string, bool) {
+	db.constraints.mu.Lock()
+	defer db.constraints.mu.Unlock()
+	byName, ok := db.constraints.tables[db.constraints.key(schemaName, table)]
+	return byName, ok
+}
+
+// key returns the cache key of table in schemaName; the caller holds mu.
+func (c *constraintCatalog) key(schemaName, table string) string {
+	if schemaName == "" || schemaName == c.schema {
+		return "." + table
+	}
+	return schemaName + "." + table
+}
+
+// prefetchConstraints reads the constraints of every table of Config.Tables in one query, so a
+// violation never reads the catalog while the pool may be exhausted. A table not yet created is
+// read when one of its constraints is first violated.
+func (db *DB) prefetchConstraints(ctx context.Context) {
+	if len(db.cfg.Tables) == 0 {
+		return
+	}
+	names := make([]string, len(db.cfg.Tables))
+	for i, t := range db.cfg.Tables {
+		names[i] = t.Name
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	_ = db.loadConstraints(ctx, "", names)
+}
+
+// loadConstraints reads the columns of the constraints and unique indexes of tables in schemaName
+// (the current schema when empty) and caches them per table.
+func (db *DB) loadConstraints(ctx context.Context, schemaName string, tables []string) error {
+	rows, err := db.pool.Query(ctx, constraintCatalogSQL, schemaName, tables)
+	if err != nil {
+		return err
+	}
+	read := map[string]map[string][]string{}
+	var current string
+	for rows.Next() {
+		var table, name string
+		var cols []string
+		if err := rows.Scan(&current, &table, &name, &cols); err != nil {
+			rows.Close()
+			return err
+		}
+		if read[table] == nil {
+			read[table] = map[string][]string{}
+		}
+		read[table][name] = cols
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	db.constraints.mu.Lock()
+	defer db.constraints.mu.Unlock()
 	if db.constraints.tables == nil {
 		db.constraints.tables = map[string]map[string][]string{}
 	}
-	db.constraints.tables[key] = byName
-	db.constraints.mu.Unlock()
-	return slices.Clone(byName[name])
+	if current != "" {
+		db.constraints.schema = current
+	}
+	for table, byName := range read {
+		db.constraints.tables[db.constraints.key(schemaName, table)] = byName
+	}
+	return nil
 }
+
+const constraintCatalogSQL = `WITH target AS (
+	SELECT c.oid, c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+	 WHERE c.relname = ANY($2::text[]) AND n.nspname = coalesce(nullif($1, ''), current_schema())
+)
+SELECT current_schema()::text, t.relname, con.conname, array_agg(a.attname ORDER BY k.ord)
+  FROM target t
+  JOIN pg_constraint con ON con.conrelid = t.oid
+  CROSS JOIN LATERAL unnest(con.conkey) WITH ORDINALITY AS k(attnum, ord)
+  JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = k.attnum
+ GROUP BY t.relname, con.conname
+UNION ALL
+SELECT current_schema()::text, t.relname, i.relname, array_agg(a.attname ORDER BY k.ord)
+  FROM target t
+  JOIN pg_index x ON x.indrelid = t.oid AND x.indisunique
+  JOIN pg_class i ON i.oid = x.indexrelid
+  CROSS JOIN LATERAL (
+	SELECT u.attnum, u.ord FROM unnest(x.indkey::int2[]) WITH ORDINALITY AS u(attnum, ord)
+	 WHERE u.attnum <> 0
+	UNION ALL
+	SELECT d.refobjsubid::int2, 1000 + d.refobjsubid FROM pg_depend d
+	 WHERE d.classid = 'pg_class'::regclass AND d.objid = x.indexrelid
+	   AND d.refclassid = 'pg_class'::regclass AND d.refobjid = t.oid AND d.refobjsubid > 0
+	   AND d.refobjsubid <> ALL (x.indkey::int2[])
+  ) AS k(attnum, ord)
+  JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = k.attnum
+ WHERE NOT EXISTS (SELECT 1 FROM pg_constraint con WHERE con.conindid = x.indexrelid)
+ GROUP BY t.relname, i.relname`

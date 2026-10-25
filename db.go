@@ -45,7 +45,8 @@ type Config struct {
 
 	// Tables are the generated tables (keeltables.All()) that constraint violations resolve
 	// against: a *ConstraintError of a listed table carries the model's field names, labels and
-	// the message its Constraints method declares.
+	// the message its Constraints method declares. Open reads their constraints' columns from the
+	// catalog in one query, so resolving a violation never waits for a connection.
 	Tables []*schema.Table
 
 	// AfterConnect runs on every new connection, after keel registers its types; use it to
@@ -178,6 +179,7 @@ func Open(ctx context.Context, cfg Config) (*DB, error) {
 		}
 		db.replicas.start(db)
 	}
+	db.prefetchConstraints(ctx)
 	if cfg.DataVersions.Enabled {
 		db.versions = startVersioner(db)
 	}

@@ -104,3 +104,22 @@ func TestADeclaredFieldReplacesTheResolvedOne(t *testing.T) {
 	eq(t, strings.Join(ce.Fields, ","), "phone")
 	eq(t, ce.Message, "taken")
 }
+
+func TestAViolationResolvesWithThePoolExhausted(t *testing.T) {
+	d := openDB(t, func(cfg *keel.Config) {
+		cfg.DSN += " pool_max_conns=1"
+		if strings.Contains(cfg.DSN, "://") {
+			cfg.DSN = strings.Replace(cfg.DSN, " pool_max_conns=1", "&pool_max_conns=1", 1)
+		}
+		cfg.Tables = []*schema.Table{fleetdb.ContactsSchema()}
+	})
+	ctx := newTenant()
+	c := fleetdb.Contacts
+	ok(t, c.Create(ctx, d, &fleet.Contact{Name: "held"}))
+
+	err := keel.Write(ctx, d, func(ctx context.Context) error {
+		return c.Create(ctx, d, &fleet.Contact{Name: "held"})
+	})
+	dup := constraintErr(t, err)
+	eq(t, strings.Join(dup.Columns, ","), "name")
+}
