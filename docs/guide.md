@@ -3085,7 +3085,10 @@ constraint's `Columns` without the tenant columns, and, when `Config.Tables` lis
 `keeltables.All()`), the model (`Model`), the columns' JSON names (`Fields`) and labels (`Labels`),
 and the `Message` the model declares for the constraint. keel reads a table's constraint columns
 from the catalog the first time one of them is violated, on a pool connection of its own, and caches
-them.
+them: the key columns in order, then the columns an index's expressions and predicate read, so
+`lower(code)` reports `code` and `WHERE is_default` reports `is_default`. A `Field` on the declared
+constraint replaces the resolved fields, for a key led by a reference column or a column hidden from
+JSON.
 
 A model declares the constraints whose violation should read well with a `Constraints` method;
 keel gen records them in the generated table and `keel.Verify` reports a name the table lacks, so a

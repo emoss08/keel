@@ -8,3 +8,6 @@ CREATE TABLE badges (
     note text DEFAULT 'none',
     CONSTRAINT pk_badges PRIMARY KEY (id, organization_id, business_unit_id)
 );
+
+CREATE UNIQUE INDEX uq_badges_name ON badges (organization_id, business_unit_id, lower(name));
+CREATE UNIQUE INDEX uq_badges_one_gold ON badges (organization_id, business_unit_id) WHERE color = 'gold';

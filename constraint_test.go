@@ -77,3 +77,30 @@ func TestVerifyFindsAConstraintTheModelNamesButTheTableLacks(t *testing.T) {
 		t.Fatalf("drift %s", drifts[0])
 	}
 }
+
+func TestExpressionAndPartialIndexesResolveTheColumnsTheyRead(t *testing.T) {
+	d := db(t)
+	ctx := newTenant()
+	b := fleetdb.Badges
+	ok(t, b.Create(ctx, d, &fleet.Badge{Name: "Gold", Color: "gold"}))
+	byName := constraintErr(t, b.Create(ctx, d, &fleet.Badge{Name: "GOLD"}))
+	eq(t, byName.Constraint, "uq_badges_name")
+	eq(t, strings.Join(byName.Columns, ","), "name")
+	partial := constraintErr(t, b.Create(ctx, d, &fleet.Badge{Name: "Other", Color: "gold"}))
+	eq(t, partial.Constraint, "uq_badges_one_gold")
+	eq(t, strings.Join(partial.Columns, ","), "color")
+}
+
+func TestADeclaredFieldReplacesTheResolvedOne(t *testing.T) {
+	d := db(t)
+	ctx := newTenant()
+	c := fleetdb.Contacts
+	ok(t, c.Create(ctx, d, &fleet.Contact{Name: "x"}))
+	tb := fleetdb.ContactsSchema()
+	saved := tb.Constraints
+	t.Cleanup(func() { tb.Constraints = saved })
+	tb.Constraints = []schema.Constraint{{Name: "uq_contacts_name", Message: "taken", Field: "phone"}}
+	ce := constraintErr(t, c.Create(ctx, d, &fleet.Contact{Name: "x"}))
+	eq(t, strings.Join(ce.Fields, ","), "phone")
+	eq(t, ce.Message, "taken")
+}

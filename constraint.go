@@ -67,8 +67,10 @@ type ConstraintError struct {
 	Model *schema.Table
 	// Constraint is the violated constraint's name; empty for a NOT NULL violation.
 	Constraint string
-	// Columns are the constraint's columns, without the tenant columns; Fields are their JSON
-	// names on the model and Labels their labels, empty when the model is unknown.
+	// Columns are the constraint's columns, without the tenant columns: its key columns in order,
+	// then the columns its index expressions and predicate read (lower(code), WHERE is_default).
+	// Fields are their JSON names on the model and Labels their labels, empty when the model is
+	// unknown; a Field the model declares for the constraint replaces them.
 	Columns []string
 	Fields  []string
 	Labels  []string
@@ -142,9 +144,22 @@ func (db *DB) constraintErr(err error) error {
 	if ce.Model != nil {
 		if c, ok := ce.Model.Constraint(pe.ConstraintName); ok {
 			ce.Message = c.Message
+			if c.Field != "" {
+				ce.Fields, ce.Labels = []string{c.Field}, []string{labelOf(ce.Model, c.Field)}
+			}
 		}
 	}
 	return ce
+}
+
+// labelOf returns the label of t's column whose JSON name is field, or "".
+func labelOf(t *schema.Table, field string) string {
+	for _, c := range t.Columns {
+		if c.JSON == field {
+			return c.Label
+		}
+	}
+	return ""
 }
 
 // tableNamed returns the table of Config.Tables named name, or nil.
@@ -185,7 +200,15 @@ func (db *DB) constraintColumns(schemaName, table, name string) []string {
 	  JOIN pg_class i ON i.oid = x.indexrelid
 	  JOIN pg_class c ON c.oid = x.indrelid
 	  JOIN pg_namespace n ON n.oid = c.relnamespace
-	  CROSS JOIN LATERAL unnest(x.indkey::int2[]) WITH ORDINALITY AS k(attnum, ord)
+	  CROSS JOIN LATERAL (
+		SELECT u.attnum, u.ord FROM unnest(x.indkey::int2[]) WITH ORDINALITY AS u(attnum, ord)
+		 WHERE u.attnum <> 0
+		UNION ALL
+		SELECT d.refobjsubid::int2, 1000 + d.refobjsubid FROM pg_depend d
+		 WHERE d.classid = 'pg_class'::regclass AND d.objid = x.indexrelid
+		   AND d.refclassid = 'pg_class'::regclass AND d.refobjid = c.oid AND d.refobjsubid > 0
+		   AND d.refobjsubid <> ALL (x.indkey::int2[])
+	  ) AS k(attnum, ord)
 	  JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = k.attnum
 	 WHERE c.relname = $2 AND n.nspname = coalesce(nullif($1, ''), current_schema()) AND x.indisunique
 	   AND NOT EXISTS (SELECT 1 FROM pg_constraint con WHERE con.conindid = x.indexrelid)

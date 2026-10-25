@@ -32,6 +32,9 @@ const (
 type Constraint struct {
 	Name    string
 	Message string
+	// Field is the JSON name a violation reports when the constraint's first column is not the
+	// field a user would correct: a key led by a reference, or a column hidden from JSON.
+	Field string
 }
 
 // Constraint returns the constraint named name the table declares.
