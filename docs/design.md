@@ -962,7 +962,7 @@ before it ships, from the statements the application really sends:
 runs in one transaction with its bookkeeping row; `*.notx.up.sql` runs statement by statement
 outside a transaction, split at `--keel:split` lines. Runs serialise on an advisory lock taken by
 polling (a waiting statement would hold a transaction that `CREATE INDEX CONCURRENTLY` waits on);
-an applied file whose content changed stops `Up` with `ErrChanged`.
+an applied file whose content changed stops `Up` with `ErrChanged`. `Options.AfterFunc` runs once after a run that applied anything, outside every transaction and after the lock, for work SQL cannot do (marking migrated tables changed for data versions).
 
 ## Performance rules
 

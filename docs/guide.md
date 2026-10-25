@@ -3726,6 +3726,12 @@ applied. A `CREATE INDEX CONCURRENTLY` that fails leaves an invalid index behind
   applied anything: Trenova's `SELECT trenova_rls.reconcile()` becomes automatic. When the last
   migration is notx, or a run fails after applying some migrations, they run in a transaction of
   their own.
+- `Options.AfterFunc(ctx, applied)` runs once after a run that applied anything, outside every
+  transaction and after the migration lock is released, also when the run failed part-way (its
+  error joins the run's). It is for work SQL cannot do: migration SQL is invisible to data
+  versions, so an application with a result cache records the migrated tables as changed there
+  (`keel.MarkChanged` under a system scope on a `DB` with data versions, then `Close`, which
+  flushes and notifies every process).
 - A pending migration older than the newest applied one is `ErrOutOfOrder`, unless
   `Options.AllowOutOfOrder`: that is the branch merged with an old timestamp.
 - keel stores each migration's checksum. An applied file that changed is `ErrChanged` before

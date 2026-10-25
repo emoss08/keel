@@ -776,3 +776,40 @@ func TestOptionsDefaults(t *testing.T) {
 		t.Fatal("millis")
 	}
 }
+
+func TestAfterFuncRunsOnceWithTheAppliedMigrations(t *testing.T) {
+	ctx := context.Background()
+	dsn := database(t)
+	var calls int
+	var applied []string
+	m := open(t, dsn, one(basic()), Options{AfterFunc: func(_ context.Context, ms []Migration) error {
+		calls++
+		applied = migrationIDs(ms)
+		return nil
+	}})
+
+	if _, err := m.Up(ctx, UpOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || fmt.Sprint(applied) != "[20260101000000_items 20260102000000_index 20260103000000_column]" {
+		t.Fatalf("calls %d, applied %v", calls, applied)
+	}
+	if _, err := m.Up(ctx, UpOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("a run that applied nothing called AfterFunc: %d calls", calls)
+	}
+}
+
+func TestAfterFuncErrorJoinsTheRun(t *testing.T) {
+	ctx := context.Background()
+	dsn := database(t)
+	boom := errors.New("boom")
+	m := open(t, dsn, one(basic()), Options{AfterFunc: func(context.Context, []Migration) error { return boom }})
+
+	res, err := m.Up(ctx, UpOptions{})
+	if !errors.Is(err, boom) || len(res.Applied) != 3 {
+		t.Fatalf("err %v, applied %d", err, len(res.Applied))
+	}
+}

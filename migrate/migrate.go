@@ -79,6 +79,11 @@ type Options struct {
 	// applied anything; when the last migration is notx, or a run fails after applying some, they
 	// run in a transaction of their own.
 	After []string
+	// AfterFunc runs once after a run that applied anything, outside every transaction and after
+	// the migration lock is released, with the migrations the run applied (also when it failed
+	// part-way, joining its error to the run's). Use it for work SQL cannot do, such as telling a
+	// data layer's caches that migrated tables changed (keel.MarkChanged).
+	AfterFunc func(ctx context.Context, applied []Migration) error
 	// Observer receives the run's progress. It is called synchronously on the goroutine running
 	// Up, Baseline or Repair, so it must not block.
 	Observer func(Event)
@@ -368,6 +373,11 @@ func (m *Migrator) Up(ctx context.Context, o UpOptions) (Result, error) {
 	r := &run{m: m, watch: newWatcher(m.conn)}
 	defer r.watch.close()
 	res, err := r.up(ctx, o)
+	if len(res.Applied) > 0 && m.opts.AfterFunc != nil {
+		if afterErr := m.opts.AfterFunc(ctx, res.Applied); afterErr != nil {
+			err = errors.Join(err, fmt.Errorf("migrate: after: %w", afterErr))
+		}
+	}
 	res.Duration = time.Since(start)
 	m.emit(Event{Kind: RunEnd, Total: res.Plan.Total(), Duration: res.Duration, Err: err})
 	return res, err
