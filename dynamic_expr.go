@@ -389,6 +389,21 @@ func (d DynExpr) anyOf(list any, op string) DynExpr {
 			return newDyn(p, d.Label())
 		}
 	}
+	if c := d.column(); c != nil {
+		if text, ok := enumList(*c, list); ok {
+			in := " IN "
+			if op == " <> ALL(" {
+				in = " NOT IN "
+			}
+			return newDyn(exprFunc(func(r *render) {
+				r.b('(')
+				d.writeSQL(r)
+				r.s(in)
+				r.s(text)
+				r.b(')')
+			}), d.Label())
+		}
+	}
 	b, err := dynOperand(list)
 	if err != nil {
 		return dynFail(err)

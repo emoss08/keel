@@ -38,7 +38,7 @@ func TestRenderedSQL(t *testing.T) {
 			s.Pick(s.ID, s.ProNumber).Where(s.Status.In(fleet.StatusNew, fleet.StatusAssigned)).
 				Order(s.CreatedAt.Desc()).Limit(20),
 			`SELECT s."id", s."pro_number", s."organization_id", s."business_unit_id" FROM "shipments" s ` +
-				`WHERE s."organization_id" = $1 AND s."business_unit_id" = $2 AND s."status" = ANY($3) ` +
+				`WHERE s."organization_id" = $1 AND s."business_unit_id" = $2 AND s."status" IN ('New', 'Assigned') ` +
 				`ORDER BY s."created_at" DESC LIMIT 20`,
 		},
 		{

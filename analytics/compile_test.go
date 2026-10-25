@@ -29,8 +29,8 @@ func TestToSQLIsReadableDeterministicAndBindsValuesOnce(t *testing.T) {
 	}
 	start := strings.Index(a, "CAST(extract(epoch")
 	bucket := a[start : start+strings.Index(a[start:], "AS bigint)")]
-	if strings.Count(a, bucket) != 3 || !strings.Contains(a, "GROUP BY "+bucket) || !strings.Contains(a, "ORDER BY "+bucket) {
-		t.Fatalf("the bucket is not written once per clause with shared parameters:\n%s", a)
+	if strings.Count(a, bucket) != 1 || !strings.Contains(a, "GROUP BY 1 ORDER BY 1") {
+		t.Fatalf("the bucket is not written once and grouped and ordered by position:\n%s", a)
 	}
 	if len(args) != 5 || args[4] != "America/Chicago" || strings.Count(a, `s."total" >= CAST($3::text AS numeric)`) != 2 {
 		t.Fatalf("args %v:\n%s", args, a)

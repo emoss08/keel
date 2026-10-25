@@ -329,7 +329,7 @@ func TestCloseStopsBackgroundGoroutines(t *testing.T) {
 }
 
 func stacks() string {
-	buf := make([]byte, 1<<20)
+	buf := make([]byte, 16<<20)
 	return string(buf[:runtime.Stack(buf, true)])
 }
 

@@ -292,18 +292,18 @@ func TestDynamicSharedParameters(t *testing.T) {
 	q.Select(bucket.As("bucket"), keel.DynCount().As("n")).Group(bucket).Order(bucket.Asc())
 	sql, args, err := q.ToSQL(w.ctx, d)
 	ok(t, err)
-	expr := `CASE WHEN (s."priority" >= $3) THEN $4::text ELSE $5::text END AS c1`
+	expr := `CASE WHEN (s."priority" >= 1) THEN $3::text ELSE $4::text END AS c1`
 	if strings.Count(sql, expr) != 1 || !strings.Contains(sql, " GROUP BY 1 ORDER BY 1 ASC") {
 		t.Fatalf("the CASE is selected once, with typed results, and grouped and ordered by position:\n%s", sql)
 	}
-	eq(t, len(args), 5)
+	eq(t, len(args), 4)
 	res := must(q.Run(w.ctx, d))(t)
 	eq(t, strings.Join(strs(res.Column("bucket")), ","), "high,low")
 	eq(t, slices.Equal(res.Column("n").Int64, []int64{13, 7}), true)
 
 	q = registry(t).Query("shipments")
-	q.Select(q.Path("pro_number")).Where(keel.Or(q.Path("status").Eq("New"), q.Path("status").Eq("New"),
-		q.Path("pro_number").Eq("New")))
+	q.Select(q.Path("pro_number")).Where(keel.Or(q.Path("status").Eq("Other"), q.Path("status").Eq("Other"),
+		q.Path("pro_number").Eq("Other")))
 	sql, args, err = q.ToSQL(w.ctx, d)
 	ok(t, err)
 	if !strings.Contains(sql, `((s."status" = $3) OR (s."status" = $3) OR (s."pro_number" = $4))`) {

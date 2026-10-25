@@ -242,6 +242,12 @@ JSON themselves.
   schema-qualified name (`status`, `ops.status`, and `_status`, `ops._status` for the array).
   `SkipEnums: true` turns this off; then list each enum compared with `In`, and its array type
   (`_name`), in `LoadTypes`.
+- **Enum values are constants.** A value compared with a column whose Go type is an enum (a named
+  type with declared constants, `Column.Enum`) is written into the statement when it is one of
+  those constants: `s.Status.Eq(fleet.StatusNew)` is `s."status" = 'New'`, and `In` of constants
+  is `IN ('New', 'Assigned')`. The constants are a closed set, so the number of distinct statements
+  stays bounded, and a generic plan can prove a partial index predicate such as
+  `WHERE status = 'Active'`, which it never can from a parameter. Any other value is bound.
 - **Domains and composite types** must be listed in `LoadTypes`, each with its array type, by
   their unquoted names (`ops.label`). They load after the enums, through pgx's `LoadTypes`.
 - **Decimals:** register a binary codec in `AfterConnect`, for example
@@ -550,6 +556,7 @@ Shipment.Weight: keel tag "weight,fromat=weight": unknown option "fromat"`).
 | `noselect` | not selected by default; usable in predicates. Mark a generated `noselect` column `readonly` too | `keel:"search_vector,noselect,readonly,tsvector"` |
 | `jsonb` | the value is encoded as JSON; a nil map or slice in a non-pointer field is written as `{}` or `[]` | `keel:"attributes,jsonb"` |
 | `jsonnumber` | with `jsonb` only: reads decode numbers held in interface values (`map[string]any`, `[]any`, `any`) as `json.Number`, which keeps an integer past 2^53 exact, instead of `float64` (see [JSON](#json)) | `keel:"arguments,jsonb,jsonnumber"` |
+| `sqltype=<name>` | the column's SQL type, for a type an expression cannot be assigned to without a cast, such as an enum: `ToExpr` writes `CAST(e AS <name>)`, and `Verify` reports a column whose type differs; an identifier, optionally schema-qualified, with `[]` for an array | `keel:"billing_queue_status,sqltype=billing_queue_status"` |
 | `tsvector` / `tsvector=<config>` | the column gets the full-text operators (see [Full-text search](#full-text-search)); `<config>` is the text search configuration its searches use by default, an identifier, optionally schema-qualified | `keel:"search_vector,noselect,readonly,tsvector=english"` |
 | `nullzero` | the field's zero value is stored as NULL and NULL reads back as the zero value; see [Nullzero columns](#nullzero-columns) | `keel:"customer_id,nullzero"` |
 | `default` | an insert that leaves the field unset (a nil pointer, a NULL `Null…` value, a `nullzero` zero value) takes the column's database default instead of NULL: `DEFAULT` in a single-row insert, `coalesce(value, default)` in a bulk one, with the default read from the catalog, and the inserted value is read back into the field; `Copy` refuses an unset value, since `COPY` cannot apply a default. The field must be able to be unset, and the column must have a default | `keel:"threshold,default"` |

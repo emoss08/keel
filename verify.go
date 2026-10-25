@@ -154,6 +154,7 @@ type catalogRel struct {
 // catalogCol is a column as the catalog describes it: its type (domains resolved to their base
 // type), whether it may hold NULL, and whether Postgres computes it.
 type catalogCol struct {
+	declared  string
 	typ       string
 	category  string
 	enum      bool
@@ -178,7 +179,7 @@ const verifyCatalogSQL = `SELECT n.name, coalesce(c.relkind::text, ''), coalesce
        coalesce(et.typname::text, ''), coalesce(et.typtype::text, ''),
        coalesce(NOT a.attnotnull AND NOT ty.typnotnull, false),
        coalesce(a.attgenerated::text, '') <> '', coalesce(a.attidentity::text, '') = 'a',
-       coalesce(a.attnum = ANY(i.indkey::int2[]), false)
+       coalesce(a.attnum = ANY(i.indkey::int2[]), false), coalesce(format_type(a.atttypid, NULL), '')
   FROM unnest($1::text[]) WITH ORDINALITY AS n(name, ord)
   LEFT JOIN pg_class c ON c.oid = to_regclass(n.name)
   LEFT JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
@@ -200,7 +201,7 @@ func (v *verifier) load(ctx context.Context, db *DB) error {
 		var cc catalogCol
 		var pk bool
 		if err := rows.Scan(&name, &kind, &col, &cc.typ, &cc.category, &typtype, &cc.elem, &elemType,
-			&cc.nullable, &cc.generated, &cc.identity, &pk); err != nil {
+			&cc.nullable, &cc.generated, &cc.identity, &pk, &cc.declared); err != nil {
 			return fmt.Errorf("keel: verify: %w", err)
 		}
 		if kind == "" {
@@ -343,6 +344,11 @@ func (v *verifier) column(t *schema.Table, rel *catalogRel, c *schema.Column) {
 		v.add(Drift{Kind: DriftType, Table: t.Name, Column: c.Name, Field: field,
 			Detail: fmt.Sprintf("a %s field cannot hold the column's type %s", kindName(c), cc.typ),
 			Fix:    fmt.Sprintf("change the column to %s, or change %s's type", want, field)})
+	}
+	if c.SQLType != "" && !sameType(c.SQLType, cc.declared) {
+		v.add(Drift{Kind: DriftType, Table: t.Name, Column: c.Name, Field: field,
+			Detail: fmt.Sprintf("the tag declares sqltype=%s but the column is %s", c.SQLType, cc.declared),
+			Fix:    fmt.Sprintf("set sqltype=%s in %s's keel tag, or change the column's type", cc.declared, field)})
 	}
 	if cc.nullable && !view(rel.kind) && !c.Flags.Has(schema.FlagNoSelect) && !holdsNull(c) {
 		notNull := "make the column NOT NULL in a migration"
@@ -609,4 +615,14 @@ func notNullOf(c *schema.Column) string {
 		return ""
 	}
 	return " NOT NULL"
+}
+
+// sameType reports whether the declared type name names the catalog's type, format_type's name,
+// which carries a schema only when the type is outside the search path.
+func sameType(declared, catalog string) bool {
+	if declared == catalog {
+		return true
+	}
+	_, unqualified, ok := strings.Cut(declared, ".")
+	return ok && unqualified == catalog
 }

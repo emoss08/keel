@@ -97,6 +97,10 @@ type Column struct {
 	// TSConfig is the text search configuration a tsvector column is searched with by default,
 	// from the tag's tsvector=<config> option; empty means the database's default.
 	TSConfig string
+	// SQLType is the column's SQL type from the tag's sqltype=<name> option, for a type an expression
+	// cannot be assigned to without a cast, such as an enum: ToExpr casts to it, and Verify checks
+	// it against the catalog. Empty when the tag declares none.
+	SQLType string
 }
 
 // Stored reports whether the column is a column of the table, as opposed to a computed field that

@@ -67,7 +67,7 @@ type Shipment struct {
 	BillToID       *ids.ID `keel:"bill_to_id"`
 	// ProNumber is the carrier's progressive number, unique per tenant.
 	ProNumber string   `keel:"pro_number,label=PRO Number" json:"proNumber"`
-	Status    Status   `keel:"status"`
+	Status    Status   `keel:"status,sqltype=shipment_status"`
 	Priority  Priority `keel:"priority"`
 	// Weight is the shipment's gross weight in pounds.
 	Weight       *int64         `keel:"weight,format=weight"`

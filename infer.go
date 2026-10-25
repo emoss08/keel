@@ -2,6 +2,8 @@ package keel
 
 import (
 	"reflect"
+	"strconv"
+	"strings"
 	"unsafe"
 )
 
@@ -144,4 +146,67 @@ func outputPosition(projected bool, exprs []Expr, e Expr) int {
 		}
 	}
 	return 0
+}
+
+// enumConst returns v written as a constant when c's Go type is an enum and v is one of its
+// declared constants. An enum value is one of a closed set, so writing it into the statement adds
+// a bounded number of statements, and lets a generic plan prove a partial index predicate such as
+// WHERE status = 'Active', which a parameter never can.
+func enumConst(c Col, v any) (string, bool) {
+	if c.Ref == nil || c.Ref.Table == nil || int(c.Index) >= len(c.Ref.Table.Columns) {
+		return "", false
+	}
+	values := c.Ref.Table.Columns[c.Index].Enum
+	if len(values) == 0 {
+		return "", false
+	}
+	text, err := constText(v)
+	if err != nil {
+		return "", false
+	}
+	raw := enumValueOf(v)
+	for _, e := range values {
+		if e.Value == raw {
+			return text, true
+		}
+	}
+	return "", false
+}
+
+// enumList returns list, a slice of declared constants of c's enum type, written as the constant
+// list (a, b); false when list is empty or holds any other value.
+func enumList(c Col, list any) (string, bool) {
+	rv := reflect.ValueOf(list)
+	if rv.Kind() != reflect.Slice || rv.Len() == 0 {
+		return "", false
+	}
+	var b strings.Builder
+	b.WriteByte('(')
+	for i := range rv.Len() {
+		text, ok := enumConst(c, rv.Index(i).Interface())
+		if !ok {
+			return "", false
+		}
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(text)
+	}
+	b.WriteByte(')')
+	return b.String(), true
+}
+
+// enumValueOf returns v as schema.EnumValue.Value spells it: the string itself, or the integer in
+// decimal.
+func enumValueOf(v any) string {
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.String:
+		return rv.String()
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return strconv.FormatInt(rv.Int(), 10)
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return strconv.FormatUint(rv.Uint(), 10)
+	}
+	return "\x00"
 }

@@ -13,6 +13,7 @@ type FieldTag struct {
 	IDPrefix string
 	TSVector bool
 	TSConfig string
+	SQLType  string
 	Label    string
 	Report   ReportTag
 
@@ -232,6 +233,13 @@ func (ft *FieldTag) columnOption(o option) error {
 		}
 		ft.TSConfig = v
 		return checkConfig(v)
+	case "sqltype":
+		v, err := o.needValue()
+		if err != nil {
+			return err
+		}
+		ft.SQLType = v
+		return checkTypeName(v)
 	case "autoid":
 		ft.Flags |= FlagAutoID
 		v, err := o.needValue()
@@ -543,6 +551,23 @@ func checkIdent(s string) error {
 	}
 	if s[0] >= '0' && s[0] <= '9' {
 		return fmt.Errorf("identifier %q must not start with a digit", s)
+	}
+	return nil
+}
+
+// checkTypeName refuses a type name that is not an identifier, optionally qualified by one schema
+// and followed by [] for its array.
+func checkTypeName(name string) error {
+	base := strings.TrimSuffix(name, "[]")
+	schemaName, typ, qualified := strings.Cut(base, ".")
+	if qualified {
+		if err := checkIdent(schemaName); err != nil {
+			return fmt.Errorf("sqltype=%s: %w", name, err)
+		}
+		base = typ
+	}
+	if err := checkIdent(base); err != nil {
+		return fmt.Errorf("sqltype=%s: %w", name, err)
 	}
 	return nil
 }

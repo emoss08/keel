@@ -14,8 +14,9 @@ func TestParameterSharing(t *testing.T) {
 	ctx := tenantCtx("org_1", "bu_1")
 	s := fleetdb.Shipments
 
-	sql, args, err := s.Pick(s.ID).Where(keel.Or(s.Status.Eq(fleet.StatusNew), s.ProNumber.Eq("New"),
-		keel.And(s.Status.Eq(fleet.StatusNew), s.Hazmat.IsTrue()))).ToSQL(ctx, d)
+	other := fleet.Status("Other")
+	sql, args, err := s.Pick(s.ID).Where(keel.Or(s.Status.Eq(other), s.ProNumber.Eq("Other"),
+		keel.And(s.Status.Eq(other), s.Hazmat.IsTrue()))).ToSQL(ctx, d)
 	ok(t, err)
 	want := `WHERE s."organization_id" = $1 AND s."business_unit_id" = $2 AND (s."status" = $3 OR ` +
 		`s."pro_number" = $4 OR (s."status" = $3 AND s."hazmat" IS TRUE))`
@@ -24,7 +25,7 @@ func TestParameterSharing(t *testing.T) {
 	}
 	eq(t, len(args), 4)
 
-	sql, args, err = s.Pick(s.ID).Where(s.Priority.Eq(1), s.Weight.Eq(1), s.Priority.Gt(1)).ToSQL(ctx, d)
+	sql, args, err = s.Pick(s.ID).Where(s.Priority.Eq(7), s.Weight.Eq(7), s.Priority.Gt(7)).ToSQL(ctx, d)
 	ok(t, err)
 	if !strings.HasSuffix(sql, `s."priority" = $3 AND s."weight" = $4 AND s."priority" > $5`) {
 		t.Fatalf("columns and operators keep their own placeholders:\n%s", sql)

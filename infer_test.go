@@ -113,3 +113,26 @@ func TestGroupAndOrderNameAPickedExpressionByPosition(t *testing.T) {
 		t.Fatalf("an expression the select list lacks is written out: %s", sql)
 	}
 }
+
+func TestEnumConstantsAreWrittenIntoTheStatement(t *testing.T) {
+	d := renderDB(t)
+	ctx := tenantCtx("org_1", "bu_1")
+	s := fleetdb.Shipments
+	sql, args, err := s.Pick(s.ID).Where(
+		s.Status.Eq(fleet.StatusNew),
+		s.Status.NotIn(fleet.StatusCanceled, fleet.StatusDelivered),
+		keel.DynOf(s.Priority).Gte(fleet.PriorityHigh),
+		keel.DynOf(s.Status).In([]fleet.Status{fleet.StatusAssigned}),
+		s.Status.Ne(fleet.Status("It's")),
+	).ToSQL(ctx, d)
+	ok(t, err)
+	for _, want := range []string{
+		`s."status" = 'New'`, `s."status" NOT IN ('Canceled', 'Delivered')`, `(s."priority" >= 1)`,
+		`(s."status" IN ('Assigned'))`, `s."status" <> $3`,
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("%s\nlacks %s", sql, want)
+		}
+	}
+	eq(t, len(args), 3)
+}

@@ -1732,7 +1732,7 @@ var shipmentsTable = schema.Table{
 		{Name: "customer_id", Quoted: `"customer_id"`, Field: "CustomerID", Kind: schema.KindString, Flags: 0, Label: `Customer ID`, Report: &reportDimStringIdHidden},
 		{Name: "bill_to_id", Quoted: `"bill_to_id"`, Field: "BillToID", Kind: schema.KindString, Flags: schema.FlagNullable, Label: `Bill To ID`, Report: &reportDimStringIdHidden},
 		{Name: "pro_number", Quoted: `"pro_number"`, Field: "ProNumber", Kind: schema.KindString, Flags: 0, Label: `PRO Number`, Doc: `ProNumber is the carrier's progressive number, unique per tenant.`, JSON: `proNumber`, Report: &reportDimString},
-		{Name: "status", Quoted: `"status"`, Field: "Status", Kind: schema.KindString, Flags: 0, Label: `Status`, Enum: enumStatus[:], Report: &reportDimEnum},
+		{Name: "status", Quoted: `"status"`, Field: "Status", Kind: schema.KindString, Flags: 0, Label: `Status`, Enum: enumStatus[:], Report: &reportDimEnum, SQLType: `shipment_status`},
 		{Name: "priority", Quoted: `"priority"`, Field: "Priority", Kind: schema.KindInt16, Flags: 0, Label: `Priority`, Enum: enumPriority[:], Report: &reportDimEnum},
 		{Name: "weight", Quoted: `"weight"`, Field: "Weight", Kind: schema.KindInt64, Flags: schema.FlagNullable, Label: `Weight`, Doc: `Weight is the shipment's gross weight in pounds.`, Report: &reportMeasureIntegerWeight},
 		{Name: "total", Quoted: `"total"`, Field: "Total", Kind: schema.KindOther, Flags: 0, Label: `Total`, Report: &reportMeasureDecimalMoney},

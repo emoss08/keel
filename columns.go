@@ -69,7 +69,22 @@ func (c Col) ToDefault() Assignment {
 }
 
 // ToExpr sets the column to an expression.
-func (c Col) ToExpr(e Expr) Assignment { return Assignment{col: c, e: e.writeSQL} }
+//
+// When the column's tag declares its SQL type (sqltype=), e is cast to it, so a text expression can
+// be assigned to an enum column.
+func (c Col) ToExpr(e Expr) Assignment {
+	typ := c.Ref.Table.Columns[c.Index].SQLType
+	if typ == "" {
+		return Assignment{col: c, e: e.writeSQL}
+	}
+	return Assignment{col: c, e: func(r *render) {
+		r.s("CAST(")
+		e.writeSQL(r)
+		r.s(" AS ")
+		r.s(typ)
+		r.b(')')
+	}}
+}
 
 // Excluded is the value the upsert proposed for the column, in the row that conflicted
 // (EXCLUDED.col). It is valid only in a Conflict.Set assignment; anywhere else the statement fails.
@@ -199,6 +214,19 @@ func anyOf(e Expr, list any, not bool) Pred {
 	if c, ok := e.(Col); ok && c.nullZero() {
 		if p := nullZeroAny(c, list, not); p != nil {
 			return p
+		}
+	}
+	if c, ok := e.(Col); ok {
+		if text, isEnum := enumList(c, list); isEnum {
+			return predExpr{e: func(r *render) {
+				e.writeSQL(r)
+				if not {
+					r.s(" NOT IN ")
+				} else {
+					r.s(" IN ")
+				}
+				r.s(text)
+			}}
 		}
 	}
 	slot := &list

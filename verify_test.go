@@ -5,10 +5,13 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/emoss08/keel"
+	"github.com/emoss08/keel/internal/testmodels/fleet"
+	"github.com/emoss08/keel/internal/testmodels/fleet/fleetdb"
 	"github.com/emoss08/keel/internal/testmodels/keeltables"
 	"github.com/emoss08/keel/schema"
 )
@@ -143,4 +146,43 @@ CREATE VIEW %[1]sv AS SELECT id, note FROM %[1]sx;`, p))
 			t.Fatalf("join table fix: %s", dr.Fix)
 		}
 	}
+}
+
+func TestVerifyChecksADeclaredSQLType(t *testing.T) {
+	d := db(t)
+	good := *fleetdb.ShipmentsSchema()
+	good.Columns = slices.Clone(good.Columns)
+	bad := good
+	bad.Columns = slices.Clone(good.Columns)
+	i := good.Column("status")
+	bad.Columns[i].SQLType = "text"
+	drifts := must(keel.Verify(context.Background(), d, []*schema.Table{&bad}))(t)
+	var found bool
+	for _, dr := range drifts {
+		if dr.Kind == keel.DriftType && dr.Column == "status" && strings.Contains(dr.Detail, "sqltype=text") &&
+			strings.Contains(dr.Fix, "sqltype=shipment_status") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("no sqltype drift in %v", drifts)
+	}
+	bad.Columns[i].SQLType = "public.shipment_status"
+	for _, dr := range must(keel.Verify(context.Background(), d, []*schema.Table{&bad}))(t) {
+		if dr.Column == "status" {
+			t.Fatalf("a schema-qualified name of the same type drifts: %s", dr)
+		}
+	}
+}
+
+func TestToExprCastsToTheDeclaredSQLType(t *testing.T) {
+	d := db(t)
+	w := seed(t, 2)
+	s := fleetdb.Shipments
+	n := must(s.Where(keel.True()).Update(w.ctx, d, s.Status.ToExpr(keel.DynFunc("initcap", "delivered"))))(t)
+	if n == 0 {
+		t.Fatal("updated nothing")
+	}
+	delivered := must(s.Where(s.Status.Eq(fleet.StatusDelivered)).Count(w.ctx, d))(t)
+	eq(t, delivered, n)
 }

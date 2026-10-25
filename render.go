@@ -269,6 +269,10 @@ func (r *render) colArg(c *schema.Column, v any) {
 // argCol binds v compared with column c through op, sharing the placeholder of an equal value
 // bound in the same place earlier in the statement.
 func (r *render) argCol(v any, c Col, op string) {
+	if text, ok := enumConst(c, v); ok {
+		r.s(text)
+		return
+	}
 	if !shareable(v) {
 		r.arg(v)
 		return

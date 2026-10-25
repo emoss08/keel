@@ -217,7 +217,7 @@ func (s *shared) columnMeta(c *column) string {
 	if c.report != nil {
 		out += ", Report: " + s.report(*c.report)
 	}
-	return out + optStr("TSConfig", c.tag.TSConfig)
+	return out + optStr("TSConfig", c.tag.TSConfig) + optStr("SQLType", c.tag.SQLType)
 }
 
 // relationMeta writes the label, doc, JSON name, report and pick fields of a relation literal.
