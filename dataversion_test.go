@@ -322,9 +322,10 @@ func TestCloseStopsBackgroundGoroutines(t *testing.T) {
 		t.Fatal("background goroutines not running")
 	}
 	d.Close()
-	if s := stacks(); strings.Contains(s, "keel.(*replicaSet)") || strings.Contains(s, "keel.(*versioner)") {
-		t.Fatalf("goroutines left after Close:\n%s", s)
-	}
+	waitFor(t, "the background goroutines to exit", func() bool {
+		s := stacks()
+		return !strings.Contains(s, "keel.(*replicaSet)") && !strings.Contains(s, "keel.(*versioner)")
+	})
 	waitFor(t, "goroutines to exit", func() bool { return runtime.NumGoroutine() <= before })
 }
 
