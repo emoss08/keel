@@ -402,7 +402,7 @@ func (q *query) renderSelect(r *render, sn *lnode, o selectOpts) *selectPlan {
 				if i > 0 {
 					r.s(", ")
 				}
-				if pos := outputPosition(projected, q.exprs, e); pos > 0 {
+				if pos := outputPosition(r, projected, q.exprs, e); pos > 0 {
 					r.s(strconv.Itoa(pos))
 					continue
 				}
@@ -418,7 +418,7 @@ func (q *query) renderSelect(r *render, sn *lnode, o selectOpts) *selectPlan {
 				if i > 0 {
 					r.s(", ")
 				}
-				if pos := outputPosition(projected && sn.spec == q, q.exprs, ord.e); pos > 0 {
+				if pos := outputPosition(r, projected && sn.spec == q, q.exprs, ord.e); pos > 0 {
 					ord.writeAt(r, pos)
 					continue
 				}

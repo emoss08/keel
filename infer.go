@@ -124,14 +124,41 @@ func writeOutput(r *render, e Expr) {
 
 // outputPosition returns the 1-based position in the select list exprs of the output e is, when
 // projected (exprs is the whole select list) and e is an expression other than a bare column or a
-// literal, so GROUP BY and ORDER BY name it by position instead of repeating it. It returns 0
-// otherwise.
-func outputPosition(projected bool, exprs []Expr, e Expr) int {
+// bound literal, so GROUP BY and ORDER BY name it by position instead of repeating it: a repeated
+// expression would bind its values again under new placeholders, and Postgres would no longer
+// see the GROUP BY term as the selected one. A dynamic expression matches by its node; a typed
+// one matches an output that renders the same SQL with the same values. It returns 0 otherwise.
+func outputPosition(r *render, projected bool, exprs []Expr, e Expr) int {
 	if !projected {
 		return 0
 	}
-	d, ok := e.(DynExpr)
-	if !ok || d.n == nil || d.n.err != nil || d.n.col != nil {
+	if d, ok := e.(DynExpr); ok {
+		return dynOutputPosition(exprs, d)
+	}
+	if _, isCol := e.(columnar); isCol {
+		return 0
+	}
+	sql, args, ok := fingerprint(r, e)
+	if !ok || strings.HasPrefix(sql, "$") {
+		return 0
+	}
+	for i, x := range exprs {
+		if a, isAliased := x.(aliased); isAliased {
+			x = a.e
+		}
+		if _, isDyn := x.(DynExpr); isDyn {
+			continue
+		}
+		if osql, oargs, ok := fingerprint(r, x); ok && osql == sql && reflect.DeepEqual(oargs, args) {
+			return i + 1
+		}
+	}
+	return 0
+}
+
+// dynOutputPosition is outputPosition for a dynamic expression: the output that is the same node.
+func dynOutputPosition(exprs []Expr, d DynExpr) int {
+	if d.n == nil || d.n.err != nil || d.n.col != nil {
 		return 0
 	}
 	if _, lit := d.n.e.(*litExpr); lit {
@@ -146,6 +173,24 @@ func outputPosition(projected bool, exprs []Expr, e Expr) int {
 		}
 	}
 	return 0
+}
+
+// fingerprint renders e on its own, with r's table aliases and a fresh numbering of placeholders,
+// and returns its SQL and bound values, so two expressions that would render the same compare
+// equal. It reports false when e fails to render.
+func fingerprint(r *render, e Expr) (string, []any, bool) {
+	f := newRender(r.scope, r.ctx, r.db)
+	defer f.recycle()
+	f.reads = nil
+	f.sc = r.sc
+	f.aliases = append(f.aliases, r.aliases...)
+	f.ctes = append(f.ctes, r.ctes...)
+	f.bare = r.bare
+	e.writeSQL(f)
+	if f.err != nil {
+		return "", nil, false
+	}
+	return string(f.buf), f.argsCopy(), true
 }
 
 // enumConst returns v written as a constant when c's Go type is an enum and v is one of its

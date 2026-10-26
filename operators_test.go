@@ -383,3 +383,23 @@ func TestTypedFormsRenderAsDynamic(t *testing.T) {
 		})
 	}
 }
+
+func TestTypedOutputsGroupAndOrderByPosition(t *testing.T) {
+	d := renderDB(t)
+	s := fleetdb.Shipments
+	prefix := func() keel.StringExpr { return s.ProNumber.Left(3).Coalesce("none") }
+	sql, args := renderOf(t, d, s.Pick(prefix(), keel.Count()).Group(prefix()).Order(prefix().Asc()))
+	if !strings.Contains(sql, " GROUP BY 1") || !strings.Contains(sql, " ORDER BY 1") {
+		t.Fatalf("typed outputs not named by position: %s", sql)
+	}
+	if strings.Count(sql, "coalesce(") != 1 {
+		t.Fatalf("the grouped expression repeats: %s", sql)
+	}
+	eq(t, len(args), 3)
+
+	other, _ := renderOf(t, d, s.Pick(s.ProNumber.Left(3).Coalesce("none"), keel.Count()).
+		Group(s.ProNumber.Left(3).Coalesce("other")))
+	if strings.Contains(other, " GROUP BY 1") {
+		t.Fatalf("a term with other values was named by position: %s", other)
+	}
+}
