@@ -133,7 +133,9 @@ func readItems(ctx context.Context, db *DB, items []BatchItem, refill bool) erro
 		ctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
-	run.cache = db.cache.start(ctx, run, reads, stmts, refill)
+	if run.cache, err = db.cache.start(ctx, run, reads, stmts, refill); err != nil {
+		return run.close(ctx, err)
+	}
 	defer run.cache.release()
 
 	if piped {

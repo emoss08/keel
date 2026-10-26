@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -282,4 +283,154 @@ func stackNames(stack []string, fn string) bool {
 	}
 	name, _, _ := strings.Cut(stack[0], " ")
 	return strings.HasSuffix(name, "."+fn)
+}
+
+// gateKey marks the context of the read a gateObserver holds.
+type gateKey struct{}
+
+// gateObserver holds the first statement of a read whose context carries gateKey until open is
+// closed, signalling held when it does, so a test can keep a result cache fill in flight.
+type gateObserver struct {
+	held   chan struct{}
+	open   chan struct{}
+	once   sync.Once
+	opened sync.Once
+}
+
+// newGate returns a closed gate. A test defers release, so a failing test does not leave the held
+// read, and the DB's Close, waiting.
+func newGate() *gateObserver {
+	return &gateObserver{held: make(chan struct{}), open: make(chan struct{})}
+}
+
+// release lets the held read go on, once.
+func (g *gateObserver) release() { g.opened.Do(func() { close(g.open) }) }
+
+func (g *gateObserver) BeforeQuery(ctx context.Context, _ *keel.QueryEvent) context.Context {
+	if ctx.Value(gateKey{}) != nil {
+		g.once.Do(func() {
+			close(g.held)
+			<-g.open
+		})
+	}
+	return ctx
+}
+
+func (*gateObserver) AfterQuery(context.Context, *keel.QueryEvent) {}
+
+// cachedCount counts the tenant's customers through the result cache.
+func cachedCount(ctx context.Context, d *keel.DB) error {
+	c := fleetdb.Customers
+	_, err := c.Query().Cache(keel.TTL(time.Minute)).Count(ctx, d)
+	return err
+}
+
+func TestTenantConcurrencyACacheWaiterLetsItsSlotGo(t *testing.T) {
+	gate := newGate()
+	defer gate.release()
+	waits := make(chan keel.WaitKind, 16)
+	d := cacheDB(t, nil, func(cfg *keel.Config) {
+		cfg.TenantConcurrency = 2
+		cfg.Observers = append(cfg.Observers, gate)
+		cfg.SlowWaits = keel.SlowWaitConfig{
+			After:  20 * time.Millisecond,
+			Report: func(_ context.Context, w *keel.SlowWait) { waits <- w.Kind },
+		}
+	})
+	ctx := newTenant()
+	c := fleetdb.Customers
+	ok(t, c.Create(ctx, d, &fleet.Customer{Name: "A", Code: "A"}))
+	ok(t, d.FlushDataVersions(context.Background()))
+
+	leader := make(chan error, 1)
+	go func() { leader <- cachedCount(context.WithValue(ctx, gateKey{}, true), d) }()
+	<-gate.held
+	waiter := make(chan error, 1)
+	go func() { waiter <- cachedCount(ctx, d) }()
+	waitForKind(t, waits, keel.WaitCacheFill)
+
+	bounded, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	_, err := c.Query().Count(bounded, d)
+	ok(t, err)
+
+	gate.release()
+	ok(t, <-leader)
+	ok(t, <-waiter)
+}
+
+func TestMaxWaitEndsSlotAndConnectionWaits(t *testing.T) {
+	c := fleetdb.Customers
+	limited := openDB(t, func(cfg *keel.Config) {
+		cfg.TenantConcurrency = 1
+		cfg.MaxWait = 100 * time.Millisecond
+	})
+	tenant := newTenant()
+	ok(t, keel.Read(tenant, limited, func(ctx context.Context) error {
+		_, err := c.Query().Count(ctx, limited)
+		ok(t, err)
+		start := time.Now()
+		_, err = c.Query().Count(tenant, limited)
+		if !errors.Is(err, keel.ErrWaitLimit) {
+			t.Fatalf("a second terminal of the tenant: got %v, want ErrWaitLimit", err)
+		}
+		if waited := time.Since(start); waited > 2*time.Second {
+			t.Fatalf("waited %v for a slot", waited)
+		}
+		return nil
+	}))
+
+	pooled := openDB(t, func(cfg *keel.Config) {
+		pc, err := pgxpool.ParseConfig(testDSN)
+		ok(t, err)
+		pc.MaxConns = 1
+		cfg.Pool = pc
+		cfg.MaxWait = 100 * time.Millisecond
+	})
+	ok(t, keel.Read(newTenant(), pooled, func(ctx context.Context) error {
+		_, err := c.Query().Count(ctx, pooled)
+		ok(t, err)
+		_, err = c.Query().Count(newTenant(), pooled)
+		if !errors.Is(err, keel.ErrWaitLimit) {
+			t.Fatalf("a terminal with the pool's only connection taken: got %v, want ErrWaitLimit", err)
+		}
+		return nil
+	}))
+}
+
+func TestMaxWaitEndsACacheWaitWithAReadOfItsOwn(t *testing.T) {
+	gate := newGate()
+	defer gate.release()
+	d := cacheDB(t, nil, func(cfg *keel.Config) {
+		cfg.Observers = append(cfg.Observers, gate)
+		cfg.MaxWait = 100 * time.Millisecond
+	})
+	ctx := newTenant()
+	ok(t, fleetdb.Customers.Create(ctx, d, &fleet.Customer{Name: "A", Code: "A"}))
+	ok(t, d.FlushDataVersions(context.Background()))
+
+	leader := make(chan error, 1)
+	go func() { leader <- cachedCount(context.WithValue(ctx, gateKey{}, true), d) }()
+	<-gate.held
+	misses := d.CacheStats().Misses
+	ok(t, cachedCount(ctx, d))
+	eq(t, d.CacheStats().Misses, misses+1)
+	gate.release()
+	ok(t, <-leader)
+}
+
+// waitForKind waits for a slow wait of kind.
+func waitForKind(t *testing.T, waits <-chan keel.WaitKind, kind keel.WaitKind) {
+	t.Helper()
+	timeout := time.After(5 * time.Second)
+	for {
+		select {
+		case k := <-waits:
+			if k == kind {
+				return
+			}
+		case <-timeout:
+			t.Fatalf("no %v wait reported", kind)
+		}
+	}
 }

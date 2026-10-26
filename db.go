@@ -117,6 +117,12 @@ type Config struct {
 	// goroutine's read of a result cache entry (see SlowWaitConfig). Off unless both of its fields
 	// are set.
 	SlowWaits SlowWaitConfig
+	// MaxWait bounds each wait for a tenant slot, a pool connection or another goroutine's read
+	// of a result cache entry, whatever the context's deadline; zero (the default) leaves waits
+	// to the context. A slot or connection wait that reaches it fails with ErrWaitLimit, and a
+	// cache wait stops waiting and reads the database itself, so work without a deadline (a
+	// background job) cannot wait forever behind a leaked slot or a stuck request.
+	MaxWait time.Duration
 
 	// LoadStrategy is how a read loads its to-many relations when the query does not choose
 	// (Query.LoadStrategy). The default, LoadPipelined, sends the root statement and every level in
@@ -225,7 +231,7 @@ func Open(ctx context.Context, cfg Config) (*DB, error) {
 	}
 	db := &DB{pool: pool, cfg: cfg, slow: newSlowWaits(cfg.SlowWaits)}
 	if cfg.TenantConcurrency > 0 {
-		db.tenants = newTenantLimiter(cfg.TenantConcurrency, db.slow)
+		db.tenants = newTenantLimiter(cfg.TenantConcurrency, db.slow, cfg.MaxWait)
 	}
 	if len(cfg.Replicas) > 0 {
 		if db.replicas, err = openReplicas(ctx, &db.cfg); err != nil {

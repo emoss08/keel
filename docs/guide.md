@@ -127,6 +127,7 @@ the request context.
 | `DeadlineTimeouts` | `bool` | every transaction keel begins sets `statement_timeout` to the time left before its context's deadline; see [Plans and timeouts](#plans-and-timeouts) |
 | `TenantConcurrency` | `int` | at most this many terminals and transactions of one tenant run at once; zero (the default) is no bound; see [Tenant concurrency](#tenant-concurrency) |
 | `SlowWaits` | `keel.SlowWaitConfig` | reports work that waits longer than `After` for a tenant slot, a pool connection or another goroutine's cache fill, with the stacks of the waiter and of the slot holders; see [Slow waits](#slow-waits) |
+| `MaxWait` | `time.Duration` | bounds each of those waits whatever the context's deadline: a slot or connection wait fails with `keel.ErrWaitLimit`, a cache wait reads the database itself; zero (the default) leaves waits to the context; see [Bounding waits](#bounding-waits) |
 
 `keel.TxInfo` tells `OnBegin` whether the transaction is `ReadOnly` and whether it is `Implicit`
 (opened by keel for a single terminal). A `keel.Statement` is `SQL` plus `Args`.
@@ -3456,12 +3457,32 @@ cfg.TenantConcurrency = 8 // at most 8 terminals or transactions per tenant at a
   takes a slot of its own.
 - `db.TenantWaits()` counts the terminals and transactions that had to wait: a rising count names a
   bound too low or a tenant that needs looking at.
+- A cached read that waits for another goroutine's read of the same entry lets its slot go while it
+  waits (the read it waits for holds a slot of its own) and takes one again before it looks again,
+  so identical reads waiting on one fill do not crowd out the tenant's other work.
 
 Slots live in a map split into 64 independently locked shards, holding only the tenants with work
 running or waiting, so its size follows the number of active tenants, not of all tenants. Work
 started under a fresh context while the tenant's transaction is open (a goroutine that drops the
 transaction from its context) needs a slot of its own: keep the bound above the nesting the
 application does.
+
+### Bounding waits
+
+A wait for a tenant slot or a pool connection ends when its context does, and work without a
+deadline (a background job, a consumer) waits forever behind a leaked slot or a stuck request.
+`Config.MaxWait` bounds every such wait whatever the context's deadline:
+
+```go
+cfg.MaxWait = 30 * time.Second
+```
+
+- A slot or connection wait that reaches it fails with an error that matches `keel.ErrWaitLimit`
+  and names what it waited for; one its context ends first keeps the context's error.
+- A cached read waiting for another goroutine's read of the same entry stops waiting and reads the
+  database itself.
+- Zero, the default, leaves waits to the context. Set it above the longest wait the application
+  accepts (a request's timeout, a job's slowest step) so it ends only waits that would not end.
 
 ### Slow waits
 

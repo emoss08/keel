@@ -388,7 +388,7 @@ func (b *versionBus) stamps(ctx context.Context, tenant string, tables []string,
 	if len(missing) == 0 {
 		return out, nil
 	}
-	if err := b.fill(ctx, missing, via); err != nil {
+	if err := b.fill(ctx, tenantName(tenant), missing, via); err != nil {
 		return nil, err
 	}
 	if missing = b.read(prefixes, tables, out); len(missing) > 0 {
@@ -418,14 +418,14 @@ func (b *versionBus) read(prefixes, tables []string, out []pairStamp) []versionK
 	return missing
 }
 
-// fill reads the stored versions of keys from keel_data_versions, a pair without a row being at
+// fill reads the stored versions of keys, for tenant, from keel_data_versions, a pair without a row being at
 // version 0, on the connection via returns (inside the caller's transaction when it has one: a
 // plain SELECT, and under REPEATABLE READ a snapshot no newer than the data the terminal reads),
 // or on one of the primary pool's when via is nil or returns none. When the table does not exist
 // yet every version is 0; it is never created here, so the read cannot fail the caller's
 // transaction. Notifications that arrive during the read are kept even for pairs the bus did not
 // hold, so a version bumped while the read was in flight is not lost.
-func (b *versionBus) fill(ctx context.Context, keys []versionKey, via connSource) error {
+func (b *versionBus) fill(ctx context.Context, tenant waitTenant, keys []versionKey, via connSource) error {
 	db := b.db
 	if db.versions == nil || db.pool == nil {
 		return errVersionsReset
@@ -439,7 +439,7 @@ func (b *versionBus) fill(ctx context.Context, keys []versionKey, via connSource
 		conn = c
 	}
 	if conn == nil {
-		pc, err := db.acquire(ctx, db.pool, nil)
+		pc, err := db.acquire(ctx, db.pool, tenant)
 		if err != nil {
 			return fmt.Errorf("keel: read data versions: %w", err)
 		}

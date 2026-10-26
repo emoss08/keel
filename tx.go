@@ -374,11 +374,11 @@ func (tx *txState) acquire(ctx context.Context) (pgConn, error) {
 	if tx.rep != nil {
 		pool = tx.rep.pool
 	}
-	sc := tx.scope
-	if sc == nil && tx.db.slow != nil && tx.scopeCtx != nil {
-		sc = tx.db.resolveScope(tx.scopeCtx)
+	var tenant waitTenant = tx.scope
+	if tx.scope == nil && tx.scopeCtx != nil {
+		tenant = ctxTenant{db: tx.db, ctx: tx.scopeCtx}
 	}
-	conn, err := tx.db.acquire(ctx, pool, sc)
+	conn, err := tx.db.acquire(ctx, pool, tenant)
 	if err != nil {
 		return nil, fmt.Errorf("keel: acquire connection: %w", err)
 	}

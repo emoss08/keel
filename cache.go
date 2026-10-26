@@ -291,21 +291,23 @@ type cacheRun struct {
 // read asks for the cache. It bypasses the cache where it does not apply, and otherwise looks the
 // terminal's entry up (unless refill is set, after a hit that could not be replayed): a valid
 // entry is a hit. A miss of a key another goroutine of the process is reading waits for it, with
-// the connection the lookup took back in the pool, and looks again.
+// the connection the lookup took back in the pool and the tenant slot the runner took let go
+// (the goroutine it waits for holds one of its own), then takes the slot again and looks again.
+// It fails only when taking the slot again does.
 func (c *resultCache) start(ctx context.Context, run *runner, reads []*read, stmts []*stmt,
 	refill bool,
-) *cacheRun {
+) (*cacheRun, error) {
 	if c == nil {
-		return nil
+		return nil, nil
 	}
 	ttl := cachedTTL(reads)
 	if ttl == 0 {
-		return nil
+		return nil, nil
 	}
 	rs := readSetFrom(ctx)
 	if ttl < 0 || rs == nil || !c.applies(run) {
 		c.bypasses.Add(1)
-		return nil
+		return nil, nil
 	}
 	tenant := ""
 	if run.sc.tenant != nil {
@@ -318,26 +320,32 @@ func (c *resultCache) start(ctx context.Context, run *runner, reads []*read, stm
 	key, ok := cacheKey(tenant, extra, readShape(reads), stmts)
 	if !ok {
 		c.bypasses.Add(1)
-		return nil
+		return nil, nil
 	}
 	cr := &cacheRun{c: c, ctx: ctx, run: run, key: key, ttl: ttl, tenant: tenant, reads: rs,
 		prefixes: len(tenantPrefixes(tenant)), noStore: run.replica() != nil}
 	if !refill {
 		if cr.hit() {
-			return cr
+			return cr, nil
 		}
 		if wait := c.join(key); wait != nil {
 			run.idle()
+			yielded := run.yieldSlot()
 			run.db.waitFill(ctx, wait, tenant)
+			if yielded {
+				if err := run.reclaimSlot(ctx); err != nil {
+					return nil, err
+				}
+			}
 			if cr.hit() {
-				return cr
+				return cr, nil
 			}
 		} else {
 			cr.flight = c.lead(key)
 		}
 	}
 	c.misses.Add(1)
-	return cr
+	return cr, nil
 }
 
 // readShape describes the reads of a terminal for its cache key: for each, whether it loads

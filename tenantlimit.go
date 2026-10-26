@@ -2,7 +2,6 @@ package keel
 
 import (
 	"context"
-	"fmt"
 	"hash/maphash"
 	"slices"
 	"sync"
@@ -19,11 +18,12 @@ const tenantShards = 64
 // in a map split into shards; an entry is removed when its last holder lets it go and nobody
 // waits, so the map holds only the tenants active right now.
 type tenantLimiter struct {
-	limit  int
-	seed   maphash.Seed
-	waits  atomic.Int64
-	slow   *slowWaits
-	shards [tenantShards]tenantShard
+	limit   int
+	seed    maphash.Seed
+	waits   atomic.Int64
+	slow    *slowWaits
+	maxWait time.Duration
+	shards  [tenantShards]tenantShard
 }
 
 // tenantShard is one locked part of a tenantLimiter's map.
@@ -69,8 +69,8 @@ func (h *slotHold) release() {
 // tenant shares instead of taking a second.
 type slotKey struct{}
 
-func newTenantLimiter(limit int, slow *slowWaits) *tenantLimiter {
-	l := &tenantLimiter{limit: limit, seed: maphash.MakeSeed(), slow: slow}
+func newTenantLimiter(limit int, slow *slowWaits, maxWait time.Duration) *tenantLimiter {
+	l := &tenantLimiter{limit: limit, seed: maphash.MakeSeed(), slow: slow, maxWait: maxWait}
 	for i := range l.shards {
 		l.shards[i].slots = map[string]*tenantSlot{}
 	}
@@ -100,8 +100,9 @@ func (l *tenantLimiter) enter(ctx context.Context, sc *scopeState, h *slotHold) 
 	return nil
 }
 
-// acquire takes a slot of key for h, waiting while the tenant runs the limit's worth of work. A wait
-// that crosses SlowWaitConfig.After is reported once, with the work holding the tenant's slots.
+// acquire takes a slot of key for h, waiting while the tenant runs the limit's worth of work, for at
+// most Config.MaxWait when it is set. A wait that crosses SlowWaitConfig.After is reported once,
+// with the work holding the tenant's slots.
 func (l *tenantLimiter) acquire(ctx context.Context, key string, h *slotHold) (*tenantSlot, error) {
 	sh := &l.shards[maphash.String(l.seed, key)%tenantShards]
 	sh.mu.Lock()
@@ -120,6 +121,8 @@ func (l *tenantLimiter) acquire(ctx context.Context, key string, h *slotHold) (*
 	s.waiters = append(s.waiters, ready)
 	sh.mu.Unlock()
 	l.waits.Add(1)
+	wctx, cancel := boundWait(ctx, l.maxWait)
+	defer cancel()
 	var slow <-chan time.Time
 	start := time.Now()
 	if l.slow != nil {
@@ -139,7 +142,7 @@ func (l *tenantLimiter) acquire(ctx context.Context, key string, h *slotHold) (*
 			w := l.slotWait(s, h, time.Since(start))
 			l.slow.report(ctx, &w)
 			continue
-		case <-ctx.Done():
+		case <-wctx.Done():
 		}
 		break
 	}
@@ -147,13 +150,13 @@ func (l *tenantLimiter) acquire(ctx context.Context, key string, h *slotHold) (*
 	if i := slices.Index(s.waiters, ready); i >= 0 {
 		s.waiters = slices.Delete(s.waiters, i, i+1)
 		sh.mu.Unlock()
-		return nil, fmt.Errorf("keel: wait for a tenant slot: %w", ctx.Err())
+		return nil, waitErr(wctx, "a tenant slot", l.maxWait)
 	}
 	sh.mu.Unlock()
 	// A holder handed the slot over as the context ended: pass it on.
 	<-ready
 	s.release(nil)
-	return nil, fmt.Errorf("keel: wait for a tenant slot: %w", ctx.Err())
+	return nil, waitErr(wctx, "a tenant slot", l.maxWait)
 }
 
 // hold records h as a holder of s when slow waits are reported. The caller holds s's shard lock.

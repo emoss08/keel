@@ -696,6 +696,15 @@ ends removes itself, or, if it was handed the slot in that instant, passes it on
   holds the tenant's slots (`slowwait.go`). Connection acquisitions go through `DB.acquire`, which
   arms a timer per acquisition, and cache fill waits through `DB.waitFill`; frames are symbolised
   only when a report is made.
+- `Config.MaxWait` bounds a slot wait, `DB.acquire` and `DB.waitFill` with a context ended by
+  `context.WithTimeoutCause` and the cause `errWaitLimit` (`maxwait.go`); a wait whose cause is it
+  returns `ErrWaitLimit`, one the caller's context ends first keeps that context's error. A
+  connection or fill wait names its tenant through `waitTenant`, read only when the wait is
+  reported: the runner's scope, the version read's tenant, or the scope of the context of a catalog
+  read.
+- A cached read that waits for another goroutine's fill gives its owned slot back
+  (`runner.yieldSlot`) and takes one again (`runner.reclaimSlot`, which also points its implicit
+  transaction at the new slot) before it looks again; a shared slot is kept.
 
 ### Budgets
 
@@ -889,7 +898,9 @@ bypasses, errors, local bytes, pairs held and whether the listener is up.
 - **Stores.** A local miss reads the shared store; a shared hit is validated the same way and
   copied into the local store. Concurrent misses of one key in a process wait for the first and
   look again; a waiter first returns a connection its lookup took to read versions (its own, or
-  that of a transaction that has not begun), so waiters hold no pool connections. Shared-store errors are misses, reported to `OnError`.
+  that of a transaction that has not begun) and the tenant slot it took, so waiters hold neither a
+  pool connection nor a slot, and takes the slot again before it looks. `Config.MaxWait` bounds
+  the wait; past it the waiter reads the database itself. Shared-store errors are misses, reported to `OnError`.
 - Not covered: `DynQuery` and `Into` projections; data read by raw SQL without `AlsoReads`;
   writes keel cannot see without `MarkChanged`. Changes by other processes are visible after their
   flush interval plus the notification's delivery.

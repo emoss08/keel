@@ -31,6 +31,9 @@ var (
 	// transaction on the context under another scope than the one the transaction began with. Run
 	// such work in its own transaction with Detached.
 	ErrScopeMismatch = errors.New("keel: the context's scope differs from its transaction's; use keel.Detached for a transaction of its own")
+	// ErrWaitLimit is returned by work that waited Config.MaxWait for a tenant slot or a pool
+	// connection without getting one.
+	ErrWaitLimit = errors.New("keel: waited longer than Config.MaxWait")
 
 	errRawArgs  = errors.New("keel: Raw has fewer arguments than placeholders")
 	errPanicked = errors.New("keel: the transaction's function panicked")

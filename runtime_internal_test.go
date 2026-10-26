@@ -8,6 +8,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // enterSlot takes a slot for work under sc, the way a runner or a transaction does.
@@ -18,7 +20,7 @@ func enterSlot(ctx context.Context, l *tenantLimiter, sc *scopeState) (*slotHold
 }
 
 func TestTenantLimiterBoundsAndForgets(t *testing.T) {
-	l := newTenantLimiter(2, nil)
+	l := newTenantLimiter(2, nil, 0)
 	sc := &scopeState{tenant: []any{"org", "bu"}}
 	var running, peak atomic.Int32
 	var wg sync.WaitGroup
@@ -56,7 +58,7 @@ func TestTenantLimiterBoundsAndForgets(t *testing.T) {
 }
 
 func TestTenantLimiterCancelledWaiter(t *testing.T) {
-	l := newTenantLimiter(1, nil)
+	l := newTenantLimiter(1, nil, 0)
 	sc := &scopeState{tenant: []any{"org"}}
 	held, err := enterSlot(context.Background(), l, sc)
 	if err != nil {
@@ -105,7 +107,7 @@ func TestTenantLimiterCancelledWaiter(t *testing.T) {
 }
 
 func TestTenantLimiterHandOffRace(t *testing.T) {
-	l := newTenantLimiter(1, nil)
+	l := newTenantLimiter(1, nil, 0)
 	sc := &scopeState{tenant: []any{"org"}}
 	var wg sync.WaitGroup
 	for i := range 200 {
@@ -140,7 +142,7 @@ func TestTenantLimiterReportsASlowWaitWithTheHolders(t *testing.T) {
 	l := newTenantLimiter(1, newSlowWaits(SlowWaitConfig{
 		After:  20 * time.Millisecond,
 		Report: func(_ context.Context, w *SlowWait) { reports <- *w },
-	}))
+	}), 0)
 	sc := &scopeState{tenant: []any{"org"}}
 	held, err := enterSlot(context.Background(), l, sc)
 	if err != nil {
@@ -318,5 +320,71 @@ func TestRunnerIdleReturnsAConnectionNothingWasSentOn(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+// waitTenantKey carries a test tenant on a context.
+type waitTenantKey struct{}
+
+func TestSlowConnectionWaitsNameTheirTenant(t *testing.T) {
+	dsn := os.Getenv("KEEL_TEST_DSN")
+	if dsn == "" {
+		t.Skip("KEEL_TEST_DSN is not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pc, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pc.MaxConns = 1
+	reports := make(chan *SlowWait, 8)
+	db, err := Open(ctx, Config{
+		Pool:          pc,
+		TenantColumns: []string{"organization_id"},
+		Tenant: func(ctx context.Context) ([]any, bool) {
+			org, ok := ctx.Value(waitTenantKey{}).(string)
+			return []any{org}, ok
+		},
+		SlowWaits: SlowWaitConfig{
+			After:  10 * time.Millisecond,
+			Report: func(_ context.Context, w *SlowWait) { reports <- w },
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	held, err := db.pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Release()
+
+	tenantCtx := context.WithValue(ctx, waitTenantKey{}, "org_a")
+	cases := []struct {
+		name   string
+		tenant waitTenant
+		want   string
+	}{
+		{"a version read", tenantName("org_b"), "org_b"},
+		{"a catalog read", ctxTenant{db: db, ctx: tenantCtx}, TenantKeyOf("org_a")},
+		{"system work", nil, ""},
+	}
+	for _, c := range cases {
+		wctx, wcancel := context.WithTimeout(ctx, 200*time.Millisecond)
+		_, err := db.acquire(wctx, db.pool, c.tenant)
+		wcancel()
+		if err == nil {
+			t.Fatalf("%s: acquired a connection from a full pool", c.name)
+		}
+		select {
+		case w := <-reports:
+			if w.Kind != WaitConnection || w.Tenant != c.want {
+				t.Errorf("%s: reported %v for %q, want a connection wait for %q", c.name, w.Kind, w.Tenant, c.want)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s: no slow wait reported", c.name)
+		}
 	}
 }

@@ -125,9 +125,23 @@ func frames(pcs []uintptr) []string {
 	return out
 }
 
-// acquire takes a connection from pool, reporting a wait that crosses SlowWaitConfig.After with
-// the caller's stack, the tenant of sc and the pool's state.
-func (db *DB) acquire(ctx context.Context, pool *pgxpool.Pool, sc *scopeState) (*pgxpool.Conn, error) {
+// acquire takes a connection from pool, waiting at most Config.MaxWait when it is set.
+func (db *DB) acquire(ctx context.Context, pool *pgxpool.Pool, tenant waitTenant) (*pgxpool.Conn, error) {
+	if db.cfg.MaxWait <= 0 {
+		return db.acquireReported(ctx, pool, tenant)
+	}
+	wctx, cancel := boundWait(ctx, db.cfg.MaxWait)
+	defer cancel()
+	conn, err := db.acquireReported(wctx, pool, tenant)
+	if err != nil && context.Cause(wctx) == errWaitLimit {
+		return nil, waitErr(wctx, "a pool connection", db.cfg.MaxWait)
+	}
+	return conn, err
+}
+
+// acquireReported takes a connection from pool, reporting a wait that crosses SlowWaitConfig.After
+// with the caller's stack, the waiting work's tenant and the pool's state.
+func (db *DB) acquireReported(ctx context.Context, pool *pgxpool.Pool, tenant waitTenant) (*pgxpool.Conn, error) {
 	sw := db.slow
 	if sw == nil {
 		return pool.Acquire(ctx)
@@ -138,7 +152,7 @@ func (db *DB) acquire(ctx context.Context, pool *pgxpool.Pool, sc *scopeState) (
 		st := pool.Stat()
 		sw.report(ctx, &SlowWait{
 			Kind:   WaitConnection,
-			Tenant: sc.tenantKey(),
+			Tenant: tenantOf(tenant),
 			Waited: time.Since(start),
 			Stack:  frames(pcs),
 			Pool: PoolState{
@@ -155,6 +169,31 @@ func (db *DB) acquire(ctx context.Context, pool *pgxpool.Pool, sc *scopeState) (
 }
 
 // tenantKey returns the key of the scope's tenant, or "" for a system scope or none.
+// waitTenant names the tenant a wait is for. It is read only when the wait is reported, so naming
+// it costs nothing while waits stay short.
+type waitTenant interface{ tenantKey() string }
+
+// tenantOf returns t's tenant key, empty for none.
+func tenantOf(t waitTenant) string {
+	if t == nil {
+		return ""
+	}
+	return t.tenantKey()
+}
+
+// tenantName is a tenant key known as a string, such as the one a version read is for.
+type tenantName string
+
+func (t tenantName) tenantKey() string { return string(t) }
+
+// ctxTenant is the tenant of the scope ctx resolves to, for a wait outside any runner.
+type ctxTenant struct {
+	db  *DB
+	ctx context.Context
+}
+
+func (t ctxTenant) tenantKey() string { return t.db.resolveScope(t.ctx).tenantKey() }
+
 func (sc *scopeState) tenantKey() string {
 	if sc == nil || sc.tenant == nil {
 		return ""
@@ -162,9 +201,11 @@ func (sc *scopeState) tenantKey() string {
 	return TenantKeyOf(sc.tenant...)
 }
 
-// waitFill waits for another goroutine's read of a result cache entry, or for ctx, reporting a
-// wait that crosses SlowWaitConfig.After with the caller's stack.
+// waitFill waits for another goroutine's read of a result cache entry, for ctx or for at most
+// Config.MaxWait, reporting a wait that crosses SlowWaitConfig.After with the caller's stack.
 func (db *DB) waitFill(ctx context.Context, wait <-chan struct{}, tenant string) {
+	ctx, cancel := boundWait(ctx, db.cfg.MaxWait)
+	defer cancel()
 	sw := db.slow
 	if sw == nil {
 		select {

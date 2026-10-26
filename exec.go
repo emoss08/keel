@@ -161,6 +161,29 @@ func (r *runner) idle() {
 	}
 }
 
+// yieldSlot lets the tenant slot the runner took go while it waits on work that holds a slot of its
+// own, and reports whether it did; reclaimSlot takes one again. A slot the runner shares (its
+// transaction's) is kept.
+func (r *runner) yieldSlot() bool {
+	if !r.hold.owned {
+		return false
+	}
+	r.hold.release()
+	return true
+}
+
+// reclaimSlot takes a tenant slot again after yieldSlot, for the runner and its implicit
+// transaction.
+func (r *runner) reclaimSlot(ctx context.Context) error {
+	if err := r.db.tenants.enter(ctx, r.sc, &r.hold); err != nil {
+		return err
+	}
+	if r.own && r.tx != nil {
+		r.tx.hold.slot = r.hold.slot
+	}
+	return nil
+}
+
 // started returns the runner's connection with its transaction, if it has one, begun, for a
 // statement that cannot join a batch, such as COPY.
 func (r *runner) started(ctx context.Context) (pgConn, error) {
