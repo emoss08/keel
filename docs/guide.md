@@ -1296,17 +1296,17 @@ paths stays as it was.
 
 #### Row comparisons
 
-`keel.Row(vs...)` is the row value `ROW(a, b, …)`: an element is an expression, nil (NULL) or a Go
+`keel.Tuple(vs...)` is the row value `ROW(a, b, …)`: an element is an expression, nil (NULL) or a Go
 value bound as a parameter typed by the element it meets. `Eq`, `Ne`, `Gt`, `Gte`, `Lt`, `Lte`,
 `IsDistinctFrom` and `IsNotDistinctFrom` compare two rows element by element, which is the keyset
 condition an index on the same columns serves as one range scan:
 
 ```go
-q.Where(keel.Row(e.OccurredAt, e.ID).Gt(keel.Row(after.OccurredAt, after.ID))). // ascending page
+q.Where(keel.Tuple(e.OccurredAt, e.ID).Gt(keel.Tuple(after.OccurredAt, after.ID))). // ascending page
     Order(e.OccurredAt.Asc(), e.ID.Asc())
-q.Where(keel.Row(fp.PurchasedAt, fp.ID).Lt(keel.Row(cur.PurchasedAt, cur.ID))) // descending
-up.UpdateWhere(keel.Row(stored...).IsDistinctFrom(keel.Row(proposed...)))   // skip unchanged rows
-q.Where(keel.Row(c.ItemKey, c.ContentHash).InUnnest(keel.TextArray(keys), keel.TextArray(hashes)))
+q.Where(keel.Tuple(fp.PurchasedAt, fp.ID).Lt(keel.Tuple(cur.PurchasedAt, cur.ID))) // descending
+up.UpdateWhere(keel.Tuple(stored...).IsDistinctFrom(keel.Tuple(proposed...)))   // skip unchanged rows
+q.Where(keel.Tuple(c.ItemKey, c.ContentHash).InUnnest(keel.TextArray(keys), keel.TextArray(hashes)))
 ```
 
 `InUnnest(arrays...)` is `(row IN (SELECT * FROM unnest($1::text[], $2::text[])))`: the arrays zip
@@ -1375,7 +1375,7 @@ dynamic one adds):
 | `keel.DynLit("MC ").Concat(x)` | `keel.Text("MC ").Cat(x)` |
 | `keel.DynOf(id).Collate("C")` | `id.Collate("C")` |
 | `keel.DynCase().When(p, v).Else(w)` | `keel.CaseString()` (or the kind of `v`) `.When(p, v).Else(w)` |
-| `keel.DynRow(a, b).Gt(keel.DynRow(x, y))`, `.IsDistinctFrom`, `.InUnnest(xs, ys)` | `keel.Row(a, b).Gt(keel.Row(x, y))`, `.IsDistinctFrom`, `.InUnnest(keel.TextArray(xs), keel.Int64Array(ys))` |
+| `keel.DynRow(a, b).Gt(keel.DynRow(x, y))`, `.IsDistinctFrom`, `.InUnnest(xs, ys)` | `keel.Tuple(a, b).Gt(keel.Tuple(x, y))`, `.IsDistinctFrom`, `.InUnnest(keel.TextArray(xs), keel.Int64Array(ys))` |
 | `keel.DynArray(e1, e2)` | `keel.ArrayOfInt64(e1, e2)` (the kind of the elements) |
 | `keel.DynOf(id).In(cte.Col("ids"))` | `id.InArray(keel.StringArrayOf(cte.Col("ids")))` |
 | `keel.DynOf(a).Covers(b)`, `CoveredBy(b)` on arrays | `a.ContainsAllExpr(b)`, `ContainedByExpr(b)` |

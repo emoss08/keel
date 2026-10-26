@@ -185,19 +185,19 @@ func TestTypedOperatorPredicatesRender(t *testing.T) {
 			`(s."labels" <@ $3::text[])`},
 		{"array overlaps", s.Pick(s.ID).Where(s.Labels.OverlapsExpr(keel.TextArray([]string{"x"}))),
 			`(s."labels" && $3::text[])`},
-		{"row keyset", s.Pick(s.ID).Where(keel.Row(s.CreatedAt, s.ID).Gt(keel.Row(int64(5), "x"))),
+		{"row keyset", s.Pick(s.ID).Where(keel.Tuple(s.CreatedAt, s.ID).Gt(keel.Tuple(int64(5), "x"))),
 			`(ROW(s."created_at", s."id") > ROW($3, $4))`},
-		{"row keyset descending", s.Pick(s.ID).Where(keel.Row(s.Hazmat, s.CreatedAt, s.ID).Lt(
-			keel.Row(true, keel.Int64(5), nil))),
+		{"row keyset descending", s.Pick(s.ID).Where(keel.Tuple(s.Hazmat, s.CreatedAt, s.ID).Lt(
+			keel.Tuple(true, keel.Int64(5), nil))),
 			`(ROW(s."hazmat", s."created_at", s."id") < ROW($3, $4::bigint, NULL))`},
-		{"row lte and gte", s.Pick(s.ID).Where(keel.Row(s.CreatedAt, s.ID).Lte(keel.Row(int64(1), "a")),
-			keel.Row(s.CreatedAt, s.ID).Gte(keel.Row(int64(0), "a"))),
+		{"row lte and gte", s.Pick(s.ID).Where(keel.Tuple(s.CreatedAt, s.ID).Lte(keel.Tuple(int64(1), "a")),
+			keel.Tuple(s.CreatedAt, s.ID).Gte(keel.Tuple(int64(0), "a"))),
 			`(ROW(s."created_at", s."id") <= ROW($3, $4)) AND (ROW(s."created_at", s."id") >= ROW($5, $6))`},
-		{"row eq", s.Pick(s.ID).Where(keel.Row(s.CreatedAt, s.ID).Eq(keel.Row(int64(1), "a"))),
+		{"row eq", s.Pick(s.ID).Where(keel.Tuple(s.CreatedAt, s.ID).Eq(keel.Tuple(int64(1), "a"))),
 			`(ROW(s."created_at", s."id") = ROW($3, $4))`},
-		{"row distinct", s.Pick(s.ID).Where(keel.Row(s.ProNumber, s.Weight).IsDistinctFrom(keel.Row(s.ID, s.CreatedAt))),
+		{"row distinct", s.Pick(s.ID).Where(keel.Tuple(s.ProNumber, s.Weight).IsDistinctFrom(keel.Tuple(s.ID, s.CreatedAt))),
 			`(ROW(s."pro_number", s."weight") IS DISTINCT FROM ROW(s."id", s."created_at"))`},
-		{"row in unnest", s.Pick(s.ID).Where(keel.Row(s.ProNumber, s.Weight).InUnnest(
+		{"row in unnest", s.Pick(s.ID).Where(keel.Tuple(s.ProNumber, s.Weight).InUnnest(
 			keel.TextArray([]string{"a"}), keel.Int64Array([]int64{1}))),
 			`(ROW(s."pro_number", s."weight") IN (SELECT * FROM unnest($3::text[], $4::bigint[])))`},
 		{"bool case predicate", c.Pick(c.ID).Where(keel.CaseBool().When(c.VIP.IsTrue(), keel.ConstBool(true)).
@@ -223,8 +223,8 @@ func TestTypedOperatorErrors(t *testing.T) {
 		"empty collation":             s.Pick(s.ProNumber.Collate("")),
 		"quoted collation":            s.Pick(s.ProNumber.Collate(`C" ; DROP`)),
 		"long collation":              s.Pick(s.ProNumber.Collate(strings.Repeat("c", 64))),
-		"row of one value":            s.Pick(s.ID).Where(keel.Row(s.ID).Eq(keel.Row(s.ID, s.ID))),
-		"in unnest of nothing":        s.Pick(s.ID).Where(keel.Row(s.ID, s.ProNumber).InUnnest()),
+		"row of one value":            s.Pick(s.ID).Where(keel.Tuple(s.ID).Eq(keel.Tuple(s.ID, s.ID))),
+		"in unnest of nothing":        s.Pick(s.ID).Where(keel.Tuple(s.ID, s.ProNumber).InUnnest()),
 		"const text with NUL":         s.Pick(keel.ConstText("a\x00b")),
 		"const NaN":                   s.Pick(keel.ConstFloat64(math.NaN())),
 		"const numeric not a decimal": s.Pick(keel.ConstNumeric("1e5")),
@@ -297,10 +297,10 @@ func TestTypedOperatorsRun(t *testing.T) {
 	eq(t, rows[2].Label, "heavy")
 
 	count := func(p keel.Pred) int64 { return must(s.Where(p).Count(w.ctx, d))(t) }
-	eq(t, count(keel.Row(s.Weight, s.ProNumber).Gt(keel.Row(int64(1010), "PRO-0001"))), int64(2))
-	eq(t, count(keel.Row(s.Weight, s.ProNumber).Lt(keel.Row(int64(1030), "PRO-0003"))), int64(2))
-	eq(t, count(keel.Row(s.Weight, s.ProNumber).Gte(keel.Row(keel.Int64(1020), keel.Text("PRO-0002")))), int64(2))
-	eq(t, count(keel.Row(s.ProNumber, s.Weight).InUnnest(
+	eq(t, count(keel.Tuple(s.Weight, s.ProNumber).Gt(keel.Tuple(int64(1010), "PRO-0001"))), int64(2))
+	eq(t, count(keel.Tuple(s.Weight, s.ProNumber).Lt(keel.Tuple(int64(1030), "PRO-0003"))), int64(2))
+	eq(t, count(keel.Tuple(s.Weight, s.ProNumber).Gte(keel.Tuple(keel.Int64(1020), keel.Text("PRO-0002")))), int64(2))
+	eq(t, count(keel.Tuple(s.ProNumber, s.Weight).InUnnest(
 		keel.TextArray([]string{"PRO-0001", "PRO-0002"}), keel.Int64Array([]int64{1010, 1}))), int64(1))
 	eq(t, count(s.ProNumber.InArray(keel.TextArray([]string{"PRO-0001", "PRO-0003"}))), int64(2))
 	eq(t, count(s.ProNumber.NotInArray(keel.TextArray([]string{"PRO-0001", "PRO-0003"}))), int64(2))
@@ -355,7 +355,7 @@ func TestTypedFormsRenderAsDynamic(t *testing.T) {
 		{"element", s.Labels.At(2), keel.DynOf(s.Labels).At(2)},
 		{"case", keel.CaseString().When(s.Hazmat.IsTrue(), keel.Text("h")).Else(keel.Text("n")),
 			keel.DynCase().When(s.Hazmat.IsTrue(), "h").Else("n")},
-		{"row", keel.Row(s.CreatedAt, s.ID).Gt(keel.Row(int64(1), "a")),
+		{"row", keel.Tuple(s.CreatedAt, s.ID).Gt(keel.Tuple(int64(1), "a")),
 			keel.DynRow(s.CreatedAt, s.ID).Gt(keel.DynRow(int64(1), "a"))},
 		{"array membership", s.ID.InArray(s.Labels), keel.DynOf(s.ID).In(s.Labels)},
 		{"array constructor", keel.ArrayOfString(s.ProNumber, s.ID), keel.DynArray(s.ProNumber, s.ID)},
@@ -363,7 +363,7 @@ func TestTypedFormsRenderAsDynamic(t *testing.T) {
 		{"text constant", keel.ConstText("o'k"), keel.DynConst("o'k")},
 		{"cast", keel.CastInt64(s.ProNumber), keel.DynOf(s.ProNumber).Cast(keel.TypeInt64)},
 		{"cast to jsonb", keel.CastJSONB(s.ProNumber), keel.DynOf(s.ProNumber).Cast(keel.TypeJSON)},
-		{"row in unnest", keel.Row(s.ProNumber, s.Weight).InUnnest(keel.TextArray([]string{"a"}),
+		{"row in unnest", keel.Tuple(s.ProNumber, s.Weight).InUnnest(keel.TextArray([]string{"a"}),
 			keel.Int64Array([]int64{1})),
 			keel.DynRow(s.ProNumber, s.Weight).InUnnest([]string{"a"}, []int64{1})},
 	}

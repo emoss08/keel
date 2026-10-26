@@ -1,15 +1,15 @@
 package keel
 
-// RowExpr is a row value, ROW(a, b, …), built by keel.Row. Rows compare element by element in
-// order, so keel.Row(e.OccurredAt, e.ID).Gt(keel.Row(after.At, after.ID)) is the keyset condition of
-// a page ordered by occurred_at, id ascending, which an index on (occurred_at, id) serves as one
-// range scan; a Desc page uses Lt.
-type RowExpr struct{ es []Expr }
+// TupleExpr is a row value, ROW(a, b, …), built by keel.Tuple. Rows compare element by element
+// in order, so keel.Tuple(e.OccurredAt, e.ID).Gt(keel.Tuple(after.At, after.ID)) is the keyset
+// condition of a page ordered by occurred_at, id ascending, which an index on (occurred_at, id)
+// serves as one range scan; a Desc page uses Lt.
+type TupleExpr struct{ es []Expr }
 
-// Row is the row value ROW(vs…): each v is an expression written in place, nil as NULL, or a Go
+// Tuple is the row value ROW(vs…): each v is an expression written in place, nil as NULL, or a Go
 // value bound as a parameter whose type Postgres takes from the element it is compared with. A
 // row needs at least two values; one with fewer makes a comparison that fails.
-func Row(vs ...any) RowExpr {
+func Tuple(vs ...any) TupleExpr {
 	es := make([]Expr, len(vs))
 	for i, v := range vs {
 		switch x := v.(type) {
@@ -21,12 +21,12 @@ func Row(vs ...any) RowExpr {
 			es[i] = &litExpr{v: v}
 		}
 	}
-	return RowExpr{es: es}
+	return TupleExpr{es: es}
 }
 
-func (w RowExpr) writeSQL(r *render) {
+func (w TupleExpr) writeSQL(r *render) {
 	if len(w.es) < 2 {
-		r.fail(errf("Row needs at least two values, got %d", len(w.es)))
+		r.fail(errf("Tuple needs at least two values, got %d", len(w.es)))
 		return
 	}
 	r.s("ROW(")
@@ -35,29 +35,29 @@ func (w RowExpr) writeSQL(r *render) {
 }
 
 // Eq is (w = o).
-func (w RowExpr) Eq(o RowExpr) Pred { return parenPred(w, " = ", o) }
+func (w TupleExpr) Eq(o TupleExpr) Pred { return parenPred(w, " = ", o) }
 
 // Ne is (w <> o): some element differs.
-func (w RowExpr) Ne(o RowExpr) Pred { return parenPred(w, " <> ", o) }
+func (w TupleExpr) Ne(o TupleExpr) Pred { return parenPred(w, " <> ", o) }
 
 // Gt is (w > o).
-func (w RowExpr) Gt(o RowExpr) Pred { return parenPred(w, " > ", o) }
+func (w TupleExpr) Gt(o TupleExpr) Pred { return parenPred(w, " > ", o) }
 
 // Gte is (w >= o).
-func (w RowExpr) Gte(o RowExpr) Pred { return parenPred(w, " >= ", o) }
+func (w TupleExpr) Gte(o TupleExpr) Pred { return parenPred(w, " >= ", o) }
 
 // Lt is (w < o).
-func (w RowExpr) Lt(o RowExpr) Pred { return parenPred(w, " < ", o) }
+func (w TupleExpr) Lt(o TupleExpr) Pred { return parenPred(w, " < ", o) }
 
 // Lte is (w <= o).
-func (w RowExpr) Lte(o RowExpr) Pred { return parenPred(w, " <= ", o) }
+func (w TupleExpr) Lte(o TupleExpr) Pred { return parenPred(w, " <= ", o) }
 
 // IsDistinctFrom is (w IS DISTINCT FROM o): some element differs, NULL counting as a value, as an
 // upsert's UpdateWhere skips a row whose stored values equal the proposed ones.
-func (w RowExpr) IsDistinctFrom(o RowExpr) Pred { return parenPred(w, " IS DISTINCT FROM ", o) }
+func (w TupleExpr) IsDistinctFrom(o TupleExpr) Pred { return parenPred(w, " IS DISTINCT FROM ", o) }
 
 // IsNotDistinctFrom is (w IS NOT DISTINCT FROM o).
-func (w RowExpr) IsNotDistinctFrom(o RowExpr) Pred {
+func (w TupleExpr) IsNotDistinctFrom(o TupleExpr) Pred {
 	return parenPred(w, " IS NOT DISTINCT FROM ", o)
 }
 
@@ -65,7 +65,7 @@ func (w RowExpr) IsNotDistinctFrom(o RowExpr) Pred {
 // element i of each array making row i. Pass typed array literals (keel.TextArray(keys),
 // keel.Int64Array(ns)), each bound as one parameter, so the statement keeps one shape whatever the
 // number of rows.
-func (w RowExpr) InUnnest(arrays ...Expr) Pred {
+func (w TupleExpr) InUnnest(arrays ...Expr) Pred {
 	if len(arrays) == 0 {
 		return predExpr{e: func(r *render) { r.fail(errf("InUnnest needs at least one array")) }}
 	}

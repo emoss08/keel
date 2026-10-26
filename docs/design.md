@@ -378,7 +378,7 @@ the assignment `col = col + v` is `Increment`. `Cat` is `||` (NULL-propagating, 
 `Collate` quotes a validated name, `IsDistinctFromExpr`/`IsNotDistinctFromExpr` compare two values of
 a kind, and a nullzero column's `IsNotDistinctFrom(zero)` is `IS NULL`. CASE has one exported
 builder per result kind (`StringCase`, `Int64Case`, …) over one unexported non-generic `caseWhens`
-core, so no exported signature mentions a generic type; a nil condition skips its `WHEN`. `Row(vs...)`
+core, so no exported signature mentions a generic type; a nil condition skips its `WHEN`. `Tuple(vs...)`
 is `ROW(…)` with `Eq` … `Lte`, `IsDistinctFrom` and `InUnnest`, rendered as `DynRow`'s comparisons.
 Typed arrays have a value interface and expression type per element kind, literals that bind one
 `$n::type[]` parameter (a nil slice as the empty array), `ARRAY[…]` constructors (`ARRAY[]::type[]`
