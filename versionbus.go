@@ -439,7 +439,7 @@ func (b *versionBus) fill(ctx context.Context, keys []versionKey, via connSource
 		conn = c
 	}
 	if conn == nil {
-		pc, err := db.pool.Acquire(ctx)
+		pc, err := db.acquire(ctx, db.pool, nil)
 		if err != nil {
 			return fmt.Errorf("keel: read data versions: %w", err)
 		}

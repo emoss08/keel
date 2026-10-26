@@ -33,10 +33,9 @@ type txState struct {
 
 	afterCommit []func(context.Context)
 
-	// slot is the tenant slot the transaction holds (ownsSlot) or runs under, an enclosing
+	// hold is the tenant slot the transaction holds (hold.owned) or runs under, an enclosing
 	// transaction's or write's, when Config.TenantConcurrency is set.
-	slot     *tenantSlot
-	ownsSlot bool
+	hold slotHold
 
 	rep         *replica
 	route       *route
@@ -302,11 +301,9 @@ func (db *DB) runTx(ctx context.Context, readOnly bool, fn func(context.Context)
 		tx := &txState{db: db, readOnly: readOnly, opts: o, scopeCtx: ctx}
 		if db.tenants != nil {
 			tx.scope = db.resolveScope(ctx)
-			slot, owned, err := db.tenants.enter(ctx, tx.scope)
-			if err != nil {
+			if err := db.tenants.enter(ctx, tx.scope, &tx.hold); err != nil {
 				return err
 			}
-			tx.slot, tx.ownsSlot = slot, owned
 		}
 		if db.replicas != nil {
 			if o.replica {
@@ -340,13 +337,11 @@ func (tx *txState) run(ctx context.Context, fn func(context.Context) error) (err
 		if tx.rep != nil {
 			tx.rep.release()
 		}
-		if tx.ownsSlot {
-			tx.slot.release()
-		}
+		tx.hold.release()
 	}()
 	fctx := context.WithValue(ctx, txKey{}, tx)
-	if tx.slot != nil {
-		fctx = context.WithValue(fctx, slotKey{}, tx.slot)
+	if tx.hold.slot != nil {
+		fctx = context.WithValue(fctx, slotKey{}, tx.hold.slot)
 	}
 	err = fn(fctx)
 	returned = true
@@ -364,7 +359,11 @@ func (tx *txState) acquire(ctx context.Context) (pgConn, error) {
 	if tx.rep != nil {
 		pool = tx.rep.pool
 	}
-	conn, err := pool.Acquire(ctx)
+	sc := tx.scope
+	if sc == nil && tx.db.slow != nil && tx.scopeCtx != nil {
+		sc = tx.db.resolveScope(tx.scopeCtx)
+	}
+	conn, err := tx.db.acquire(ctx, pool, sc)
 	if err != nil {
 		return nil, fmt.Errorf("keel: acquire connection: %w", err)
 	}

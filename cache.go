@@ -318,10 +318,7 @@ func (c *resultCache) start(ctx context.Context, run *runner, reads []*read, stm
 			return cr
 		}
 		if wait := c.join(key); wait != nil {
-			select {
-			case <-wait:
-			case <-ctx.Done():
-			}
+			run.db.waitFill(ctx, wait, tenant)
 			if cr.hit() {
 				return cr
 			}

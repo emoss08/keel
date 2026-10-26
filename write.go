@@ -405,8 +405,8 @@ func (r *runner) hookCtx(ctx context.Context) context.Context {
 	if r.own && r.tx != nil {
 		return context.WithValue(ctx, txKey{}, r.tx)
 	}
-	if r.slot != nil {
-		return context.WithValue(ctx, slotKey{}, r.slot)
+	if r.hold.slot != nil {
+		return context.WithValue(ctx, slotKey{}, r.hold.slot)
 	}
 	return ctx
 }

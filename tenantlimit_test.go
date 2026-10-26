@@ -3,12 +3,14 @@ package keel_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/emoss08/keel"
 	"github.com/emoss08/keel/internal/testmodels/fleet"
 	"github.com/emoss08/keel/internal/testmodels/fleet/fleetdb"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func TestTenantConcurrency(t *testing.T) {
@@ -139,4 +141,98 @@ func TestTenantConcurrencySlotSurvivesAPanic(t *testing.T) {
 	ok(t, err)
 	eq(t, n, int64(1))
 	eq(t, d.Pool().Stat().AcquiredConns(), int32(0))
+}
+
+func TestSlowWaitsReportATenantSlotWaitWithWhoHoldsTheSlot(t *testing.T) {
+	reports := make(chan keel.SlowWait, 4)
+	d := openDB(t, func(cfg *keel.Config) {
+		cfg.TenantConcurrency = 1
+		cfg.SlowWaits = keel.SlowWaitConfig{
+			After:  50 * time.Millisecond,
+			Report: func(_ context.Context, w keel.SlowWait) { reports <- w },
+		}
+	})
+	a := newTenant()
+	c := fleetdb.Customers
+
+	waited := make(chan error, 1)
+	ok(t, keel.Read(a, d, func(ctx context.Context) error {
+		_, err := c.Query().Count(ctx, d)
+		ok(t, err)
+		go func() {
+			_, err := c.Query().Count(a, d)
+			waited <- err
+		}()
+		select {
+		case w := <-reports:
+			eq(t, w.Kind, keel.WaitTenantSlot)
+			eq(t, w.Kind.String(), "tenant_slot")
+			eq(t, w.Limit, 1)
+			eq(t, w.Waiters, 1)
+			if len(w.Holders) != 1 || w.Holders[0].Held < w.Waited {
+				t.Fatalf("holders %+v, waited %v", w.Holders, w.Waited)
+			}
+			if !stackNames(w.Stack, "TestSlowWaitsReportATenantSlotWaitWithWhoHoldsTheSlot.func2.1") {
+				t.Fatalf("the waiter's stack does not start at its caller: %q", w.Stack)
+			}
+			if !stackNames(w.Holders[0].Stack, "TestSlowWaitsReportATenantSlotWaitWithWhoHoldsTheSlot") {
+				t.Fatalf("the holder's stack does not name the transaction's caller: %q", w.Holders[0].Stack)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("a wait past the threshold was not reported")
+		}
+		return nil
+	}))
+	ok(t, <-waited)
+}
+
+func TestSlowWaitsReportAConnectionWaitWithThePoolState(t *testing.T) {
+	reports := make(chan keel.SlowWait, 4)
+	d := openDB(t, func(cfg *keel.Config) {
+		pc, err := pgxpool.ParseConfig(cfg.DSN)
+		ok(t, err)
+		pc.MaxConns = 1
+		cfg.Pool = pc
+		cfg.SlowWaits = keel.SlowWaitConfig{
+			After:  50 * time.Millisecond,
+			Report: func(_ context.Context, w keel.SlowWait) { reports <- w },
+		}
+	})
+	a := newTenant()
+	c := fleetdb.Customers
+
+	waited := make(chan error, 1)
+	ok(t, keel.Read(a, d, func(ctx context.Context) error {
+		_, err := c.Query().Count(ctx, d)
+		ok(t, err)
+		go func() {
+			_, err := c.Query().Count(a, d)
+			waited <- err
+		}()
+		select {
+		case w := <-reports:
+			eq(t, w.Kind, keel.WaitConnection)
+			eq(t, w.Pool.Max, int32(1))
+			eq(t, w.Pool.Acquired, int32(1))
+			if w.Tenant == "" {
+				t.Fatal("the report does not name the waiting work's tenant")
+			}
+			if !stackNames(w.Stack, "TestSlowWaitsReportAConnectionWaitWithThePoolState.func2.1") {
+				t.Fatalf("the waiter's stack does not start at its caller: %q", w.Stack)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("a connection wait past the threshold was not reported")
+		}
+		return nil
+	}))
+	ok(t, <-waited)
+}
+
+// stackNames reports whether the first frame of stack is in a function whose name ends in fn.
+func stackNames(stack []string, fn string) bool {
+	if len(stack) == 0 {
+		return false
+	}
+	name, _, _ := strings.Cut(stack[0], " ")
+	return strings.HasSuffix(name, "."+fn)
 }

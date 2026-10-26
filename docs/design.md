@@ -690,6 +690,12 @@ ends removes itself, or, if it was handed the slot in that instant, passes it on
   (`slotKey`); work started under a context carrying a slot of the same key shares it rather than
   wait (a `Detached` transaction, a hook's query), which would deadlock at a bound of one.
 - System scopes and unscoped work are exempt; `DB.TenantWaits` counts acquisitions that waited.
+- A runner's or transaction's part in a slot is a `slotHold` embedded in it: the slot, whether it
+  owns it, and, with `Config.SlowWaits`, when it took the slot and its stack's program counters.
+  The slot keeps its owners' holds in a map, so a waiter that crosses the threshold reports who
+  holds the tenant's slots (`slowwait.go`). Connection acquisitions go through `DB.acquire`, which
+  arms a timer per acquisition, and cache fill waits through `DB.waitFill`; frames are symbolised
+  only when a report is made.
 
 ### Budgets
 

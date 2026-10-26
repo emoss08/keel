@@ -49,7 +49,7 @@ func (db *DB) columnTypes(ctx context.Context, t *schema.Table) ([]columnType, e
 	if ok {
 		return types, nil
 	}
-	conn, err := db.pool.Acquire(ctx)
+	conn, err := db.acquire(ctx, db.pool, nil)
 	if err != nil {
 		return nil, fmt.Errorf("keel: read column types of %s: %w", t.Name, err)
 	}

@@ -126,6 +126,7 @@ the request context.
 | `AwaitReadCommit` | `bool` | makes read-only transactions wait for the reply to their `COMMIT`, as writes do; see [Read-only transactions end without waiting](#read-only-transactions-end-without-waiting) |
 | `DeadlineTimeouts` | `bool` | every transaction keel begins sets `statement_timeout` to the time left before its context's deadline; see [Plans and timeouts](#plans-and-timeouts) |
 | `TenantConcurrency` | `int` | at most this many terminals and transactions of one tenant run at once; zero (the default) is no bound; see [Tenant concurrency](#tenant-concurrency) |
+| `SlowWaits` | `keel.SlowWaitConfig` | reports work that waits longer than `After` for a tenant slot, a pool connection or another goroutine's cache fill, with the stacks of the waiter and of the slot holders; see [Slow waits](#slow-waits) |
 
 `keel.TxInfo` tells `OnBegin` whether the transaction is `ReadOnly` and whether it is `Implicit`
 (opened by keel for a single terminal). A `keel.Statement` is `SQL` plus `Args`.
@@ -3449,6 +3450,35 @@ running or waiting, so its size follows the number of active tenants, not of all
 started under a fresh context while the tenant's transaction is open (a goroutine that drops the
 transaction from its context) needs a slot of its own: keep the bound above the nesting the
 application does.
+
+### Slow waits
+
+A starved tenant or an exhausted pool shows up as requests that hang. `Config.SlowWaits` makes it
+show up as a report while it happens:
+
+```go
+cfg.SlowWaits = keel.SlowWaitConfig{
+	After: 5 * time.Second,
+	Report: func(ctx context.Context, w keel.SlowWait) {
+		log.Warn("database wait", "kind", w.Kind, "tenant", w.Tenant, "waited", w.Waited,
+			"stack", w.Stack, "holders", w.Holders, "pool", w.Pool)
+	},
+}
+```
+
+- `WaitTenantSlot`: a terminal or transaction waiting for one of its tenant's slots. The report
+  carries the bound (`Limit`), the work waiting (`Waiters`) and every holder (`Holders`, oldest
+  first): how long it has held its slot and the stack that took it. A holder that never lets go is
+  the leak; one stuck waiting on itself is a deadlock.
+- `WaitConnection`: a terminal, transaction or version read waiting for a pool connection, with the
+  pool's state (`Pool`: acquired, idle, open, the most it opens).
+- `WaitCacheFill`: a terminal waiting for another goroutine's read of the same result cache entry.
+
+Each wait is reported once, when it crosses `After`, with the waiter's stack from its first frame
+outside keel and generated packages. `Report` runs on the waiting goroutine or a timer's: keep it
+quick and run no statements from it. With both fields set keel records the stack of every slot it
+hands out and of every connection wait, about a microsecond each; with either unset it records
+nothing.
 
 ## Hooks, interceptors and observers
 

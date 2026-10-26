@@ -36,18 +36,17 @@ type stmt struct {
 // (ErrScopeMismatch under another scope than the transaction's), opens an implicit one when
 // Config.OnBegin is set, or runs on a single pooled connection: a replica's for a read on a
 // context marked with OnReplica, else the primary's. Outside a transaction it holds a tenant slot
-// (ownsSlot) or runs under one its context carries, when Config.TenantConcurrency is set.
+// (its hold owns it) or runs under one its context carries, when Config.TenantConcurrency is set.
 type runner struct {
-	db       *DB
-	sc       *scopeState
-	tx       *txState
-	own      bool
-	conn     *pgxpool.Conn
-	rep      *replica
-	slot     *tenantSlot
-	ownsSlot bool
-	cache    *cacheRun
-	closed   bool
+	db     *DB
+	sc     *scopeState
+	tx     *txState
+	own    bool
+	conn   *pgxpool.Conn
+	rep    *replica
+	hold   slotHold
+	cache  *cacheRun
+	closed bool
 }
 
 // runMode is what a runner runs: a read, which may go to a replica; a write, which records its
@@ -86,11 +85,9 @@ func (db *DB) runnerFor(ctx context.Context, mode runMode) (*runner, error) {
 		return r, nil
 	}
 	if db.tenants != nil {
-		slot, owned, err := db.tenants.enter(ctx, r.sc)
-		if err != nil {
+		if err := db.tenants.enter(ctx, r.sc, &r.hold); err != nil {
 			return nil, err
 		}
-		r.slot, r.ownsSlot = slot, owned
 	}
 	var rt *route
 	if db.replicas != nil {
@@ -142,7 +139,7 @@ func (r *runner) acquire(ctx context.Context) (pgConn, error) {
 	if r.rep != nil {
 		pool = r.rep.pool
 	}
-	conn, err := pool.Acquire(ctx)
+	conn, err := r.db.acquire(ctx, pool, r.sc)
 	if err != nil {
 		return nil, err
 	}
@@ -478,10 +475,4 @@ func (r *runner) abandon() {
 }
 
 // releaseSlot lets the runner's tenant slot go, once, if the runner took it.
-func (r *runner) releaseSlot() {
-	if r.ownsSlot {
-		r.ownsSlot = false
-		r.slot.release()
-	}
-	r.slot = nil
-}
+func (r *runner) releaseSlot() { r.hold.release() }

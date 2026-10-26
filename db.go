@@ -109,6 +109,10 @@ type Config struct {
 	// write's hooks) shares it. System scopes and unscoped work take none. DB.TenantWaits counts
 	// the waits.
 	TenantConcurrency int
+	// SlowWaits reports work that waits too long for a tenant slot, a pool connection or another
+	// goroutine's read of a result cache entry (see SlowWaitConfig). Off unless both of its fields
+	// are set.
+	SlowWaits SlowWaitConfig
 
 	// LoadStrategy is how a read loads its to-many relations when the query does not choose
 	// (Query.LoadStrategy). The default, LoadPipelined, sends the root statement and every level in
@@ -170,6 +174,7 @@ type DB struct {
 	versions *versioner
 	cache    *resultCache
 	tenants  *tenantLimiter
+	slow     *slowWaits
 
 	// drains counts the goroutines reading the reply to a COMMIT or ROLLBACK keel did not wait
 	// for; drainFailures counts the connections closed because that reply failed.
@@ -214,9 +219,9 @@ func Open(ctx context.Context, cfg Config) (*DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("keel: open pool: %w", err)
 	}
-	db := &DB{pool: pool, cfg: cfg}
+	db := &DB{pool: pool, cfg: cfg, slow: newSlowWaits(cfg.SlowWaits)}
 	if cfg.TenantConcurrency > 0 {
-		db.tenants = newTenantLimiter(cfg.TenantConcurrency)
+		db.tenants = newTenantLimiter(cfg.TenantConcurrency, db.slow)
 	}
 	if len(cfg.Replicas) > 0 {
 		if db.replicas, err = openReplicas(ctx, &db.cfg); err != nil {
