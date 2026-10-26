@@ -1,8 +1,12 @@
 # keel
 
-keel is a typed, Postgres-only data layer for Go, built for large multi-tenant applications. You
-write plain structs, `keel gen` writes a typed data-access package for them, and every query,
-filter, relation load and write goes through that package.
+[![ci](https://github.com/emoss08/keel/actions/workflows/ci.yml/badge.svg)](https://github.com/emoss08/keel/actions/workflows/ci.yml)
+
+**A typed, multi-tenant data layer for Go and PostgreSQL.**
+
+You write plain structs. `keel gen` writes a typed package for them. Every query, filter, relation
+load and write goes through that package, so the compiler checks your columns and values, and
+every statement is scoped to the caller's tenant before it reaches Postgres.
 
 ```go
 s := fleetdb.Shipments
@@ -19,31 +23,54 @@ page, err := s.
     Page(ctx, db, keel.After(cursor, 50).Total(10_000))
 ```
 
+Outside a transaction that is one round trip: the page, its total, the joined customer and every
+level of moves, stops and locations, all filtered to the tenant on the context.
+
+> **Why "keel"?** A keel is the beam along the bottom of a ship's hull. Everything else is built on
+> it, and it is what keeps the ship upright and stops it drifting sideways. keel does that job under
+> an application's data: it is the part every query rests on, and it keeps each tenant's work from
+> drifting into another's, so the application stays on an even keel as it grows.
+
 ## Why keel
 
 - **Typed end to end.** Columns, relations, values, assignments and results are checked by the
   compiler. `s.Status.In(...)` accepts only `fleet.Status` values; a misspelled column does not
-  compile. Raw SQL exists, is explicit (`keel.Raw`) and is greppable.
-- **Prepared statements.** Values are always bind parameters, so a statement's text depends only on
-  its shape. Each shape is prepared once per connection, and Postgres skips parsing and, usually,
-  planning. `In` binds one array, so 3 IDs and 3,000 IDs are the same statement.
-- **One round trip where Postgres allows it.** Transactions start with their first statement; a
-  lone statement that needs a transaction (for example a row-level security `set_config`) runs as one
-  pipelined `BEGIN; …; COMMIT`; a page and its total count share a round trip, as do the
-  independent reads of a `keel.Batch`; to-one relations are joined and to-many relations load one
-  statement per level, every level in the read's own round trip.
+  compile. Raw SQL exists, but it is explicit (`keel.Raw`) and greppable.
 - **Tenancy by construction.** The tenant comes from the context and is applied to every statement
   on a tenant table: reads, joins, relation loads, subqueries, updates, deletes and inserts. A
-  statement without a scope fails; crossing tenants needs a system scope and an explicit
-  `AllTenants()`.
-- **No reflection on the hot path.** `keel gen` writes field accessors for every model; rows decode
-  straight from pgx's buffers into struct fields.
-- **Bounded by default.** `List` needs a limit, keyset pagination is built in, and bulk inserts send
-  one array per column.
+  statement without a scope fails. Crossing tenants takes a system scope with a reason and an
+  explicit `AllTenants()`.
+- **Fewer round trips.** Transactions begin with their first statement. A lone statement that needs
+  a transaction (a row-level security `set_config`) is one pipelined `BEGIN; ...; COMMIT`. A page and
+  its total share a round trip, so do the independent reads of a `keel.Batch`, and a relation tree
+  loads inside the read's own round trip wherever the read sees one snapshot.
+- **Prepared statements, always.** Values are bind parameters, so a statement's text depends only on
+  its shape and Postgres skips parsing and, usually, planning. `In` binds one array: 3 IDs and 3,000
+  IDs are the same statement.
+- **Built for many tenants on one database.** Per-tenant concurrency limits, query budgets that catch
+  N+1 loops, a result cache invalidated by data versions, read replicas with lag tracking, and
+  reports of slow waits that name who is holding what.
+- **Bounded by default.** `List` needs a limit, pagination is keyset-based, bulk inserts send one
+  array per column, and every wait for a slot or connection can be capped.
+- **No reflection on the hot path.** Generated accessors decode rows straight from pgx's buffers
+  into struct fields.
 
-keel uses pgx v5 and never `database/sql`. It does not generate migrations from models, does not do
-soft deletes and has no identity map; see [docs/design.md](docs/design.md) for the design and its
-non-goals.
+keel is Postgres-only and uses pgx v5, never `database/sql`.
+
+## What's in the box
+
+| Package | What it does |
+|---|---|
+| `keel` | queries, relation loads, pagination, writes, transactions, tenancy, hooks, the result cache |
+| `cmd/keel`, `gen` | `keel gen`: the typed package for each model package, and `-check` for CI |
+| `migrate` | SQL and Go migrations under an advisory lock, with lock-timeout retries, squash and templates for tests |
+| `seed` | reference data and fixtures as declared seeds that re-run when their inputs change |
+| `keelcli` | the command line an application's database binary is made of: `up`, `migrate`, `seed`, a live console |
+| `keeltest` | golden snapshots of rendered SQL and assertions that an index serves a query |
+| `keellog` | a readable statement log for development, with values, caller and outcome |
+| `cache/rediscache` | the shared tier of the result cache on Redis, Valkey, KeyDB or Dragonfly |
+| `vector`, `postgis` | pgvector distances and HNSW settings; PostGIS points, geometries and spatial SQL |
+| `analytics` | a semantic layer for user-built reports: definitions, formulas, a compiler to tenant-scoped SQL, exports, rollups |
 
 ## Install
 
@@ -55,8 +82,8 @@ keel needs Go 1.26 and PostgreSQL (tested on 18).
 
 ## Quick start
 
-The examples use the models of keel's tests, in `internal/testmodels/fleet`. The snippets in this
-README and in [docs/guide.md](docs/guide.md) have compiled counterparts in
+The examples use the models of keel's own tests, in `internal/testmodels/fleet`. The snippets in
+this README and in [docs/guide.md](docs/guide.md) have compiled counterparts in
 [example_test.go](example_test.go), which keeps them in step with the API.
 
 ### 1. Write a model
@@ -344,6 +371,69 @@ table (never inserts), so a soft-delete or ownership filter holds for single-row
 Observers (`Config.Observers`) see every statement; a span started in `BeforeQuery` travels on the
 statement's context to its execution and to `AfterQuery`.
 
+### Result cache
+
+A read that asks for the cache is served from memory, with no round trip, until a table it read
+changes for the tenant. Validity never depends on the TTL: writes bump a per-tenant, per-table data
+version, pushed to every process with `LISTEN/NOTIFY`. A shared tier on Redis lets processes share
+entries.
+
+```go
+cfg.DataVersions = keel.DataVersionsConfig{Enabled: true}
+cfg.Cache = &keel.CacheConfig{Local: keel.MemoryCache(256 << 20)}
+
+open, err := s.Where(s.Status.Eq(fleet.StatusNew)).
+    Load(s.Customer(), s.Moves()).
+    Order(s.CreatedAt.Desc()).Limit(50).
+    Cache(keel.TTL(5 * time.Minute)).
+    List(ctx, db)
+```
+
+A hit costs about 20 µs, against about 390 µs for the same read from the database on loopback.
+Concurrent misses of one entry wait for a single read.
+
+### Running many tenants on one database
+
+```go
+cfg.TenantConcurrency = 8                // at most 8 terminals or transactions per tenant at once
+cfg.MaxWait = time.Minute                // no wait for a slot or connection outlasts this
+cfg.SlowWaits = keel.SlowWaitConfig{     // report waits past 5s, with who holds the slots
+    After:  5 * time.Second,
+    Report: func(ctx context.Context, w *keel.SlowWait) { log.Printf("slow %s wait: %+v", w.Kind, w) },
+}
+
+ctx = keel.Budget(ctx, keel.MaxRoundTrips(20), keel.MaxRepeats(3)) // per request: catches N+1 loops
+```
+
+- **Tenant concurrency** stops one tenant's burst (an import, a dashboard of twenty widgets) from
+  taking every connection. Work nested under a tenant's transaction shares its slot, so a bound of
+  one cannot deadlock.
+- **Slow waits** turn a hang into a log line while it happens: the waiter's stack and, for a slot,
+  every holder with how long it has held it and the stack that took it.
+- **`MaxWait`** ends a wait outright with `keel.ErrWaitLimit`, so work without a deadline (a
+  background job) cannot wait forever behind a stuck request.
+- **Budgets** count round trips, statements and repeated statement texts under a context, and fail
+  the call that goes over.
+
+### Dynamic queries
+
+For queries whose columns are chosen at run time (a report builder, an export, an admin grid),
+`keel.Registry` resolves tables, columns and relation paths by name, with the same tenancy,
+interceptors and bind parameters as typed queries, and returns columnar results.
+
+```go
+q := reg.Query("shipments")
+customer := q.Path("customer", "name")
+q.Select(q.Path("pro_number"), customer, q.Path("status")).
+    Where(q.Path("status").In([]string{"New", "Assigned"}), customer.ContainsFold(search)).
+    Limit(100)
+res, err := q.Run(ctx, db)
+```
+
+`keel/analytics` builds a full report engine on top of this: report definitions, a formula
+language, pivots, charts, drill-through, Excel and CSV exports, and rollup tables
+([docs/analytics.md](docs/analytics.md)).
+
 ### Replicas and data versions
 
 Reads on a context marked with `keel.OnReplica` run on the least-loaded replica within
@@ -389,7 +479,18 @@ res, err := m.Up(ctx, migrate.UpOptions{})
 and at server startup, `migrate.RequireWait(ctx, pool, schema.Version, time.Second)`. Tests copy a
 migrated database from a template in milliseconds with `migrate.Template`.
 
-## Benchmarks
+## What keel does not do
+
+- **Migrations from models.** The schema lives in SQL migrations. `keel.Verify` reports where models
+  and the live catalog disagree, so drift fails a test instead of production.
+- **Soft deletes, identity maps or lazy loading.** Loads are explicit. An interceptor adds a
+  soft-delete or ownership filter to every read and write of a table if you want one.
+- **Other databases.** keel uses Postgres features directly: arrays, `unnest`, `COPY`, pipelining,
+  `LISTEN/NOTIFY`, advisory locks and row-level security.
+
+[docs/design.md](docs/design.md) has the full design and its non-goals.
+
+## Performance
 
 `bench/` runs the same operations through keel, Bun and raw pgx. Medians of 6 runs on a 4-vCPU Xeon
 VM with Postgres 18 in Docker on the same host, recorded on 2026-10-23:
@@ -403,18 +504,27 @@ VM with Postgres 18 in Docker on the same host, recorded on 2026-10-23:
 | save with optimistic locking | 1.02 ms, 44 allocs | 1.20 ms, 29 allocs | 15% faster |
 | build a statement, no database | 3.8 µs, 2.7 KiB | 3.3 µs, 3.0 KiB | 13% slower |
 
-Most of the gain is server work: prepared statements skip parsing and planning, and pipelining saves
-round trips, a gap that grows with network latency. keel allocates more than Bun per single-row
-statement. These numbers were recorded before the bulk insert moved to `unnest` and before later
-decoding changes; [docs/benchmarks.md](docs/benchmarks.md) has every operation, the raw output and
-how to rerun them.
+Most of the gain is server work: prepared statements skip parsing and planning, and pipelining
+saves round trips, a gap that grows with network latency. keel allocates more than Bun per
+single-row statement. Later work (pipelined relation trees, the result cache, read transactions
+that end without waiting for `COMMIT`) is measured in [docs/benchmarks.md](docs/benchmarks.md),
+with the raw output and how to rerun everything.
+
+## Status
+
+keel is pre-1.0. It is built alongside [Trenova](https://github.com/emoss08/Trenova), a
+transportation management system designed for thousands of tenants on one database, and every
+Trenova query runs through it. Releases are tagged
+`v0.x.y`; until 1.0 a minor version may change the API, and its release notes say how.
 
 ## Documentation
 
 - [docs/guide.md](docs/guide.md): how to use keel, by task: configuration, models, generation,
-  reading, loading, pagination, writing, transactions, tenancy, hooks, errors, migrations,
-  performance, testing, and a Bun-to-keel table.
-- [docs/design.md](docs/design.md): the design contract.
+  reading, loading, pagination, writing, transactions, tenancy, hooks, errors, migrations, seeds,
+  performance, testing, coming from Bun, and analytics.
+- [docs/design.md](docs/design.md): the design contract and how each part works inside.
+- [docs/migrations-and-seeds.md](docs/migrations-and-seeds.md): migrations, seeds and `keelcli`.
+- [docs/analytics.md](docs/analytics.md): the report engine's design.
 - [docs/benchmarks.md](docs/benchmarks.md): measurements against Bun and pgx.
 - [example_test.go](example_test.go): compiled examples for the guide.
 
