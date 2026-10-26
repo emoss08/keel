@@ -769,8 +769,12 @@ func TestOptionsDefaults(t *testing.T) {
 	if (Options{Retries: -1}).retries(Directives{}) != 0 || o.retries(Directives{NoRetry: true}) != 0 {
 		t.Fatal("disabled retries")
 	}
-	if b := (Options{RetryBackoff: time.Second}).backoff(10); b < maxBackoff || b > maxBackoff*5/4 {
-		t.Fatalf("backoff %v", b)
+	b := (Options{RetryBackoff: time.Second}).backoff()
+	for range 9 {
+		b.NextBackOff()
+	}
+	if d := b.NextBackOff(); d < maxBackoff*7/8 || d > maxBackoff*9/8 {
+		t.Fatalf("backoff %v", d)
 	}
 	if millis(1500*time.Microsecond) != "1ms" || millis(0) != "0" {
 		t.Fatal("millis")

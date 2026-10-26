@@ -233,6 +233,7 @@ func (r *run) retry(ctx context.Context, mg *Migration, d Directives, stmt, stmt
 	attempt func() ([]Blocker, error),
 ) error {
 	n := r.m.opts.retries(d)
+	b := r.m.opts.backoff()
 	for a := 1; ; a++ {
 		blockers, err := attempt()
 		if err == nil || !isLockTimeout(err) {
@@ -249,7 +250,7 @@ func (r *run) retry(ctx context.Context, mg *Migration, d Directives, stmt, stmt
 		}
 		r.m.emit(Event{Kind: Retry, Migration: mg, Index: r.index, Total: r.total, Statement: stmt,
 			Statements: stmts, Attempt: a + 1, Blockers: blockers, Err: err})
-		if err := sleep(ctx, r.m.opts.backoff(a)); err != nil {
+		if err := sleep(ctx, b.NextBackOff()); err != nil {
 			return err
 		}
 	}

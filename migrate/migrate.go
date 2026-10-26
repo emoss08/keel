@@ -25,9 +25,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math/rand/v2"
 	"time"
 
+	"github.com/cenkalti/backoff/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -69,8 +69,8 @@ type Options struct {
 	// Retries is how many times a migration that hit its lock timeout is retried; default
 	// DefaultRetries, negative for none.
 	Retries int
-	// RetryBackoff is the wait before the first retry, doubled for each one after it up to 30s;
-	// default DefaultRetryBackoff.
+	// RetryBackoff is the wait before the first retry, doubled for each one after it up to 30s,
+	// each within 12.5% either way; default DefaultRetryBackoff.
 	RetryBackoff time.Duration
 	// AllowOutOfOrder applies pending migrations older than the newest applied one instead of
 	// returning ErrOutOfOrder.
@@ -115,17 +115,19 @@ func (o Options) retries(d Directives) int {
 	return DefaultRetries
 }
 
-// backoff returns the wait before retry attempt+1, with up to 25% jitter.
-func (o Options) backoff(attempt int) time.Duration {
+// backoff returns the waits between retries: RetryBackoff, doubled for each retry after it up
+// to maxBackoff, each within 12.5% either way.
+func (o Options) backoff() *backoff.ExponentialBackOff {
 	base := o.RetryBackoff
 	if base <= 0 {
 		base = DefaultRetryBackoff
 	}
-	d := base << min(attempt-1, 20)
-	if d <= 0 || d > maxBackoff {
-		d = maxBackoff
+	return &backoff.ExponentialBackOff{
+		InitialInterval:     base,
+		RandomizationFactor: 0.125,
+		Multiplier:          2,
+		MaxInterval:         maxBackoff,
 	}
-	return d + time.Duration(rand.Int64N(int64(d)/4+1))
 }
 
 // table returns the quoted, schema-qualified bookkeeping table.
