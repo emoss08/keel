@@ -136,7 +136,8 @@ func (l *tenantLimiter) acquire(ctx context.Context, key string, h *slotHold) (*
 			return s, nil
 		case <-slow:
 			slow = nil
-			l.slow.report(ctx, l.slotWait(s, h, time.Since(start)))
+			w := l.slotWait(s, h, time.Since(start))
+			l.slow.report(ctx, &w)
 			continue
 		case <-ctx.Done():
 		}

@@ -3459,7 +3459,7 @@ show up as a report while it happens:
 ```go
 cfg.SlowWaits = keel.SlowWaitConfig{
 	After: 5 * time.Second,
-	Report: func(ctx context.Context, w keel.SlowWait) {
+	Report: func(ctx context.Context, w *keel.SlowWait) {
 		log.Warn("database wait", "kind", w.Kind, "tenant", w.Tenant, "waited", w.Waited,
 			"stack", w.Stack, "holders", w.Holders, "pool", w.Pool)
 	},

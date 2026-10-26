@@ -149,7 +149,7 @@ func TestSlowWaitsReportATenantSlotWaitWithWhoHoldsTheSlot(t *testing.T) {
 		cfg.TenantConcurrency = 1
 		cfg.SlowWaits = keel.SlowWaitConfig{
 			After:  50 * time.Millisecond,
-			Report: func(_ context.Context, w keel.SlowWait) { reports <- w },
+			Report: func(_ context.Context, w *keel.SlowWait) { reports <- *w },
 		}
 	})
 	a := newTenant()
@@ -195,7 +195,7 @@ func TestSlowWaitsReportAConnectionWaitWithThePoolState(t *testing.T) {
 		cfg.Pool = pc
 		cfg.SlowWaits = keel.SlowWaitConfig{
 			After:  50 * time.Millisecond,
-			Report: func(_ context.Context, w keel.SlowWait) { reports <- w },
+			Report: func(_ context.Context, w *keel.SlowWait) { reports <- *w },
 		}
 	})
 	a := newTenant()

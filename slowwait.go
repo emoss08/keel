@@ -18,7 +18,7 @@ import (
 // hands out and of every connection wait, about a microsecond each.
 type SlowWaitConfig struct {
 	After  time.Duration
-	Report func(ctx context.Context, w SlowWait)
+	Report func(ctx context.Context, w *SlowWait)
 }
 
 // WaitKind is what a slow wait waited for.
@@ -82,7 +82,7 @@ type PoolState struct {
 // slowWaits is the DB's SlowWaitConfig when both of its fields are set.
 type slowWaits struct {
 	after  time.Duration
-	report func(ctx context.Context, w SlowWait)
+	report func(ctx context.Context, w *SlowWait)
 }
 
 func newSlowWaits(cfg SlowWaitConfig) *slowWaits {
@@ -136,7 +136,7 @@ func (db *DB) acquire(ctx context.Context, pool *pgxpool.Pool, sc *scopeState) (
 	start := time.Now()
 	timer := time.AfterFunc(sw.after, func() {
 		st := pool.Stat()
-		sw.report(ctx, SlowWait{
+		sw.report(ctx, &SlowWait{
 			Kind:   WaitConnection,
 			Tenant: sc.tenantKey(),
 			Waited: time.Since(start),
@@ -184,7 +184,7 @@ func (db *DB) waitFill(ctx context.Context, wait <-chan struct{}, tenant string)
 		case <-ctx.Done():
 			return
 		case <-timer.C:
-			sw.report(ctx, SlowWait{
+			sw.report(ctx, &SlowWait{
 				Kind:   WaitCacheFill,
 				Tenant: tenant,
 				Waited: time.Since(start),

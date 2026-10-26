@@ -138,7 +138,7 @@ func TestTenantLimiterReportsASlowWaitWithTheHolders(t *testing.T) {
 	reports := make(chan SlowWait, 1)
 	l := newTenantLimiter(1, newSlowWaits(SlowWaitConfig{
 		After:  20 * time.Millisecond,
-		Report: func(_ context.Context, w SlowWait) { reports <- w },
+		Report: func(_ context.Context, w *SlowWait) { reports <- *w },
 	}))
 	sc := &scopeState{tenant: []any{"org"}}
 	held, err := enterSlot(context.Background(), l, sc)
@@ -184,7 +184,7 @@ func TestSlowWaitsReportACacheFillWait(t *testing.T) {
 	reports := make(chan SlowWait, 2)
 	db := &DB{slow: newSlowWaits(SlowWaitConfig{
 		After:  10 * time.Millisecond,
-		Report: func(_ context.Context, w SlowWait) { reports <- w },
+		Report: func(_ context.Context, w *SlowWait) { reports <- *w },
 	})}
 	fill := make(chan struct{})
 	done := make(chan struct{})
