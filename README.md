@@ -539,3 +539,7 @@ make check                         # gofmt, vet, and generated code up to date
 make lint                          # golangci-lint (v2, .golangci.yml) and actionlint
 make test-replica                  # start a streaming replica of keelpg and run the replica tests
 ```
+
+## License
+
+keel is released under the [MIT License](LICENSE).
