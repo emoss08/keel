@@ -1,0 +1,32 @@
+psql:
+  dsn: postgres://keel:keel@localhost:55434/keel_bench_gen?sslmode=disable
+  driver: github.com/jackc/pgx/v5/stdlib
+  only:
+    customers:
+    shipments:
+    moves:
+  except:
+    shipments:
+      - search_vector
+no_tests: true
+plugins_preset: default
+plugins:
+  dbinfo:
+    disabled: true
+  factory:
+    disabled: true
+  dberrors:
+    disabled: true
+  enums:
+    pkgname: enums
+    destination: enums
+  models:
+    pkgname: models
+    destination: models
+constraints:
+  moves:
+    foreign:
+      - name: fk_moves_shipment
+        columns: [shipment_id, organization_id, business_unit_id]
+        foreign_table: shipments
+        foreign_columns: [id, organization_id, business_unit_id]

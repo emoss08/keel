@@ -1,4 +1,6 @@
-// Package bench compares keel with Bun (Trenova's fork) and raw pgx on the same schema and data.
+// Package bench compares keel with Bun (Trenova's fork), raw pgx, GORM, ent, sqlc, Bob, Jet and
+// sqlx on the same schema and data. Each library runs the operations the way its documentation
+// writes them, with the tenant filter written by hand where the library has no tenancy.
 //
 //	cd bench && go test -bench . -benchmem -count 6 | tee new.txt
 package bench
@@ -83,9 +85,16 @@ type env struct {
 	bun    *bun.DB
 	pgx    *pgxpool.Pool
 	ctx    context.Context
+	dsn    string
 	org    ids.ID
 	bu     ids.ID
 	ship   []*fleet.Shipment
+	others []*contender
+
+	// cursor and keelCursor are the keyset position after the first page of 50 shipments by
+	// created_at descending, id descending.
+	cursor     pageCursor
+	keelCursor string
 }
 
 var (
@@ -161,7 +170,7 @@ func build() (*env, error) {
 		return nil, err
 	}
 
-	e := &env{org: "org_bench", bu: "bu_bench"}
+	e := &env{org: "org_bench", bu: "bu_bench", dsn: dsn}
 	e.ctx = context.WithValue(ctx, tenantKey{}, [2]ids.ID{e.org, e.bu})
 	if e.keel, err = keel.Open(ctx, keelConfig(dsn)); err != nil {
 		return nil, err
@@ -215,15 +224,38 @@ func build() (*env, error) {
 		return nil, err
 	}
 	e.ship = ship
-	_, err = e.pgx.Exec(ctx, "ANALYZE")
-	return e, err
+	if _, err := e.pgx.Exec(ctx, "ANALYZE"); err != nil {
+		return nil, err
+	}
+	s := fleetdb.Shipments
+	first, err := s.Order(s.CreatedAt.Desc(), s.ID.Desc()).Page(e.ctx, e.keel, keel.After("", 50))
+	if err != nil {
+		return nil, err
+	}
+	last := first.Items[len(first.Items)-1]
+	e.keelCursor = first.Next
+	e.cursor = pageCursor{createdAt: last.CreatedAt, id: string(last.ID)}
+	for _, open := range contenders {
+		c, err := open(e)
+		if err != nil {
+			return nil, err
+		}
+		e.others = append(e.others, c)
+	}
+	return e, nil
 }
 
 func TestMain(m *testing.M) {
 	code := m.Run()
 	if envVal != nil {
+		for _, c := range envVal.others {
+			if c.close != nil {
+				c.close()
+			}
+		}
 		envVal.keel.Close()
 		envVal.scope.Close()
+		envVal.cached.Close()
 		envVal.pgx.Close()
 		_ = envVal.bun.Close()
 		ctx := context.Background()
@@ -275,6 +307,12 @@ func BenchmarkGetByID(b *testing.B) {
 				b.Fatal(err)
 			}
 		}
+	})
+	runContenders(b, e, func(c *contender) func(context.Context) error {
+		if c.get == nil {
+			return nil
+		}
+		return func(ctx context.Context) error { return c.get(ctx, string(id)) }
 	})
 }
 
@@ -335,6 +373,12 @@ func benchList(b *testing.B, n int) {
 			}
 		}
 	})
+	runContenders(b, e, func(c *contender) func(context.Context) error {
+		if c.list == nil {
+			return nil
+		}
+		return func(ctx context.Context) error { return c.list(ctx, n) }
+	})
 }
 
 func BenchmarkList100(b *testing.B)  { benchList(b, 100) }
@@ -376,6 +420,7 @@ func BenchmarkLoadRelations(b *testing.B) {
 			}
 		}
 	})
+	runContenders(b, e, func(c *contender) func(context.Context) error { return c.relations })
 }
 
 // --- a read in a scoped transaction (row-level security set_config), as Trenova runs every read ---
@@ -407,6 +452,12 @@ func BenchmarkScopedRead(b *testing.B) {
 				b.Fatal(err)
 			}
 		}
+	})
+	runContenders(b, e, func(c *contender) func(context.Context) error {
+		if c.scoped == nil {
+			return nil
+		}
+		return func(ctx context.Context) error { return c.scoped(ctx, string(id)) }
 	})
 }
 
@@ -456,6 +507,7 @@ func BenchmarkCreate(b *testing.B) {
 			}
 		}
 	})
+	runContenders(b, e, func(c *contender) func(context.Context) error { return c.create })
 }
 
 func BenchmarkCreateMany1000(b *testing.B) {
@@ -485,6 +537,24 @@ func BenchmarkCreateMany1000(b *testing.B) {
 				b.Fatal(err)
 			}
 		}
+	})
+	b.Run("keel-copy", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			rows := make([]*fleet.Customer, 1000)
+			for i := range rows {
+				rows[i] = &fleet.Customer{Name: "bench", Code: rid()}
+			}
+			if _, err := fleetdb.Customers.Copy(e.ctx, e.keel, rows); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	runContenders(b, e, func(c *contender) func(context.Context) error {
+		if c.createMany == nil {
+			return nil
+		}
+		return func(ctx context.Context) error { return c.createMany(ctx, 1000) }
 	})
 }
 
@@ -525,6 +595,82 @@ func BenchmarkSave(b *testing.B) {
 			}
 		}
 	})
+	for _, c := range e.others {
+		if c.save == nil {
+			continue
+		}
+		b.Run(c.name, func(b *testing.B) {
+			save, err := c.save(e.ctx)
+			if err != nil {
+				b.Fatal(err)
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				if err := save(e.ctx); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+// --- a keyset page of 50 after a cursor, with the total count ---
+
+func BenchmarkPage(b *testing.B) {
+	e := setup(b)
+	b.Run("keel", func(b *testing.B) {
+		s := fleetdb.Shipments
+		b.ReportAllocs()
+		for b.Loop() {
+			page, err := s.Order(s.CreatedAt.Desc(), s.ID.Desc()).
+				Page(e.ctx, e.keel, keel.After(e.keelCursor, 50).Total(10_000))
+			if err != nil || len(page.Items) != 50 || page.Total == 0 {
+				b.Fatal(err, len(page.Items))
+			}
+		}
+	})
+	b.Run("bun", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			var rows []*bunShipment
+			total, err := e.bun.NewSelect().Model((*bunShipment)(nil)).
+				Where("sp.organization_id = ?", e.org).Where("sp.business_unit_id = ?", e.bu).Count(e.ctx)
+			if err != nil || total == 0 {
+				b.Fatal(err)
+			}
+			err = e.bun.NewSelect().Model(&rows).
+				Where("sp.organization_id = ?", e.org).Where("sp.business_unit_id = ?", e.bu).
+				Where("(sp.created_at, sp.id) < (?, ?)", e.cursor.createdAt, e.cursor.id).
+				Order("sp.created_at DESC", "sp.id DESC").Limit(50).Scan(e.ctx)
+			if err != nil || len(rows) != 50 {
+				b.Fatal(err, len(rows))
+			}
+		}
+	})
+	b.Run("pgx", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			var total int64
+			err := e.pgx.QueryRow(e.ctx, `SELECT count(*) FROM shipments
+				WHERE organization_id = $1 AND business_unit_id = $2`, e.org, e.bu).Scan(&total)
+			if err != nil || total == 0 {
+				b.Fatal(err)
+			}
+			rows, err := e.pgx.Query(e.ctx, `SELECT id, organization_id, business_unit_id, customer_id, bill_to_id,
+				pro_number, status, priority, weight, total, hazmat, labels, attributes, stage_rank, canceled_at,
+				version, created_at, updated_at FROM shipments WHERE organization_id = $1 AND business_unit_id = $2
+				AND (created_at, id) < ($3, $4) ORDER BY created_at DESC, id DESC LIMIT 50`,
+				e.org, e.bu, e.cursor.createdAt, e.cursor.id)
+			if err != nil {
+				b.Fatal(err)
+			}
+			out, err := pgx.CollectRows(rows, pgx.RowToAddrOfStructByPos[pgxShipment])
+			if err != nil || len(out) != 50 {
+				b.Fatal(err, len(out))
+			}
+		}
+	})
+	runContenders(b, e, func(c *contender) func(context.Context) error { return c.page })
 }
 
 // --- statement building only, no database ---
@@ -554,6 +700,7 @@ func BenchmarkBuildOnly(b *testing.B) {
 			_ = q.String()
 		}
 	})
+	runContenders(b, e, func(c *contender) func(context.Context) error { return c.build })
 }
 
 func rid() string {
