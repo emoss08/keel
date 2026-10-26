@@ -488,6 +488,7 @@ func BenchmarkCachedRead(b *testing.B) {
 func BenchmarkCreate(b *testing.B) {
 	e := setup(b)
 	b.Run("keel", func(b *testing.B) {
+		resetWrites(b, e)
 		b.ReportAllocs()
 		for b.Loop() {
 			c := &fleet.Customer{Name: "bench", Code: rid()}
@@ -497,6 +498,7 @@ func BenchmarkCreate(b *testing.B) {
 		}
 	})
 	b.Run("bun", func(b *testing.B) {
+		resetWrites(b, e)
 		b.ReportAllocs()
 		for b.Loop() {
 			now := time.Now().Unix()
@@ -507,12 +509,13 @@ func BenchmarkCreate(b *testing.B) {
 			}
 		}
 	})
-	runContenders(b, e, func(c *contender) func(context.Context) error { return c.create })
+	runWriteContenders(b, e, func(c *contender) func(context.Context) error { return c.create })
 }
 
 func BenchmarkCreateMany1000(b *testing.B) {
 	e := setup(b)
 	b.Run("keel", func(b *testing.B) {
+		resetWrites(b, e)
 		b.ReportAllocs()
 		for b.Loop() {
 			rows := make([]*fleet.Customer, 1000)
@@ -525,6 +528,7 @@ func BenchmarkCreateMany1000(b *testing.B) {
 		}
 	})
 	b.Run("bun", func(b *testing.B) {
+		resetWrites(b, e)
 		b.ReportAllocs()
 		for b.Loop() {
 			now := time.Now().Unix()
@@ -539,6 +543,7 @@ func BenchmarkCreateMany1000(b *testing.B) {
 		}
 	})
 	b.Run("keel-copy", func(b *testing.B) {
+		resetWrites(b, e)
 		b.ReportAllocs()
 		for b.Loop() {
 			rows := make([]*fleet.Customer, 1000)
@@ -550,7 +555,7 @@ func BenchmarkCreateMany1000(b *testing.B) {
 			}
 		}
 	})
-	runContenders(b, e, func(c *contender) func(context.Context) error {
+	runWriteContenders(b, e, func(c *contender) func(context.Context) error {
 		if c.createMany == nil {
 			return nil
 		}
@@ -561,6 +566,7 @@ func BenchmarkCreateMany1000(b *testing.B) {
 func BenchmarkSave(b *testing.B) {
 	e := setup(b)
 	b.Run("keel", func(b *testing.B) {
+		resetWrites(b, e)
 		c := &fleet.Customer{Name: "save", Code: rid()}
 		if err := fleetdb.Customers.Create(e.ctx, e.keel, c); err != nil {
 			b.Fatal(err)
@@ -574,6 +580,7 @@ func BenchmarkSave(b *testing.B) {
 		}
 	})
 	b.Run("bun", func(b *testing.B) {
+		resetWrites(b, e)
 		now := time.Now().Unix()
 		c := &bunCustomer{ID: "cus_" + rid(), OrganizationID: string(e.org), BusinessUnitID: string(e.bu),
 			Name: "save", Code: rid(), CreatedAt: now, UpdatedAt: now}
@@ -600,6 +607,7 @@ func BenchmarkSave(b *testing.B) {
 			continue
 		}
 		b.Run(c.name, func(b *testing.B) {
+			resetWrites(b, e)
 			save, err := c.save(e.ctx)
 			if err != nil {
 				b.Fatal(err)

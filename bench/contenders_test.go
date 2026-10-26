@@ -58,12 +58,27 @@ type pageCursor struct {
 // runContenders runs op for every contender that has it, as a sub-benchmark named after it.
 func runContenders(b *testing.B, e *env, op func(c *contender) func(ctx context.Context) error) {
 	b.Helper()
+	runEach(b, e, false, op)
+}
+
+// runWriteContenders is runContenders for an operation that writes customers: each
+// sub-benchmark removes what it wrote when it ends (resetWrites).
+func runWriteContenders(b *testing.B, e *env, op func(c *contender) func(ctx context.Context) error) {
+	b.Helper()
+	runEach(b, e, true, op)
+}
+
+func runEach(b *testing.B, e *env, writes bool, op func(c *contender) func(ctx context.Context) error) {
+	b.Helper()
 	for _, c := range e.others {
 		f := op(c)
 		if f == nil {
 			continue
 		}
 		b.Run(c.name, func(b *testing.B) {
+			if writes {
+				resetWrites(b, e)
+			}
 			b.ReportAllocs()
 			for b.Loop() {
 				if err := f(e.ctx); err != nil {
@@ -92,3 +107,19 @@ func checkRelations(n, moves int, customer bool) error {
 }
 
 var errConflict = errors.New("save: version conflict")
+
+// resetWrites removes, when the sub-benchmark ends, the customers the write benchmarks create
+// (named bench or save, unlike the seeded ones) and refreshes the table's statistics, so neither
+// the next library's writes nor the later reads run against the rows this one left.
+func resetWrites(b *testing.B, e *env) {
+	b.Helper()
+	b.Cleanup(func() {
+		if _, err := e.pgx.Exec(context.Background(),
+			"DELETE FROM customers WHERE name IN ('bench', 'save')"); err != nil {
+			b.Errorf("reset writes: %v", err)
+		}
+		if _, err := e.pgx.Exec(context.Background(), "VACUUM ANALYZE customers"); err != nil {
+			b.Errorf("reset writes: %v", err)
+		}
+	})
+}

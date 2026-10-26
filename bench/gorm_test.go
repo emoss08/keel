@@ -146,9 +146,12 @@ func openGORM(e *env) (*contender, error) {
 			if err := db.WithContext(ctx).Create(&c).Error; err != nil {
 				return nil, err
 			}
+			key := gormCustomer{ID: c.ID, OrganizationID: org, BusinessUnitID: bu}
+			version := c.Version
 			return func(ctx context.Context) error {
-				res := db.WithContext(ctx).Model(&c).Where("version = ?", c.Version).Updates(map[string]any{
-					"name": rid(), "version": c.Version + 1, "updated_at": time.Now().Unix(),
+				row := key
+				res := db.WithContext(ctx).Model(&row).Where("version = ?", version).Updates(map[string]any{
+					"name": rid(), "version": version + 1, "updated_at": time.Now().Unix(),
 				})
 				if res.Error != nil {
 					return res.Error
@@ -156,7 +159,7 @@ func openGORM(e *env) (*contender, error) {
 				if res.RowsAffected != 1 {
 					return errConflict
 				}
-				c.Version++
+				version++
 				return nil
 			}, nil
 		},
