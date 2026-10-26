@@ -98,11 +98,11 @@ func (c Conflict) Update(cols ...Column) Conflict {
 	return c
 }
 
-// Set adds assignments for a conflicting row, built as for Query.Update: To binds a value, Add adds
-// to the stored value, ToNull, ToDefault and ToExpr set the rest. Inside an expression the table's
+// Set adds assignments for a conflicting row, built as for Query.Update: To binds a value, Increment
+// adds to the stored value, ToNull, ToDefault and ToExpr set the rest. Inside an expression the table's
 // columns read the stored row and a column's Excluded reads the proposed row:
 //
-//	keel.OnConflict(c.Code).Set(c.Name.ToExpr(c.Name.Excluded()), c.Hits.Add(1))
+//	keel.OnConflict(c.Code).Set(c.Name.ToExpr(c.Name.Excluded()), c.Hits.Increment(1))
 //
 // Update and Set combine; a column must not be assigned twice. Unless Set assigns them, the
 // autoupdate column takes the proposed row's stamp and the version column is incremented.
@@ -138,7 +138,7 @@ func (c *Conflict) forInsertFrom(ref *Ref, listed []int32, now time.Time) ([]int
 // anywhere else. A row the condition rejects is neither inserted nor updated, so UpsertFrom does
 // not count it, which makes a capped counter one statement:
 //
-//	keel.OnConflict(u.Day).Set(u.Requests.Add(1)).UpdateWhere(u.Requests.Lt(limit))
+//	keel.OnConflict(u.Day).Set(u.Requests.Increment(1)).UpdateWhere(u.Requests.Lt(limit))
 //
 // Upsert refuses it, since it reports every row as inserted or updated.
 func (c Conflict) UpdateWhere(ps ...Pred) Conflict {

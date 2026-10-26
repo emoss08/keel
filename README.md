@@ -321,7 +321,7 @@ inserted, err = c.Upsert(ctx, db, rows, keel.OnConflict(c.OrganizationID, c.Busi
 n, err = c.CreateOrSkip(ctx, db, rows, c.OrganizationID, c.BusinessUnitID, c.Code)
 
 n, err = s.Where(s.Status.Eq(fleet.StatusNew), s.Customer().Code.Eq("ACME")).
-    Update(ctx, db, s.Status.To(fleet.StatusCanceled), s.Priority.Add(1))
+    Update(ctx, db, s.Status.To(fleet.StatusCanceled), s.Priority.Increment(1))
 ```
 
 ### Hooks

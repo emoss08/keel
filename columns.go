@@ -256,7 +256,8 @@ func set(c Col, v any) Assignment {
 	}}
 }
 
-func add(c Col, v any) Assignment {
+// increment is col = col + v.
+func increment(c Col, v any) Assignment {
 	return Assignment{col: c, e: func(r *render) {
 		r.col(c)
 		r.s(" + ")
@@ -313,20 +314,20 @@ func (c StringCol) MatchFold(re string) Pred { return cmp(c.Col, " ~* ", re) }
 // Int64Col is a bigint column.
 type Int64Col struct{ Col }
 
-func (c Int64Col) Eq(v int64) Pred             { return cmp(c.Col, " = ", v) }
-func (c Int64Col) Ne(v int64) Pred             { return cmp(c.Col, " <> ", v) }
-func (c Int64Col) Gt(v int64) Pred             { return cmp(c.Col, " > ", v) }
-func (c Int64Col) Gte(v int64) Pred            { return cmp(c.Col, " >= ", v) }
-func (c Int64Col) Lt(v int64) Pred             { return cmp(c.Col, " < ", v) }
-func (c Int64Col) Lte(v int64) Pred            { return cmp(c.Col, " <= ", v) }
-func (c Int64Col) Between(lo, hi int64) Pred   { return between(c.Col, lo, hi) }
-func (c Int64Col) IsDistinctFrom(v int64) Pred { return cmp(c.Col, " IS DISTINCT FROM ", v) }
-func (c Int64Col) In(vs ...int64) Pred         { return anyOf(c.Col, vs, false) }
-func (c Int64Col) NotIn(vs ...int64) Pred      { return anyOf(c.Col, vs, true) }
-func (c Int64Col) To(v int64) Assignment       { return set(c.Col, v) }
-func (c Int64Col) Add(v int64) Assignment      { return add(c.Col, v) }
-func (c Int64Col) Sum() Agg                    { return Agg{fn: "sum", arg: c.Col} }
-func (c Int64Col) Avg() Agg                    { return Agg{fn: "avg", arg: c.Col} }
+func (c Int64Col) Eq(v int64) Pred              { return cmp(c.Col, " = ", v) }
+func (c Int64Col) Ne(v int64) Pred              { return cmp(c.Col, " <> ", v) }
+func (c Int64Col) Gt(v int64) Pred              { return cmp(c.Col, " > ", v) }
+func (c Int64Col) Gte(v int64) Pred             { return cmp(c.Col, " >= ", v) }
+func (c Int64Col) Lt(v int64) Pred              { return cmp(c.Col, " < ", v) }
+func (c Int64Col) Lte(v int64) Pred             { return cmp(c.Col, " <= ", v) }
+func (c Int64Col) Between(lo, hi int64) Pred    { return between(c.Col, lo, hi) }
+func (c Int64Col) IsDistinctFrom(v int64) Pred  { return cmp(c.Col, " IS DISTINCT FROM ", v) }
+func (c Int64Col) In(vs ...int64) Pred          { return anyOf(c.Col, vs, false) }
+func (c Int64Col) NotIn(vs ...int64) Pred       { return anyOf(c.Col, vs, true) }
+func (c Int64Col) To(v int64) Assignment        { return set(c.Col, v) }
+func (c Int64Col) Increment(v int64) Assignment { return increment(c.Col, v) }
+func (c Int64Col) Sum() Agg                     { return Agg{fn: "sum", arg: c.Col} }
+func (c Int64Col) Avg() Agg                     { return Agg{fn: "avg", arg: c.Col} }
 
 // Int32Col is an integer column.
 type Int32Col struct{ Col }
@@ -342,11 +343,11 @@ func (c Int32Col) In(vs ...int32) Pred       { return anyOf(c.Col, vs, false) }
 func (c Int32Col) IsDistinctFrom(v int32) Pred {
 	return cmp(c.Col, " IS DISTINCT FROM ", v)
 }
-func (c Int32Col) NotIn(vs ...int32) Pred { return anyOf(c.Col, vs, true) }
-func (c Int32Col) To(v int32) Assignment  { return set(c.Col, v) }
-func (c Int32Col) Add(v int32) Assignment { return add(c.Col, v) }
-func (c Int32Col) Sum() Agg               { return Agg{fn: "sum", arg: c.Col} }
-func (c Int32Col) Avg() Agg               { return Agg{fn: "avg", arg: c.Col} }
+func (c Int32Col) NotIn(vs ...int32) Pred       { return anyOf(c.Col, vs, true) }
+func (c Int32Col) To(v int32) Assignment        { return set(c.Col, v) }
+func (c Int32Col) Increment(v int32) Assignment { return increment(c.Col, v) }
+func (c Int32Col) Sum() Agg                     { return Agg{fn: "sum", arg: c.Col} }
+func (c Int32Col) Avg() Agg                     { return Agg{fn: "avg", arg: c.Col} }
 
 // Int16Col is a smallint column.
 type Int16Col struct{ Col }
@@ -362,10 +363,10 @@ func (c Int16Col) In(vs ...int16) Pred       { return anyOf(c.Col, vs, false) }
 func (c Int16Col) IsDistinctFrom(v int16) Pred {
 	return cmp(c.Col, " IS DISTINCT FROM ", v)
 }
-func (c Int16Col) NotIn(vs ...int16) Pred { return anyOf(c.Col, vs, true) }
-func (c Int16Col) To(v int16) Assignment  { return set(c.Col, v) }
-func (c Int16Col) Add(v int16) Assignment { return add(c.Col, v) }
-func (c Int16Col) Sum() Agg               { return Agg{fn: "sum", arg: c.Col} }
+func (c Int16Col) NotIn(vs ...int16) Pred       { return anyOf(c.Col, vs, true) }
+func (c Int16Col) To(v int16) Assignment        { return set(c.Col, v) }
+func (c Int16Col) Increment(v int16) Assignment { return increment(c.Col, v) }
+func (c Int16Col) Sum() Agg                     { return Agg{fn: "sum", arg: c.Col} }
 
 // Float64Col is a double precision or real column.
 type Float64Col struct{ Col }
@@ -380,10 +381,10 @@ func (c Float64Col) Between(lo, hi float64) Pred { return between(c.Col, lo, hi)
 func (c Float64Col) IsDistinctFrom(v float64) Pred {
 	return cmp(c.Col, " IS DISTINCT FROM ", v)
 }
-func (c Float64Col) To(v float64) Assignment  { return set(c.Col, v) }
-func (c Float64Col) Add(v float64) Assignment { return add(c.Col, v) }
-func (c Float64Col) Sum() Agg                 { return Agg{fn: "sum", arg: c.Col} }
-func (c Float64Col) Avg() Agg                 { return Agg{fn: "avg", arg: c.Col} }
+func (c Float64Col) To(v float64) Assignment        { return set(c.Col, v) }
+func (c Float64Col) Increment(v float64) Assignment { return increment(c.Col, v) }
+func (c Float64Col) Sum() Agg                       { return Agg{fn: "sum", arg: c.Col} }
+func (c Float64Col) Avg() Agg                       { return Agg{fn: "avg", arg: c.Col} }
 
 // BoolCol is a boolean column.
 type BoolCol struct{ Col }
@@ -427,12 +428,12 @@ func (c AnyCol) IsDistinctFrom(v any) Pred {
 }
 
 // In takes a slice of values (for example []decimal.Decimal) bound as one array parameter.
-func (c AnyCol) In(slice any) Pred    { return anyOf(c.Col, slice, false) }
-func (c AnyCol) NotIn(slice any) Pred { return anyOf(c.Col, slice, true) }
-func (c AnyCol) To(v any) Assignment  { return set(c.Col, v) }
-func (c AnyCol) Add(v any) Assignment { return add(c.Col, v) }
-func (c AnyCol) Sum() Agg             { return Agg{fn: "sum", arg: c.Col} }
-func (c AnyCol) Avg() Agg             { return Agg{fn: "avg", arg: c.Col} }
+func (c AnyCol) In(slice any) Pred          { return anyOf(c.Col, slice, false) }
+func (c AnyCol) NotIn(slice any) Pred       { return anyOf(c.Col, slice, true) }
+func (c AnyCol) To(v any) Assignment        { return set(c.Col, v) }
+func (c AnyCol) Increment(v any) Assignment { return increment(c.Col, v) }
+func (c AnyCol) Sum() Agg                   { return Agg{fn: "sum", arg: c.Col} }
+func (c AnyCol) Avg() Agg                   { return Agg{fn: "avg", arg: c.Col} }
 
 // JSONBCol is a jsonb column.
 type JSONBCol struct{ Col }
