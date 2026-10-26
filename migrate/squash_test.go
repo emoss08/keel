@@ -4,25 +4,19 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/emoss08/keel/internal/testdump"
 )
 
-// dumpCommand returns the pg_dump command of the keelpg container, skipping the test when it is
-// unavailable.
+// dumpCommand returns the test server's pg_dump command (see testdump.Command).
 func dumpCommand(t *testing.T) []string {
 	t.Helper()
 	requirePostgres(t)
-	if err := exec.Command("docker", "exec", "keelpg", "pg_dump", "--version").Run(); err != nil {
-		if os.Getenv("KEEL_TEST_REQUIRE") != "" {
-			t.Fatalf("docker exec keelpg pg_dump: %v", err)
-		}
-		t.Skipf("pg_dump in keelpg unavailable: %v", err)
-	}
-	return []string{"docker", "exec", "keelpg", "pg_dump", "-U", "keel", "-d", "{db}"}
+	return testdump.Command(t)
 }
 
 // writeFiles writes migration files into dir.

@@ -25,6 +25,7 @@ jobs:
     env:
       KEEL_TEST_DSN: postgres://keel:keel@localhost:5432/keel?sslmode=disable
       KEEL_TEST_REQUIRE: "1"
+      KEEL_TEST_PG_DUMP: docker exec ${{ job.services.postgres.id }} pg_dump -U keel -d {db}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5

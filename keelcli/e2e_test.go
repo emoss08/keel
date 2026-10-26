@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -15,6 +14,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/emoss08/keel/internal/testdump"
 	"github.com/emoss08/keel/migrate"
 )
 
@@ -272,14 +272,9 @@ func TestSampleWritesFiles(t *testing.T) {
 
 func TestSampleSquash(t *testing.T) {
 	requirePostgres(t)
-	if err := exec.Command("docker", "exec", "keelpg", "pg_dump", "--version").Run(); err != nil {
-		if os.Getenv("KEEL_TEST_REQUIRE") != "" {
-			t.Fatalf("docker exec keelpg pg_dump: %v", err)
-		}
-		t.Skipf("pg_dump in keelpg unavailable: %v", err)
-	}
+	dump := testdump.Command(t)
 	s, dir := sqlOnlySample(t)
-	s.app.Dump = strings.Fields("docker exec keelpg pg_dump -U keel -d {db}")
+	s.app.Dump = dump
 	s.app.Seeds = nil
 	s.run(t, "migrate", "up").expect(t, ExitOK, "done: 3 migrations applied")
 	s.run(t, "migrate", "squash").expect(t, ExitUsage, "pass -yes")

@@ -4547,6 +4547,11 @@ KEEL_TEST_REQUIRE=1 go test ./...  # fail instead of skipping
   use the tests copy a database from a template of `testdata/migrations` with `migrate.Template`
   (built once, then reused while the migrations are unchanged) and open a `keel.DB` on it;
   `TestMain` drops it.
+- The squash tests run `pg_dump` from the server's own version: `KEEL_TEST_PG_DUMP` is the
+  command, with `{db}` for the database (CI sets
+  `docker exec <service container> pg_dump -U keel -d {db}`), default
+  `docker exec keelpg pg_dump -U keel -d {db}`. They skip when it cannot run, and fail under
+  `KEEL_TEST_REQUIRE`.
 - Each test works in a fresh random tenant (`newTenant()`), so tests never see each other's rows and
   need no cleanup between them.
 - SQL golden tests ([render_test.go](../render_test.go)) open a `DB` on an address nothing listens
