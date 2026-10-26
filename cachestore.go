@@ -167,7 +167,7 @@ func (r *recordingRows) Next() bool {
 		return false
 	}
 	r.rec.setFields(r.Rows.FieldDescriptions())
-	r.rec.addRow(r.Rows.RawValues())
+	r.rec.addRow(r.RawValues())
 	return true
 }
 

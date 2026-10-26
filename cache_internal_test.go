@@ -56,7 +56,7 @@ func TestCacheEntryRoundTrip(t *testing.T) {
 	if rows.Next() || rows.CommandTag().String() != "SELECT 2" {
 		t.Fatal("rows did not end")
 	}
-	if e.batches[1][0].rows != 0 || e.batches[1][0].fields != nil && len(e.batches[1][0].fields) != 0 {
+	if e.batches[1][0].rows != 0 || len(e.batches[1][0].fields) != 0 {
 		t.Fatalf("empty statement %+v", e.batches[1][0])
 	}
 

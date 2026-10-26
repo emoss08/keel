@@ -549,7 +549,7 @@ func BenchmarkBuildOnly(b *testing.B) {
 			var rows []*bunShipment
 			q := db.NewSelect().Model(&rows).
 				Where("sp.organization_id = ?", "org").Where("sp.business_unit_id = ?", "bu").
-				Where("sp.status IN (?)", bun.In([]string{"New", "Assigned"})).
+				Where("sp.status IN (?)", bun.List([]string{"New", "Assigned"})).
 				Where("sp.pro_number LIKE ?", "%x%").Order("sp.created_at DESC").Limit(50)
 			_ = q.String()
 		}

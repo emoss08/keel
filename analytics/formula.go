@@ -174,10 +174,10 @@ func (c *compiler) template(tmpl string, args []keel.DynExpr) (keel.DynExpr, err
 	var bound []any
 	for i := 0; i < len(tmpl); i++ {
 		ch := tmpl[i]
-		switch {
-		case ch == '?':
+		switch ch {
+		case '?':
 			b.WriteString("??")
-		case ch == '{':
+		case '{':
 			end := strings.IndexByte(tmpl[i:], '}')
 			if end < 0 {
 				return keel.DynExpr{}, fail(CodeNotAllowed, "", "malformed template %q", tmpl)

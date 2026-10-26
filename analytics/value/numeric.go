@@ -146,9 +146,10 @@ func SplitDecimal(d keel.Decimal) (neg bool, whole, frac string, ok bool) {
 		return false, "", "", false
 	}
 	s := string(d)
-	if s[0] == '-' {
+	switch s[0] {
+	case '-':
 		neg, s = true, s[1:]
-	} else if s[0] == '+' {
+	case '+':
 		s = s[1:]
 	}
 	whole, frac, _ = strings.Cut(s, ".")

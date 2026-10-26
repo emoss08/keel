@@ -251,7 +251,7 @@ func TestPostGISPackageBuildsSpatialQueries(t *testing.T) {
 	if !strings.Contains(rows[0].GeoJSON, `"Point"`) {
 		t.Fatalf("GeoJSON %s", rows[0].GeoJSON)
 	}
-	if rows[0].Polygon == nil || rows[0].Polygon.Geometry.GeoJSONType() != "Polygon" {
+	if rows[0].Polygon == nil || rows[0].Polygon.GeoJSONType() != "Polygon" {
 		t.Fatalf("polygon %v", rows[0].Polygon)
 	}
 	if !rows[0].Centroid.IsValid() || math.Abs(rows[0].Centroid.Lon()+97.5) > 1e-6 {

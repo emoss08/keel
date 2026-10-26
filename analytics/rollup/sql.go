@@ -9,19 +9,6 @@ import (
 	"github.com/emoss08/keel/schema"
 )
 
-// Bookkeeping tables every rollup shares.
-const (
-	dirtyTable = "keel_rollup_dirty"
-	stateTable = "keel_rollup_state"
-)
-
-// Sentinel buckets of keel_rollup_dirty: wholeTenant marks every bucket of a tenant, nullBucket the
-// rows whose grain column is null.
-const (
-	wholeTenant = "-infinity"
-	nullBucket  = "infinity"
-)
-
 // dirtyTableSQL creates keel_rollup_dirty. A row records that a transaction (xid) changed source
 // rows in one slice of a rollup: a tenant and a grain bucket. Each transaction writes a slice at
 // most once and never conflicts with another, so writers never wait on each other.

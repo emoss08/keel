@@ -122,7 +122,7 @@ func errorAt(code Code, pos, end Pos, format string, args ...any) *Error {
 	return &Error{Code: code, Message: fmt.Sprintf(format, args...), Pos: pos, End: end}
 }
 
-func didYouMean(e *Error, name string, candidates []string, quote func(string) string) *Error {
+func didYouMean(e *Error, name string, candidates []string, quote func(string) string) {
 	e.Suggestions = Suggest(name, candidates)
 	if len(e.Suggestions) > 0 {
 		quoted := make([]string, len(e.Suggestions))
@@ -131,5 +131,4 @@ func didYouMean(e *Error, name string, candidates []string, quote func(string) s
 		}
 		e.Message += "; did you mean " + strings.Join(quoted, " or ") + "?"
 	}
-	return e
 }

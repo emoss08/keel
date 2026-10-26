@@ -136,7 +136,8 @@ func trenovaTables() ([]*schema.Table, string) {
 	for _, e := range trenovaEntities {
 		t := byKey[e.key]
 		for _, edge := range strings.Fields(e.edges) {
-			name, target, many := edge, "", false
+			var name, target string
+			many := false
 			if a, b, ok := strings.Cut(edge, ">>"); ok {
 				name, target, many = a, b, true
 			} else {

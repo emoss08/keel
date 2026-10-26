@@ -84,7 +84,7 @@ func CSVEach[T any](r *Run, path string, fn func(T) error) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	cr := csv.NewReader(f)
 	cr.ReuseRecord = true
 	header, err := cr.Read()

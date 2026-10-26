@@ -277,7 +277,8 @@ func shapeArgs(n *Node, ptr string) *Error {
 		fn, ok := Lookup(n.Value)
 		if !ok || fn.Name != n.Value {
 			e := bad("unknown function %s", n.Value)
-			return didYouMean(e, n.Value, functionNames(), func(s string) string { return s })
+			didYouMean(e, n.Value, functionNames(), func(s string) string { return s })
+			return e
 		}
 		if err := checkArity(fn, len(n.Args), n.Pos, n.Pos); err != nil {
 			err.Pointer = ptr

@@ -555,6 +555,10 @@ func TestInsertFrom(t *testing.T) {
 	eq(t, must(tg.Query().Count(w.ctx, d))(t), int64(5))
 }
 
+// otherCallerKey marks a context as another caller's, so its statements run outside the test's
+// transaction.
+type otherCallerKey struct{}
+
 func TestLock(t *testing.T) {
 	d := db(t)
 	w := seed(t, 2)
@@ -564,7 +568,7 @@ func TestLock(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		other := context.WithValue(w.ctx, struct{}{}, 1)
+		other := context.WithValue(w.ctx, otherCallerKey{}, 1)
 		_, err = s.Where(s.ID.Eq(got.ID)).Lock(keel.ForUpdate, keel.NoWait).One(other, d)
 		if keel.Code(err) != "55P03" {
 			return fmt.Errorf("concurrent lock: got %v, want lock_not_available", err)

@@ -131,9 +131,6 @@ func (r *Rollup) colIndex(src int32) (int32, bool) {
 	return -1, false
 }
 
-// bucketIndex returns the index of the bucket column.
-func (r *Rollup) bucketIndex() int32 { return int32(len(r.source.Tenant)) }
-
 // schemaTable builds the schema of the rollup table.
 func (r *Rollup) schemaTable() *schema.Table {
 	t := &schema.Table{
@@ -186,12 +183,12 @@ func (r *Rollup) nullableBucket() schema.ColFlag {
 // keep the source type.
 func (r *Rollup) aggColumn(c column) schema.Column {
 	sc := schema.Column{Name: c.name, Field: pascal(c.name), Label: label(c.name)}
-	switch {
-	case c.agg.fn == "count" || c.agg.fn == "count_distinct":
+	switch c.agg.fn {
+	case "count", "count_distinct":
 		sc.Kind = schema.KindInt64
 		sc.Report = &schema.ReportInfo{Kind: schema.Measure, Type: schema.ValueInt, Aggs: schema.AggsNumeric}
 		return sc
-	case c.agg.fn == "sum":
+	case "sum":
 		src := r.source.Columns[c.source]
 		sc.Flags = schema.FlagNullable
 		sc.Kind, sc.Report = sumKind(src)

@@ -66,7 +66,7 @@ func download(version string) (map[string]affix, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("cldrgen: %s: %s", url, resp.Status)
 	}

@@ -44,7 +44,7 @@ func MigrationJob(engine Migrations, opts migrateport.UpOptions) Job {
 		Title: "Migrations",
 		Noun:  "migration",
 		Run: func(ctx context.Context, send func(tea.Msg)) error {
-			plan, err := engine.Plan(ctx, migrateport.PlanOptions{To: opts.To})
+			plan, err := engine.Plan(ctx, migrateport.PlanOptions(opts))
 			if err != nil {
 				return err
 			}

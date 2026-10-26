@@ -426,5 +426,6 @@ go test ./...                      # integration tests skip when Postgres is unr
 KEEL_TEST_REQUIRE=1 go test ./...  # fail instead of skipping
 make gen                           # regenerate the test models' packages
 make check                         # gofmt, vet, and generated code up to date
+make lint                          # golangci-lint (v2, .golangci.yml) and actionlint
 make test-replica                  # start a streaming replica of keelpg and run the replica tests
 ```

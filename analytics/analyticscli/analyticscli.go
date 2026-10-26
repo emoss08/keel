@@ -8,7 +8,7 @@
 //	analytics rollups pending
 //
 // Command returns them as one keelcli.Command; Run runs the same commands without keelcli, for a
-// go:generate program, and WriteMessages, CheckMessages and Describe are the plain functions
+// program run by go generate, and WriteMessages, CheckMessages and Describe are the plain functions
 // behind i18n and describe. The keel command itself runs ts, which needs no application tables;
 // an application registers the rest in its database binary:
 //

@@ -4,7 +4,6 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"io"
 	"os"
 	"strings"
 
@@ -45,7 +44,7 @@ func setupPlans(fs *flag.FlagSet) runner {
 			if err != nil {
 				return err
 			}
-			defer conn.Close(context.WithoutCancel(ctx))
+			defer func() { _ = conn.Close(context.WithoutCancel(ctx)) }()
 			if err := s.busy(ctx, "Planning "+render.Plural(len(shapes), "shape", "shapes"), func(ctx context.Context) (err error) {
 				reports, err = plans.Run(ctx, conn, shapes, rules)
 				return err
@@ -75,13 +74,13 @@ func setupPlans(fs *flag.FlagSet) runner {
 
 // readShapes reads the shapes file at path, or stdin for -.
 func (s *session) readShapes(path string) ([]keel.Shape, error) {
-	var r io.Reader = s.st.in
+	r := s.st.in
 	if path != "-" {
 		f, err := os.Open(path)
 		if err != nil {
 			return nil, fmt.Errorf("keelcli: plans: %w", err)
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		r = f
 	}
 	shapes, err := keel.ReadShapes(r)

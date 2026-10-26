@@ -408,7 +408,8 @@ func (p *parser) call(t token) (*Node, *Error) {
 	fn, ok := Lookup(t.text)
 	if !ok {
 		e := errorAt(CodeUnknownFunction, t.pos, t.end, "unknown function %s", t.text)
-		return nil, didYouMean(e, strings.ToLower(t.text), functionNames(), func(s string) string { return s })
+		didYouMean(e, strings.ToLower(t.text), functionNames(), func(s string) string { return s })
+		return nil, e
 	}
 	n := &Node{Kind: KindCall, Value: fn.Name}
 	if err := p.arguments(n); err != nil {
