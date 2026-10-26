@@ -430,17 +430,19 @@ func (e StringExpr) Between(lo, hi string) Pred { return between(e.e, lo, hi) }
 func (e StringExpr) IsDistinctFrom(v string) Pred {
 	return cmp(e.e, " IS DISTINCT FROM ", v)
 }
-func (e StringExpr) In(vs ...string) Pred       { return anyOf(e.e, vs, false) }
-func (e StringExpr) NotIn(vs ...string) Pred    { return anyOf(e.e, vs, true) }
-func (e StringExpr) EqExpr(o StringValue) Pred  { return binExpr(e.e, " = ", o) }
-func (e StringExpr) NeExpr(o StringValue) Pred  { return binExpr(e.e, " <> ", o) }
-func (e StringExpr) GtExpr(o StringValue) Pred  { return binExpr(e.e, " > ", o) }
-func (e StringExpr) GteExpr(o StringValue) Pred { return binExpr(e.e, " >= ", o) }
-func (e StringExpr) LtExpr(o StringValue) Pred  { return binExpr(e.e, " < ", o) }
-func (e StringExpr) LteExpr(o StringValue) Pred { return binExpr(e.e, " <= ", o) }
-func (e StringExpr) Like(p string) Pred         { return cmp(e.e, " LIKE ", p) }
-func (e StringExpr) ILike(p string) Pred        { return cmp(e.e, " ILIKE ", p) }
-func (e StringExpr) Contains(s string) Pred     { return cmp(e.e, " LIKE ", "%"+escapeLike(s)+"%") }
+func (e StringExpr) In(vs ...string) Pred         { return anyOf(e.e, vs, false) }
+func (e StringExpr) NotIn(vs ...string) Pred      { return anyOf(e.e, vs, true) }
+func (e StringExpr) EqExpr(o StringValue) Pred    { return binExpr(e.e, " = ", o) }
+func (e StringExpr) NeExpr(o StringValue) Pred    { return binExpr(e.e, " <> ", o) }
+func (e StringExpr) GtExpr(o StringValue) Pred    { return binExpr(e.e, " > ", o) }
+func (e StringExpr) GteExpr(o StringValue) Pred   { return binExpr(e.e, " >= ", o) }
+func (e StringExpr) LtExpr(o StringValue) Pred    { return binExpr(e.e, " < ", o) }
+func (e StringExpr) LteExpr(o StringValue) Pred   { return binExpr(e.e, " <= ", o) }
+func (e StringExpr) Like(p string) Pred           { return cmp(e.e, " LIKE ", p) }
+func (e StringExpr) ILike(p string) Pred          { return cmp(e.e, " ILIKE ", p) }
+func (e StringExpr) LikeExpr(p StringValue) Pred  { return binExpr(e.e, " LIKE ", p) }
+func (e StringExpr) ILikeExpr(p StringValue) Pred { return binExpr(e.e, " ILIKE ", p) }
+func (e StringExpr) Contains(s string) Pred       { return cmp(e.e, " LIKE ", "%"+escapeLike(s)+"%") }
 func (e StringExpr) ContainsFold(s string) Pred {
 	return cmp(e.e, " ILIKE ", "%"+escapeLike(s)+"%")
 }

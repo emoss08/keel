@@ -138,16 +138,19 @@ func (c Col) Min() Agg { return Agg{fn: "min", arg: c} }
 // Max is max(col).
 func (c Col) Max() Agg { return Agg{fn: "max", arg: c} }
 
-// Coalesce is coalesce(col, v).
-func (c Col) Coalesce(v any) Expr {
+// Coalesce is coalesce(col, vs…): the first of col and vs that is not NULL, each v an expression
+// or a Go value bound as a parameter of col's type.
+func (c Col) Coalesce(vs ...any) Expr {
 	return exprFunc(func(r *render) {
 		r.s("coalesce(")
 		r.col(c)
-		r.s(", ")
-		if e, ok := v.(Expr); ok {
-			e.writeSQL(r)
-		} else {
-			r.argCol(v, c, "coalesce")
+		for _, v := range vs {
+			r.s(", ")
+			if e, ok := v.(Expr); ok {
+				e.writeSQL(r)
+			} else {
+				r.argCol(v, c, "coalesce")
+			}
 		}
 		r.b(')')
 	})
@@ -282,6 +285,13 @@ func (c StringCol) To(v string) Assignment       { return set(c.Col, v) }
 
 // Like matches a LIKE pattern as given; % and _ keep their meaning.
 func (c StringCol) Like(pattern string) Pred { return cmp(c.Col, " LIKE ", pattern) }
+
+// LikeExpr matches the LIKE pattern an expression computes, as col LIKE pattern; % and _ in the
+// pattern keep their meaning, so escape user text that feeds it.
+func (c StringCol) LikeExpr(pattern StringValue) Pred { return binExpr(c.Col, " LIKE ", pattern) }
+
+// ILikeExpr is LikeExpr, ignoring case.
+func (c StringCol) ILikeExpr(pattern StringValue) Pred { return binExpr(c.Col, " ILIKE ", pattern) }
 
 // ILike matches an ILIKE pattern as given.
 func (c StringCol) ILike(pattern string) Pred { return cmp(c.Col, " ILIKE ", pattern) }

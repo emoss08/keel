@@ -203,6 +203,12 @@ func TestTypedOperatorPredicatesRender(t *testing.T) {
 		{"bool case predicate", c.Pick(c.ID).Where(keel.CaseBool().When(c.VIP.IsTrue(), keel.ConstBool(true)).
 			Else(keel.BoolOf(c.Rating.Gt(4)))),
 			`CASE WHEN c."vip" IS TRUE THEN TRUE ELSE c."rating" > $3 END`},
+		{"like an expression", s.Pick(s.ID).Where(s.ProNumber.LikeExpr(keel.ConstText("%").Cat(s.ID))),
+			`(s."pro_number" LIKE ('%' || s."id"))`},
+		{"ilike an expression", s.Pick(s.ID).Where(s.ProNumber.Lower().ILikeExpr(keel.ConstText("p%"))),
+			`(lower(s."pro_number") ILIKE 'p%')`},
+		{"coalesce of several", s.Pick(s.ID).Where(s.ProNumber.Coalesce(s.ID, "none").Eq("x")),
+			`coalesce(s."pro_number", s."id", $3) = $4`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

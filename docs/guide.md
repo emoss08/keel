@@ -1363,6 +1363,8 @@ dynamic one adds):
 
 | Dynamic | Typed |
 |---|---|
+| `keel.DynOf(a).Like(pattern)`, `.ILike` with an expression pattern | `a.LikeExpr(pattern)`, `a.ILikeExpr(pattern)` (`%` and `_` in the computed pattern keep their meaning) |
+| nested `coalesce(a, coalesce(b, c))` | `a.Coalesce(b, c)`: `coalesce(a, b, c)` |
 | `keel.DynOf(a).Add(b)`, `.Sub`, `.Mul`, `.Div`, `.Mod` | `a.Add(b)`, … with `b` a column, an expression or `keel.Int64(n)` (`keel.DynOf(a).Div(86400)` is `a.Div(keel.Int64(86400))`) |
 | `keel.DynLit(asOf).Sub(inv.DueDate)` | `keel.Int64(asOf).Sub(inv.DueDate)` |
 | `keel.DynOf(a).Neg()` | `a.Neg()` |

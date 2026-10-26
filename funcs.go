@@ -39,6 +39,17 @@ func callOf(name string, args ...Expr) sqlCall {
 // literal is written once per statement wherever the expression repeats.
 func bindOf(v any) Expr { return &litExpr{v: v} }
 
+// coalesceOf is coalesce(e, vs…): each v a Go value bound as a parameter of e's type, or an
+// expression, taken in order where everything before it is NULL.
+func coalesceOf(e Expr, vs []any) Expr {
+	args := make([]Expr, 1, len(vs)+1)
+	args[0] = e
+	for _, v := range vs {
+		args = append(args, operandFor(e, "coalesce", v))
+	}
+	return callOf("coalesce", args...)
+}
+
 // operandFor is v as an operand of a function over e: an expression in place, nil as NULL, a value
 // compared with a column sharing its placeholder as the column's comparisons do, any other value
 // bound.
@@ -196,10 +207,9 @@ func (e StringExpr) RegexpReplace(pattern, replacement, flags string) StringExpr
 		bindOf(flags))}
 }
 
-// Coalesce is coalesce(e, v): v, a string bound as a parameter or an expression, where e is NULL.
-func (e StringExpr) Coalesce(v any) StringExpr {
-	return StringExpr{e: callOf("coalesce", e.e, operandFor(e.e, "coalesce", v))}
-}
+// Coalesce is coalesce(e, vs…): each v a string bound as a parameter or an expression, taken in
+// order where everything before it is NULL.
+func (e StringExpr) Coalesce(vs ...any) StringExpr { return StringExpr{e: coalesceOf(e.e, vs)} }
 
 // NullIf is nullif(e, v): NULL where e equals v, as NullIf("") turns empty strings into NULL.
 func (e StringExpr) NullIf(v string) StringExpr {
@@ -272,9 +282,9 @@ func (c StringCol) RegexpReplace(pattern, replacement, flags string) StringExpr 
 	return c.asText().RegexpReplace(pattern, replacement, flags)
 }
 
-// Coalesce is coalesce(col, v), typed as text: v is a value bound as a parameter (sharing the
-// placeholder of an equal value compared with the column) or an expression.
-func (c StringCol) Coalesce(v any) StringExpr { return StringExpr{e: c.Col.Coalesce(v)} }
+// Coalesce is coalesce(col, vs…), typed as text: each v is a value bound as a parameter (sharing
+// the placeholder of an equal value compared with the column) or an expression.
+func (c StringCol) Coalesce(vs ...any) StringExpr { return StringExpr{e: c.Col.Coalesce(vs...)} }
 
 // NullIf is nullif(col, v).
 func (c StringCol) NullIf(v string) StringExpr {
@@ -323,10 +333,9 @@ func CastText(e Expr) StringExpr { return StringExpr{e: castTo(e, "text")} }
 // Abs is abs(e).
 func (e Int64Expr) Abs() Int64Expr { return Int64Expr{e: callOf("abs", e.e)} }
 
-// Coalesce is coalesce(e, v): v, an integer bound as a parameter or an expression, where e is NULL.
-func (e Int64Expr) Coalesce(v any) Int64Expr {
-	return Int64Expr{e: callOf("coalesce", e.e, operandFor(e.e, "coalesce", v))}
-}
+// Coalesce is coalesce(e, vs…): each v an integer bound as a parameter or an expression, taken in
+// order where everything before it is NULL.
+func (e Int64Expr) Coalesce(vs ...any) Int64Expr { return Int64Expr{e: coalesceOf(e.e, vs)} }
 
 // NullIf is nullif(e, v): NULL where e equals v, for a divisor that may be zero.
 func (e Int64Expr) NullIf(v int64) Int64Expr {
@@ -346,8 +355,8 @@ func (e Int64Expr) Least(others ...Int64Value) Int64Expr {
 // Abs is abs(col).
 func (c Int64Col) Abs() Int64Expr { return Int64Expr{e: c.Col}.Abs() }
 
-// Coalesce is coalesce(col, v), typed as bigint.
-func (c Int64Col) Coalesce(v any) Int64Expr { return Int64Expr{e: c.Col.Coalesce(v)} }
+// Coalesce is coalesce(col, vs…), typed as bigint.
+func (c Int64Col) Coalesce(vs ...any) Int64Expr { return Int64Expr{e: c.Col.Coalesce(vs...)} }
 
 // NullIf is nullif(col, v).
 func (c Int64Col) NullIf(v int64) Int64Expr { return Int64Expr{e: c.Col}.NullIf(v) }
@@ -363,10 +372,8 @@ func (c Int64Col) Least(others ...Int64Value) Int64Expr { return Int64Expr{e: c.
 // Abs is abs(e).
 func (e Int32Expr) Abs() Int32Expr { return Int32Expr{e: callOf("abs", e.e)} }
 
-// Coalesce is coalesce(e, v).
-func (e Int32Expr) Coalesce(v any) Int32Expr {
-	return Int32Expr{e: callOf("coalesce", e.e, operandFor(e.e, "coalesce", v))}
-}
+// Coalesce is coalesce(e, vs…).
+func (e Int32Expr) Coalesce(vs ...any) Int32Expr { return Int32Expr{e: coalesceOf(e.e, vs)} }
 
 // NullIf is nullif(e, v).
 func (e Int32Expr) NullIf(v int32) Int32Expr {
@@ -386,8 +393,8 @@ func (e Int32Expr) Least(others ...Int32Value) Int32Expr {
 // Abs is abs(col).
 func (c Int32Col) Abs() Int32Expr { return Int32Expr{e: c.Col}.Abs() }
 
-// Coalesce is coalesce(col, v), typed as integer.
-func (c Int32Col) Coalesce(v any) Int32Expr { return Int32Expr{e: c.Col.Coalesce(v)} }
+// Coalesce is coalesce(col, vs…), typed as integer.
+func (c Int32Col) Coalesce(vs ...any) Int32Expr { return Int32Expr{e: c.Col.Coalesce(vs...)} }
 
 // NullIf is nullif(col, v).
 func (c Int32Col) NullIf(v int32) Int32Expr { return Int32Expr{e: c.Col}.NullIf(v) }
@@ -419,10 +426,8 @@ func (e Float64Expr) Ln() Float64Expr { return Float64Expr{e: callOf("ln", e.e)}
 // Exp is exp(e).
 func (e Float64Expr) Exp() Float64Expr { return Float64Expr{e: callOf("exp", e.e)} }
 
-// Coalesce is coalesce(e, v).
-func (e Float64Expr) Coalesce(v any) Float64Expr {
-	return Float64Expr{e: callOf("coalesce", e.e, operandFor(e.e, "coalesce", v))}
-}
+// Coalesce is coalesce(e, vs…).
+func (e Float64Expr) Coalesce(vs ...any) Float64Expr { return Float64Expr{e: coalesceOf(e.e, vs)} }
 
 // NullIf is nullif(e, v).
 func (e Float64Expr) NullIf(v float64) Float64Expr {
@@ -457,8 +462,8 @@ func (c Float64Col) Ln() Float64Expr { return Float64Expr{e: c.Col}.Ln() }
 // Exp is exp(col).
 func (c Float64Col) Exp() Float64Expr { return Float64Expr{e: c.Col}.Exp() }
 
-// Coalesce is coalesce(col, v), typed as double precision.
-func (c Float64Col) Coalesce(v any) Float64Expr { return Float64Expr{e: c.Col.Coalesce(v)} }
+// Coalesce is coalesce(col, vs…), typed as double precision.
+func (c Float64Col) Coalesce(vs ...any) Float64Expr { return Float64Expr{e: c.Col.Coalesce(vs...)} }
 
 // NullIf is nullif(col, v).
 func (c Float64Col) NullIf(v float64) Float64Expr { return Float64Expr{e: c.Col}.NullIf(v) }
@@ -497,10 +502,8 @@ func (e NumericExpr) Ln() NumericExpr { return NumericExpr{e: callOf("ln", e.e)}
 // Exp is exp(e).
 func (e NumericExpr) Exp() NumericExpr { return NumericExpr{e: callOf("exp", e.e)} }
 
-// Coalesce is coalesce(e, v).
-func (e NumericExpr) Coalesce(v any) NumericExpr {
-	return NumericExpr{e: callOf("coalesce", e.e, operandFor(e.e, "coalesce", v))}
-}
+// Coalesce is coalesce(e, vs…).
+func (e NumericExpr) Coalesce(vs ...any) NumericExpr { return NumericExpr{e: coalesceOf(e.e, vs)} }
 
 // NullIf is nullif(e, v).
 func (e NumericExpr) NullIf(v any) NumericExpr {
@@ -615,10 +618,9 @@ func (e TimeExpr) AtTimeZone(zone StringValue) TimeExpr {
 	return TimeExpr{e: callOf("timezone", zone, e.e)}
 }
 
-// Coalesce is coalesce(e, v): v, a time bound as a parameter or an expression, where e is NULL.
-func (e TimeExpr) Coalesce(v any) TimeExpr {
-	return TimeExpr{e: callOf("coalesce", e.e, operandFor(e.e, "coalesce", v))}
-}
+// Coalesce is coalesce(e, vs…): each v a time bound as a parameter or an expression, taken in
+// order where everything before it is NULL.
+func (e TimeExpr) Coalesce(vs ...any) TimeExpr { return TimeExpr{e: coalesceOf(e.e, vs)} }
 
 // Greatest is greatest(e, others…), the latest non-NULL time.
 func (e TimeExpr) Greatest(others ...TimeValue) TimeExpr {
@@ -636,8 +638,8 @@ func (c TimeCol) ToChar(format string) StringExpr { return TimeExpr{e: c.Col}.To
 // AtTimeZone is timezone(zone, col).
 func (c TimeCol) AtTimeZone(zone StringValue) TimeExpr { return TimeExpr{e: c.Col}.AtTimeZone(zone) }
 
-// Coalesce is coalesce(col, v), typed as a time.
-func (c TimeCol) Coalesce(v any) TimeExpr { return TimeExpr{e: c.Col.Coalesce(v)} }
+// Coalesce is coalesce(col, vs…), typed as a time.
+func (c TimeCol) Coalesce(vs ...any) TimeExpr { return TimeExpr{e: c.Col.Coalesce(vs...)} }
 
 // Greatest is greatest(col, others…).
 func (c TimeCol) Greatest(others ...TimeValue) TimeExpr {
@@ -649,13 +651,11 @@ func (c TimeCol) Least(others ...TimeValue) TimeExpr { return TimeExpr{e: c.Col}
 
 // Boolean functions.
 
-// Coalesce is coalesce(e, v).
-func (e BoolExpr) Coalesce(v any) BoolExpr {
-	return BoolExpr{e: callOf("coalesce", e.e, operandFor(e.e, "coalesce", v))}
-}
+// Coalesce is coalesce(e, vs…).
+func (e BoolExpr) Coalesce(vs ...any) BoolExpr { return BoolExpr{e: coalesceOf(e.e, vs)} }
 
-// Coalesce is coalesce(col, v), typed as boolean.
-func (c BoolCol) Coalesce(v any) BoolExpr { return BoolExpr{e: c.Col.Coalesce(v)} }
+// Coalesce is coalesce(col, vs…), typed as boolean.
+func (c BoolCol) Coalesce(vs ...any) BoolExpr { return BoolExpr{e: c.Col.Coalesce(vs...)} }
 
 // BoolOr is the aggregate bool_or(p): whether p holds for any row, NULL over no rows.
 func BoolOr(p Pred) Agg { return Agg{fn: "bool_or", arg: nonNil(p, "BoolOr")} }
@@ -740,7 +740,7 @@ func (c JSONBCol) Concat(o JSONBValue) JSONBExpr { return JSONBExpr{e: c.Col}.Co
 // ArrayElementsText is jsonb_array_elements_text(col), for keel.Rows.
 func (c JSONBCol) ArrayElementsText() StringExpr { return JSONBExpr{e: c.Col}.ArrayElementsText() }
 
-// Coalesce is coalesce(col, v), typed as jsonb; a value v is encoded as JSON.
+// Coalesce is coalesce(col, vs…), typed as jsonb; a value v is encoded as JSON.
 func (c JSONBCol) Coalesce(v any) JSONBExpr {
 	switch v.(type) {
 	case Expr, nil:
