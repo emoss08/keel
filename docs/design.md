@@ -323,7 +323,7 @@ Every clause takes expressions, never strings. Columns are typed by their Go kin
 | string, integer, scanner (`AnyCol`) | `Eq`, `Ne`, `Gt`, `Gte`, `Lt`, `Lte`, `Between`, `IsDistinctFrom`, `In`, `NotIn`, `To` |
 | float | as above without `In` and `NotIn` |
 | time | `Eq`, `Ne`, `Gt`, `Gte`, `Lt`, `Lte`, `Between`, `To` |
-| numbers | `Add`, `Sum`, and `Avg` except on `smallint` |
+| numbers | `Increment`, `Sum`, and `Avg` except on `smallint`; the arithmetic of the typed operators |
 | string | `Contains`, `HasPrefix`, `HasSuffix` (escaped), `ContainsFold`, `HasPrefixFold`, `Like`, `ILike`, `Match`, `MatchFold`, and the string functions below |
 | bool | `Eq`, `IsTrue`, `IsFalse`, `To` |
 | bytea | `Eq`, `To` |
@@ -366,6 +366,29 @@ without changing the SQL. `exprKind` reads the kind of every typed expression th
 database function: a non-generic `*FuncDecl` (name, quoted name, arity, result kind) inside small
 generic `FuncN` values whose `Call` converts the call to `R` (every expression type shares the
 underlying struct). `FuncN` are user-level values, never reachable from `schema.Table`.
+
+Typed operators (`operators.go`, `typedcase.go`, `typedrow.go`, `typedarray.go`, `literals.go`) give
+the typed kinds what only `DynExpr` had, rendering the same SQL so a query moves from one to the
+other without a plan change. Arithmetic (`Add`, `Sub`, `Mul`, `Div`, `Mod`, `Neg`) is a method of
+each numeric column kind and expression type taking the kind's value interface and returning its
+own kind, rendered `(a op b)` through `binOp`; kinds never mix implicitly (a `Cast…` crosses them),
+so the Go type of a result is the Postgres type of its value. Times take an `IntervalValue`
+(`IntervalExpr`: `Interval`, `Duration`, `Since`). Because `Int64Col.Add` is now the expression,
+the assignment `col = col + v` is `Increment`. `Cat` is `||` (NULL-propagating, unlike `concat()`),
+`Collate` quotes a validated name, `IsDistinctFromExpr`/`IsNotDistinctFromExpr` compare two values of
+a kind, and a nullzero column's `IsNotDistinctFrom(zero)` is `IS NULL`. CASE has one exported
+builder per result kind (`StringCase`, `Int64Case`, …) over one unexported non-generic `caseWhens`
+core, so no exported signature mentions a generic type; a nil condition skips its `WHEN`. `Row(vs...)`
+is `ROW(…)` with `Eq` … `Lte`, `IsDistinctFrom` and `InUnnest`, rendered as `DynRow`'s comparisons.
+Typed arrays have a value interface and expression type per element kind, literals that bind one
+`$n::type[]` parameter (a nil slice as the empty array), `ARRAY[…]` constructors (`ARRAY[]::type[]`
+when empty), views, and `At`, `Len`, `Unnest`, `Without`, `@>`/`<@`/`&&` and `InArray` on the
+element side. `Null…()` are `NULL::type` constants; `…Ptr(p)` bind the pointed-to value under the
+kind's cast, or NULL. `Const…` write a value into the text through `constText` (DynConst's
+rendering; negatives parenthesised; floats and numerics as quoted literals under their cast), for
+statements that must match an expression index, a partial index predicate or a conflict target.
+`CastInt64`, `CastFloat64` and `CastNumeric` take any expression, text included, beside the new
+`CastInt32`, `CastBool`, `CastTime`, `CastInterval` and `CastJSONB`.
 
 Values are bind parameters. `In` binds one array parameter (`= ANY($1)`), so the statement text does
 not depend on the number of values. Two binds share a placeholder only when they provably get the
@@ -529,7 +552,7 @@ out := keel.Unnest("outcome", []string{"id", "status"}, ids, statuses) // a CTE 
 n, err = s.With(out).Join(out, out.Col("id").EqCol(s.ID)).Where(...).Update(ctx, db, s.Status.ToExpr(out.Col("status")))
 n, err = s.Where(...).Delete(ctx, db)
 ins, err := s.Upsert(ctx, db, rows, keel.OnConflict(s.OrganizationID, s.BusinessUnitID, s.ProNumber).Update(s.Status))
-ins, err = s.Upsert(ctx, db, rows, keel.OnConflict(...).Set(s.Status.ToExpr(s.Status.Excluded()), s.Priority.Add(1)))
+ins, err = s.Upsert(ctx, db, rows, keel.OnConflict(...).Set(s.Status.ToExpr(s.Status.Excluded()), s.Priority.Increment(1)))
 n, err = s.CreateOrSkip(ctx, db, rows, s.OrganizationID, s.BusinessUnitID, s.ProNumber) // no targets: any unique violation
 n, err = s.InsertFrom(ctx, db, src.Pick(...), s.Name, s.Code)
 n, err = s.Copy(ctx, db, rows)                     // binary COPY; prepared as Create, nothing read back

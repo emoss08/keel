@@ -1134,17 +1134,17 @@ late, err := st.Where(st.ArrivedAt.Gte(since), st.Kind.Eq("delivery")).Count(ctx
 | Column type | Operators |
 |---|---|
 | every column | `IsNull`, `IsNotNull`, `EqCol`, `NeCol`, `InQuery`, `NotInQuery`, `Asc`, `Desc`, `Count`, `CountDistinct`, `Min`, `Max`, `Coalesce(v)`, `ToNull`, `ToDefault`, `ToExpr(e)` |
-| `StringCol` | `Eq`, `Ne`, `Gt`, `Gte`, `Lt`, `Lte`, `Between`, `IsDistinctFrom`, `In`, `NotIn`, `To`; `Contains`, `ContainsFold`, `HasPrefix`, `HasPrefixFold`, `HasSuffix` (their argument is escaped, so `%` and `_` match themselves); `Like`, `ILike` (patterns as given); `Match`, `MatchFold` (POSIX regular expressions); the string functions of [Functions](#functions) |
-| `Int64Col`, `Int32Col` | `Eq`, `Ne`, `Gt`, `Gte`, `Lt`, `Lte`, `Between`, `IsDistinctFrom`, `In`, `NotIn`, `To`, `Add`, `Sum`, `Avg`; `Abs`, `NullIf`, `Greatest`, `Least` |
-| `Int16Col` | as `Int32Col`, without `Avg` and the functions |
-| `Float64Col` | `Eq`, `Ne`, `Gt`, `Gte`, `Lt`, `Lte`, `Between`, `IsDistinctFrom`, `To`, `Add`, `Sum`, `Avg`; `Abs`, `Round`, `Floor`, `Ceil`, `Ln`, `Exp`, `NullIf`, `Greatest`, `Least` |
-| `BoolCol` | `Eq`, `IsTrue`, `IsFalse`, `To` |
+| `StringCol` | `Eq`, `Ne`, `Gt`, `Gte`, `Lt`, `Lte`, `Between`, `IsDistinctFrom`, `IsNotDistinctFrom`, `In`, `NotIn`, `To`; `Contains`, `ContainsFold`, `HasPrefix`, `HasPrefixFold`, `HasSuffix` (their argument is escaped, so `%` and `_` match themselves); `Like`, `ILike` (patterns as given); `Match`, `MatchFold` (POSIX regular expressions); `Cat` (`\|\|`), `Collate`, `InArray` and the string functions of [Functions](#functions) |
+| `Int64Col`, `Int32Col` | `Eq`, `Ne`, `Gt`, `Gte`, `Lt`, `Lte`, `Between`, `IsDistinctFrom`, `IsNotDistinctFrom`, `In`, `NotIn`, `To`, `Increment`, `Sum`, `Avg`; `Add`, `Sub`, `Mul`, `Div`, `Mod`, `Neg`, `Abs`, `NullIf`, `Greatest`, `Least`, `InArray` |
+| `Int16Col` | as `Int32Col`, without `Avg`, the arithmetic and the functions (`keel.CastInt64(col)` first) |
+| `Float64Col` | `Eq`, `Ne`, `Gt`, `Gte`, `Lt`, `Lte`, `Between`, `IsDistinctFrom`, `IsNotDistinctFrom`, `To`, `Increment`, `Sum`, `Avg`; `Add`, `Sub`, `Mul`, `Div`, `Neg`, `Abs`, `Round`, `Floor`, `Ceil`, `Ln`, `Exp`, `NullIf`, `Greatest`, `Least`, `InArray` |
+| `BoolCol` | `Eq`, `IsDistinctFrom`, `IsNotDistinctFrom`, `IsTrue`, `IsFalse`, `To` |
 | `BytesCol` | `Eq`, `To` |
-| `TimeCol` | `Eq`, `Ne`, `Gt`, `Gte`, `Lt`, `Lte`, `Between`, `To`; `ToChar`, `AtTimeZone`, `Greatest`, `Least` |
-| `AnyCol` and its wrappers (`MoneyCol`) | `Eq`, `Ne`, `Gt`, `Gte`, `Lt`, `Lte`, `Between`, `IsDistinctFrom`, `In`, `NotIn`, `To`, `Add`, `Sum`, `Avg` |
+| `TimeCol` | `Eq`, `Ne`, `Gt`, `Gte`, `Lt`, `Lte`, `Between`, `IsDistinctFrom`, `IsNotDistinctFrom`, `To`; `Add(interval)`, `Sub(interval)`, `Since(t)`, `ToChar`, `AtTimeZone`, `Greatest`, `Least`, `InArray` |
+| `AnyCol` and its wrappers (`MoneyCol`) | `Eq`, `Ne`, `Gt`, `Gte`, `Lt`, `Lte`, `Between`, `IsDistinctFrom`, `IsNotDistinctFrom`, `In`, `NotIn`, `To`, `Increment`, `Sum`, `Avg`; numeric `Add`, `Sub`, `Mul`, `Div`, `Mod`, `Neg`, `InArray` |
 | `JSONBCol` | `Contains(v)` (`@>`, `v` encoded as JSON), `HasKey`, `HasAnyKey`, `HasAllKeys`, `Text(path...)` (`#>>`, a `StringExpr`), `To`; `TypeOf`, `Set`, `Concat`, `ArrayElementsText` |
-| `StringArrayCol` | `Has`, `Overlaps`, `ContainsAll`, `ContainedBy`, `Len` (an `Int32Expr`), `Unnest`, `To`, `Append`, `Remove` |
-| `Int64ArrayCol` | `Has`, `Overlaps`, `ContainsAll`, `ContainedBy`, `Len`, `Unnest`, `To`, `Append`, `Remove` |
+| `StringArrayCol` | `Has`, `Overlaps`, `ContainsAll`, `ContainedBy`, `Len` (an `Int32Expr`), `Unnest`, `To`, `Append`, `Remove`; `At(i)`, `Without(v)`, `ContainsAllExpr`, `ContainedByExpr`, `OverlapsExpr` (see [Typed arrays](#typed-arrays)) |
+| `Int64ArrayCol` | `Has`, `Overlaps`, `ContainsAll`, `ContainedBy`, `Len`, `Unnest`, `To`, `Append`, `Remove`; `At(i)`, `Without(v)`, `ContainsAllExpr`, `ContainedByExpr`, `OverlapsExpr` |
 | `TSVectorCol` | `Match(q, opts...)` (`@@ websearch_to_tsquery(…)`), `Rank(q, opts...)` (`ts_rank`), `RankCD(q, opts...)` (`ts_rank_cd`); see [Full-text search](#full-text-search) |
 
 Generated wrappers (`StatusCol`, `IdsIDCol`) take the named type in `Eq`, `Ne`, `Gt`, `Gte`, `Lt`,
@@ -1185,17 +1185,22 @@ live := keel.Or(ura.ExpiresAt.IsNull(), keel.NowEpoch().LtExpr(ura.ExpiresAt))
 day := keel.ToTimestamp(f.CreatedAt).AtTimeZone(keel.Text(zone)).ToChar("YYYY-MM-DD")
 ```
 
-Every expression type has `Eq`, `Ne`, `Gt`, `Gte`, `Lt`, `Lte`, `Between`, `IsDistinctFrom` with a
-Go value (`In` and `NotIn` too for text and integers), `EqExpr` … `LteExpr` against another value of
-its kind, `IsNull`, `IsNotNull`, `Asc`, `Desc`, `Coalesce(v)` (a value or an expression), and
-`Min`, `Max` (`Sum`, `Avg` for numbers) as aggregates. Go values are bound; a value whose type
-nothing in the statement fixes is bound under a cast. `keel.Text(s)`, `Int64(n)`, `Int32(n)`,
-`Float64(f)`, `Numeric(v)`, `Bool(b)`, `Time(t)` and `JSONB(v)` bind a value as an expression of
-its kind (`$1::text`, `$1::bigint`, …, `JSONB` encoded with the configured codec), where a function
+Every expression type has `Eq`, `Ne`, `Gt`, `Gte`, `Lt`, `Lte`, `Between`, `IsDistinctFrom`,
+`IsNotDistinctFrom` with a Go value (`In` and `NotIn` too for text and integers), `EqExpr` …
+`LteExpr`, `IsDistinctFromExpr` and `IsNotDistinctFromExpr` against another value of its kind,
+`IsNull`, `IsNotNull`, `Asc`, `Desc`, `Coalesce(v)` (a value or an expression), and `Min`, `Max`
+(`Sum`, `Avg` for numbers) as aggregates; the typed columns have the same `IsNotDistinctFrom` and
+`…Expr` tests. Go values are bound; a value whose type nothing in the statement fixes is bound
+under a cast. `keel.Text(s)`, `Int64(n)`, `Int32(n)`, `Float64(f)`, `Numeric(v)`, `Bool(b)`,
+`Time(t)`, `JSONB(v)` and `Interval("1 day")`, `Duration(d)` bind a value as an expression of its
+kind (`$1::text`, `$1::bigint`, …, `JSONB` encoded with the configured codec), where a function
 takes a value interface. `keel.StringOf(e)`, `Int64Of`, `Int32Of`, `Float64Of`, `NumericOf`,
-`BoolOf`, `TimeOf` and `JSONBOf` type an expression keel cannot type itself (a `Raw`, a `Scalar`, a
-`DynExpr`, a `Rows` or CTE column) without changing the SQL; `keel.CastText(e)`, `CastInt64(v)`,
-`CastFloat64(v)` and `CastNumeric(v)` convert with `CAST`.
+`BoolOf`, `TimeOf`, `JSONBOf` and `IntervalOf` type an expression keel cannot type itself (a `Raw`,
+a `Scalar`, a `DynExpr`, a `Rows` or CTE column) without changing the SQL; `keel.CastText(e)`,
+`CastInt64(e)`, `CastInt32(e)`, `CastFloat64(e)`, `CastNumeric(e)`, `CastBool(e)`, `CastTime(e)`,
+`CastInterval(e)` and `CastJSONB(e)` convert any expression with `CAST(e AS type)`: a number of
+another kind, text that holds a number, a boolean or a document (`keel.CastBool(v.Snapshot.Text("enabled"))`),
+json as jsonb.
 
 | Kind | Functions |
 |---|---|
@@ -1203,9 +1208,9 @@ takes a value interface. `keel.StringOf(e)`, `Int64Of`, `Int32Of`, `Float64Of`, 
 | bigint, integer | `Abs`, `NullIf(v)`, `Greatest`, `Least` |
 | double precision | `Abs`, `Round` (to a whole number), `Floor`, `Ceil`, `Ln`, `Exp`, `NullIf`, `Greatest`, `Least` |
 | numeric | as double precision, and `RoundTo(places)`: `keel.CastNumeric(miles).RoundTo(2)` |
-| time | `ToChar(format)`, `AtTimeZone(zone)` (`timezone(zone, t)`), `Greatest`, `Least` |
+| time | `ToChar(format)`, `AtTimeZone(zone)` (`timezone(zone, t)`), `Greatest`, `Least`; `Add(interval)`, `Sub(interval)`, `Since(t)` (see [Typed operators](#typed-operators)) |
 | jsonb | `TypeOf` (`jsonb_typeof`), `Set(path, v)` (`jsonb_set`), `Concat(o)` (`||`), `ArrayElementsText`, and on `JSONBExpr` `Contains`, `ContainsExpr`, `HasKey`, `Text(path...)` |
-| arrays | `Len` (`cardinality`), `Unnest`, the assignments `Append(v)` and `Remove(v)` |
+| arrays | `Len` (`cardinality`), `Unnest`, `At(i)`, `Without(v)` (`array_remove`), the assignments `Append(v)` and `Remove(v)`; see [Typed arrays](#typed-arrays) |
 
 Package functions, whose result kind does not follow one argument:
 
@@ -1226,6 +1231,158 @@ Package functions, whose result kind does not follow one argument:
 An expression written in two places of a statement (in `Pick` and `Group`) binds its values once,
 so Postgres sees one expression: keep it in a variable (`day := …; q.Pick(day, keel.Count()).Group(day)`).
 `keel.DynFunc` stays for dynamic queries, whose functions are chosen at run time.
+
+#### Typed operators
+
+Arithmetic, concatenation and collation are methods of the columns and expression types, take the
+value interface of their kind and return the expression type of their result. They render
+parenthesised, as dynamic expressions do, so they nest at any precedence:
+
+```go
+inv := invoicedb.Invoices
+open := inv.TotalAmountMinor.Sub(inv.AppliedAmountMinor)              // ("total_amount_minor" - "applied_amount_minor")
+daysPastDue := keel.Int64(asOf).Sub(inv.DueDate).Div(keel.Int64(86400)) // (($1::bigint - "due_date") / $2::bigint)
+q.Where(inv.TotalAmount.Sub(expected).Abs().Gt(tolerance))               // numeric columns (AnyCol) compute as NumericExpr
+deadline := item.FundedOn.Add(keel.CastInt64(agr.ChargebackWindowDays).Mul(keel.Int64(86400)))
+stale := keel.Now().Since(c.LastSeenAt).GtExpr(keel.Interval("30 days"))
+label := keel.Text("MC ").Cat(c.MCNumber.NullIf(""))                   // NULL when the number is empty
+q.Order(st.ID.Collate("C").Asc())
+```
+
+| Operator | Kinds | SQL |
+|---|---|---|
+| `Add(v)`, `Sub(v)`, `Mul(v)`, `Div(v)`, `Neg()` | bigint, integer, double precision, numeric (columns and expressions) | `(a + b)`, `(a - b)`, `(a * b)`, `(a / b)`, `(-a)` |
+| `Mod(v)` | bigint, integer, numeric | `(a % b)` |
+| `Add(i)`, `Sub(i)` | time, with an `IntervalValue` | `(t + i)`, `(t - i)` |
+| `Since(u)` | time | `(t - u)`, an `IntervalExpr` |
+| `Add`, `Sub`, `Mul(n)`, `Div(n)`, `Neg`, `Seconds()` | interval | interval arithmetic; `Seconds` is `date_part('epoch', i)`, a `Float64Expr` |
+| `Cat(vs...)` | text | `((a \|\| b) \|\| c)` |
+| `Collate(name)` | text | `(a COLLATE "name")`; the name is quoted as one identifier and must be non-empty, at most 63 bytes, without double quotes or control characters |
+| `InArray(a)`, `NotInArray(a)` | text, bigint, integer, double precision, numeric, time | `(e = ANY(a))`, `(e <> ALL(a))` over an array value |
+
+Kinds do not mix, as Postgres's operators would silently widen them: an integer meets a bigint
+through `keel.CastInt64(col)`, any number meets a numeric through `keel.CastNumeric(v)` (or
+`keel.NumericOf(e)` when the SQL already yields numeric), and an integer meets a double through
+`keel.CastFloat64`. Integer division truncates; `Div` of a value that may be zero takes
+`NullIf(0)` on the divisor. On a column, `Add` is the expression; the assignment `col = col + v` is
+`col.Increment(v)`, and `col.ToExpr(col.Mul(keel.Int64(2)))` assigns any arithmetic.
+
+`Cat` is SQL's `||`: a NULL operand makes the whole result NULL. `keel.Concat` and `keel.ConcatWS`
+call `concat()` and `concat_ws()`, which skip NULL arguments; pick `Cat` where an absent part should
+blank the result and `Concat` where it should drop out. jsonb's `||` is `JSONBExpr.Concat`.
+
+#### Typed CASE
+
+`keel.CaseString()`, `CaseInt64()`, `CaseInt32()`, `CaseFloat64()`, `CaseNumeric()`, `CaseBool()`,
+`CaseTime()`, `CaseJSONB()` and `CaseInterval()` start a CASE whose result kind is fixed: `When(cond,
+v)` takes a value of that kind, and `Else(v)` or `End()` returns the kind's expression type, so the
+CASE compares, sums and nests like any value of it.
+
+```go
+bucket := keel.CaseString().
+    When(days.Lte(30), keel.Text("current")).
+    When(days.Lte(60), keel.Text("31-60")).
+    Else(keel.Text("over 60"))
+miles := keel.CaseNumeric().
+    When(units.Eq(shipment.UnitsKilometers), distance.Div(keel.Numeric(kilometersPerMile))).
+    Else(distance)
+q.Pick(bucket, miles.Sum()).Group(bucket)
+```
+
+The SQL is `CASE WHEN … THEN … [ELSE …] END`. A nil condition skips its `When`, as `Where` skips a
+nil predicate (`keel.When(flag, p)`), and a CASE with no `When` left is its `Else` value (or NULL);
+a nil value is NULL. Each builder is a small value: `When` copies, so a builder shared by two code
+paths stays as it was.
+
+#### Row comparisons
+
+`keel.Row(vs...)` is the row value `ROW(a, b, …)`: an element is an expression, nil (NULL) or a Go
+value bound as a parameter typed by the element it meets. `Eq`, `Ne`, `Gt`, `Gte`, `Lt`, `Lte`,
+`IsDistinctFrom` and `IsNotDistinctFrom` compare two rows element by element, which is the keyset
+condition an index on the same columns serves as one range scan:
+
+```go
+q.Where(keel.Row(e.OccurredAt, e.ID).Gt(keel.Row(after.OccurredAt, after.ID))). // ascending page
+    Order(e.OccurredAt.Asc(), e.ID.Asc())
+q.Where(keel.Row(fp.PurchasedAt, fp.ID).Lt(keel.Row(cur.PurchasedAt, cur.ID))) // descending
+up.UpdateWhere(keel.Row(stored...).IsDistinctFrom(keel.Row(proposed...)))   // skip unchanged rows
+q.Where(keel.Row(c.ItemKey, c.ContentHash).InUnnest(keel.TextArray(keys), keel.TextArray(hashes)))
+```
+
+`InUnnest(arrays...)` is `(row IN (SELECT * FROM unnest($1::text[], $2::text[])))`: the arrays zip
+into rows, one parameter each, so the statement keeps one shape whatever the number of rows. A row
+of fewer than two values fails the statement.
+
+#### Typed arrays
+
+Each element kind has an array value interface (`StringArrayValue`, `Int64ArrayValue`,
+`Int32ArrayValue`, `Float64ArrayValue`, `NumericArrayValue`, `BoolArrayValue`, `TimeArrayValue`)
+and an expression type (`StringArrayExpr`, …); `StringArrayCol` and `Int64ArrayCol` implement
+theirs. Functions of Go values are named after the SQL type, functions of typed expressions after
+the kind:
+
+| Form | SQL |
+|---|---|
+| `keel.TextArray(ids)`, `Int64Array`, `Int32Array`, `Float64Array`, `NumericArray`, `BoolArray`, `TimeArray` | one parameter, `$1::text[]`, `$1::bigint[]`, …; a nil slice binds the empty array |
+| `keel.ArrayOfString(es...)`, `ArrayOfInt64`, `ArrayOfInt32`, `ArrayOfFloat64`, `ArrayOfNumeric`, `ArrayOfBool`, `ArrayOfTime` | `ARRAY[e1, e2]`; no elements is `ARRAY[]::text[]` (`keel.ArrayOf(q)` is `ARRAY(subquery)`) |
+| `keel.StringArrayOf(e)`, `Int64ArrayOf`, … | `e` typed as an array, as a CTE's array column: `parent.ID.InArray(keel.StringArrayOf(closure.Col("parent_role_ids")))` |
+| `a.At(i)` | `(a)[i]`, from 1, NULL past either end, of the element's kind |
+| `a.Len()`, `a.Unnest()` | `cardinality(a)` (an `Int32Expr`), the set-returning `unnest(a)` for `keel.Rows` |
+| `a.Without(v)` | `array_remove(a, v)`, an expression (the column assignment stays `Remove(v)`) |
+| `a.ContainsAllExpr(o)`, `ContainedByExpr(o)`, `OverlapsExpr(o)` | `(a @> o)`, `(a <@ o)`, `(a && o)` |
+| `a.Coalesce(o)`, `IsNull`, `IsNotNull` | `coalesce(a, o)`, the NULL tests |
+| `e.InArray(a)`, `e.NotInArray(a)` | `(e = ANY(a))`, `(e <> ALL(a))` |
+
+```go
+counts := keel.ArrayOfInt64(keel.Int64Of(keel.Count().Filter(late)), keel.Int64Of(keel.Count().Filter(held)))
+q.Pick(counts) // one bigint[] of filtered totals in one row
+```
+
+#### Typed NULLs, nullable values and constants
+
+| Form | SQL |
+|---|---|
+| `keel.NullText()`, `NullInt64()`, `NullInt32()`, `NullFloat64()`, `NullNumeric()`, `NullBool()`, `NullTime()`, `NullJSONB()`, `NullInterval()` | `NULL::text`, `NULL::bigint`, …: a NULL whose type nothing else fixes (a select list output, a union arm, a CASE branch) |
+| `keel.TextPtr(p)`, `Int64Ptr`, `Int32Ptr`, `Float64Ptr`, `BoolPtr`, `TimePtr` | `$1::bigint` binding `*p`, or NULL when `p` is nil |
+| `keel.ConstText(s)`, `ConstInt64(n)`, `ConstInt32(n)`, `ConstBool(b)` | the value written into the SQL: `'it''s'` (single quotes doubled, a NUL byte fails), `768`, `(-1)`, `TRUE` |
+| `keel.ConstFloat64(f)`, `ConstNumeric("0.035")` | `'0.5'::double precision`, `'0.035'::numeric` (a non-finite float or a string that is not a decimal fails) |
+
+A constant is for an expression that must match an expression index, a partial index predicate or
+an `ON CONFLICT` target, which Postgres proves only against constants it sees: `coalesce(col, '')`
+in an index needs `col.Coalesce(keel.ConstText(""))`, and `dimensions = 768` in a partial index
+needs `e.Dimensions.EqCol(keel.ConstInt64(768))`. A text constant is of unknown type until it meets
+a value, as one in an index definition is, and an integer constant is `integer` when it fits, so
+both resolve as the index's own. Each distinct constant is a distinct statement: values from users
+are bound.
+
+#### From dynamic expressions to typed ones
+
+Every `keel.Dyn*` form used inside a typed query has a typed counterpart that renders the same SQL
+(the same operators, casts and NULL handling; a typed comparison leaves out the parentheses a
+dynamic one adds):
+
+| Dynamic | Typed |
+|---|---|
+| `keel.DynOf(a).Add(b)`, `.Sub`, `.Mul`, `.Div`, `.Mod` | `a.Add(b)`, … with `b` a column, an expression or `keel.Int64(n)` (`keel.DynOf(a).Div(86400)` is `a.Div(keel.Int64(86400))`) |
+| `keel.DynLit(asOf).Sub(inv.DueDate)` | `keel.Int64(asOf).Sub(inv.DueDate)` |
+| `keel.DynOf(a).Neg()` | `a.Neg()` |
+| `keel.DynOf(n).Cast(keel.TypeInt64).Mul(86400)` | `keel.CastInt64(n).Mul(keel.Int64(86400))` |
+| `keel.DynOf(x).Cast(keel.TypeNumeric)`, `TypeFloat64`, `TypeBool`, `TypeJSON`, `TypeString` | `keel.CastNumeric(x)`, `CastFloat64`, `CastBool`, `CastJSONB`, `CastText` |
+| `keel.DynLit(v).Cast(keel.TypeString)`, `TypeInt64` | `keel.Text(v)`, `keel.Int64(v)` |
+| `keel.DynLit(nil).Cast(keel.TypeString)` | `keel.NullText()` |
+| `keel.DynLit(p)` with `p` a `*int64` | `keel.Int64Ptr(p)` |
+| `keel.DynLit([]string{})` | `keel.TextArray(nil)` |
+| `keel.DynLit("MC ").Concat(x)` | `keel.Text("MC ").Cat(x)` |
+| `keel.DynOf(id).Collate("C")` | `id.Collate("C")` |
+| `keel.DynCase().When(p, v).Else(w)` | `keel.CaseString()` (or the kind of `v`) `.When(p, v).Else(w)` |
+| `keel.DynRow(a, b).Gt(keel.DynRow(x, y))`, `.IsDistinctFrom`, `.InUnnest(xs, ys)` | `keel.Row(a, b).Gt(keel.Row(x, y))`, `.IsDistinctFrom`, `.InUnnest(keel.TextArray(xs), keel.Int64Array(ys))` |
+| `keel.DynArray(e1, e2)` | `keel.ArrayOfInt64(e1, e2)` (the kind of the elements) |
+| `keel.DynOf(id).In(cte.Col("ids"))` | `id.InArray(keel.StringArrayOf(cte.Col("ids")))` |
+| `keel.DynOf(a).Covers(b)`, `CoveredBy(b)` on arrays | `a.ContainsAllExpr(b)`, `ContainedByExpr(b)` |
+| `keel.DynOf(a).At(1)` | `a.At(1)` |
+| `keel.DynOf(a).IsDistinctFrom(b)` | `a.IsDistinctFromExpr(b)` |
+| `keel.DynConst("")`, `DynConst(768)`, `DynConst(true)`; `col.EqCol(keel.DynConst(v))` | `keel.ConstText("")`, `ConstInt64(768)`, `ConstBool(true)`; `col.EqCol(keel.ConstText(v))` |
+| `keel.DynFunc("array_remove", a, v)` | `a.Without(v)` |
 
 #### Declared database functions
 
@@ -2324,7 +2481,9 @@ table query returns the table's default columns.
 
 A `keel.DynExpr` is an expression, and a predicate, so `Where`, `Having`, `keel.And`, `keel.Or` and
 `Filter` take it, in a dynamic query and in a typed one alike: `Pick`, `Where`, `Order`, `Group`
-and `ToExpr` of a generated table take it too. Operands are other expressions or values, which are always bound as parameters:
+and `ToExpr` of a generated table take it too. Inside a typed query, prefer the typed forms (see
+[From dynamic expressions to typed ones](#from-dynamic-expressions-to-typed-ones)): they render the
+same SQL and the compiler checks their operands. Operands are other expressions or values, which are always bound as parameters:
 
 | Kind | Methods and functions |
 |---|---|
@@ -2722,7 +2881,7 @@ tenant). Relation path filters work: they become `FROM` in an update and `USING`
 now := time.Now().Unix()
 n, err := s.
     Where(s.Status.Eq(fleet.StatusNew), s.Customer().Code.Eq("ACME")).
-    Update(ctx, db, s.Status.To(fleet.StatusCanceled), s.CanceledAt.To(now), s.Priority.Add(1))
+    Update(ctx, db, s.Status.To(fleet.StatusCanceled), s.CanceledAt.To(now), s.Priority.Increment(1))
 
 st := fleetdb.Stops
 n, err = st.Where(st.MoveID.Eq("mov_01"), st.ArrivedAt.IsNull()).Delete(ctx, db)
@@ -2733,7 +2892,7 @@ Assignments:
 | Assignment | SQL |
 |---|---|
 | `col.To(v)` | `col = $n` |
-| `col.Add(v)` (numeric columns) | `col = s.col + $n`, the stored value plus `v` |
+| `col.Increment(v)` (numeric columns) | `col = s.col + $n`, the stored value plus `v`; `col.ToExpr(e)` assigns any typed arithmetic (`c.Score.ToExpr(c.Score.Mul(keel.Int64(2)))`) |
 | `col.ToNull()` | `col = NULL` |
 | `col.ToDefault()` | `col = DEFAULT` |
 | `col.ToExpr(e)` | `col = e`, for example `s.Weight.ToExpr(keel.Raw("? * 2", s.Weight))` |
@@ -2847,7 +3006,7 @@ inserted, err := c.Upsert(ctx, db, rows,
     keel.OnConflict(c.OrganizationID, c.BusinessUnitID, c.Code).Set(
         c.Name.ToExpr(c.Name.Excluded()),
         c.Email.ToExpr(keel.Raw("coalesce(?, ?)", c.Email, c.Email.Excluded())),
-        c.Version.Add(10),
+        c.Version.Increment(10),
     ))
 // ON CONFLICT (…) DO UPDATE SET "name" = EXCLUDED."name",
 //   "email" = coalesce(c."email", EXCLUDED."email"), "version" = c."version" + $n,
@@ -2918,7 +3077,7 @@ src := keel.Rows("req", []string{"extension_type", "day", "requests"},
     keel.DynLit(kind), keel.DynLit(day), keel.DynLit(1))
 reserved, err := u.UpsertFrom(ctx, db, src,
     keel.OnConflict(u.OrganizationID, u.BusinessUnitID, u.ExtensionType, u.Day).
-        Set(u.Requests.Add(1)).
+        Set(u.Requests.Increment(1)).
         UpdateWhere(u.Requests.Lt(limit)),
     u.ExtensionType, u.Day, u.Requests)
 // reserved == 0: the day's cap is reached
@@ -4588,7 +4747,7 @@ keelcli: plans found 2 findings
 | `db.NewDelete().Model(sh).WherePK().Exec(ctx)` | `s.DeleteRow(ctx, db, sh)` |
 | `db.NewDelete().Model((*T)(nil)).Where(...)` | `s.Where(...).Delete(ctx, db)` |
 | `.On("CONFLICT (...) DO UPDATE").Set("x = EXCLUDED.x")` | `s.Upsert(ctx, db, rows, keel.OnConflict(...).Update(s.X))` |
-| `.Set("hits = sp.hits + 1, name = EXCLUDED.name")` on a conflict | `keel.OnConflict(...).Set(s.Hits.Add(1), s.Name.ToExpr(s.Name.Excluded()))` |
+| `.Set("hits = sp.hits + 1, name = EXCLUDED.name")` on a conflict | `keel.OnConflict(...).Set(s.Hits.Increment(1), s.Name.ToExpr(s.Name.Excluded()))` |
 | pgx `CopyFrom` on the underlying pool for large loads | `s.Copy(ctx, db, rows)`, with tenant columns, IDs, timestamps and hooks |
 | `.On("CONFLICT (cols) DO NOTHING")` | `s.CreateOrSkip(ctx, db, rows, cols...)` |
 | `.On("CONFLICT DO NOTHING")` | `s.CreateOrSkip(ctx, db, rows)` |
