@@ -8,6 +8,52 @@ cd bench && go test -run xxx -bench . -benchmem -count 6 > new.txt
 go run golang.org/x/perf/cmd/benchstat@latest -col /impl new.txt
 ```
 
+## 2026-10-26
+
+The performance work since 2026-10-23 (pipelined relation trees, the version-checked result cache,
+read transactions that end without waiting for `COMMIT`, estimated totals), measured the only way
+this VM allows: keel's previous `master` and this branch alternating, two runs each, three rounds,
+so the host's noise falls on both. Raw output:
+[bench/results/2026-10-26-ab-master.txt](../bench/results/2026-10-26-ab-master.txt) and
+[bench/results/2026-10-26-ab-branch.txt](../bench/results/2026-10-26-ab-branch.txt); the full
+suite on the branch is [bench/results/2026-10-26.txt](../bench/results/2026-10-26.txt).
+
+| Operation | before | after | change |
+|---|---|---|---|
+| 50 rows with a to-one and a to-many relation | 1.82 ms, 2,153 allocs | 1.56 ms, 2,002 allocs | 14% faster, 7% fewer allocs |
+| the same inside a snapshot (`OnBegin` read transaction) | two round trips | 1.58 ms, one round trip | the load rides the read's round trip |
+| a cached read, served from the in-process LRU | 391 µs (the database read) | 20.6 µs | 19× faster |
+| list 100 rows | 1.11 ms, 2,536 allocs | 1.12 ms, 2,437 allocs | even, 4% fewer allocs |
+| get one row by key | 408 µs | 387 µs | even |
+| read in a transaction with a `set_config` | 416 µs | 414 µs | even here; see below |
+| build a statement, no database | 5.4 µs | 5.5 µs | even |
+| dynamic report and 1,000-row dynamic read | 5.2 ms, 1.65 ms | 4.6 ms, 1.65 ms | even |
+
+Everything else is within noise: no operation got slower. What the table cannot show on a
+loopback connection:
+
+- **Read transactions end without waiting for `COMMIT`.** A scoped read used to wait for the
+  pipelined `COMMIT`'s reply before returning; it now returns when the rows arrive and the
+  connection finishes the commit before its next use. On loopback the reply is microseconds; across
+  a network it is one round trip off every read transaction, which is most of a primary-key read's
+  latency.
+- **Pipelined relation trees** save a round trip per level beyond the first when the read sees one
+  snapshot (`Config.ReadIsolation = keel.RepeatableRead`, or an `OnBegin` read transaction); the
+  14% here is the saved round trip on loopback plus the per-level decoding the pipeline removed.
+- **Estimated totals** replace `count(*)` over every matching row by a count capped at the limit
+  and the planner's estimate, both in the page's round trip; on the 2,000-row bench table the two
+  cost the same, and the gap grows with the table (a full count reads every row).
+- **The result cache's hit** costs a version check against an in-memory map pushed by
+  `LISTEN/NOTIFY` and a decode of the stored rows; it never reads the database, so its 20 µs is the
+  same on a remote server, where the miss costs a network round trip more.
+
+Trenova's row-level security policy verified the signed tenant scope twice per table reference
+(`trenova_rls.org_id()` and `trenova_rls.bu_id()`, two InitPlans each calling a plpgsql HMAC).
+Comparing the two against one InitPlan reading both claims (`trenova_rls.tenant()`), on
+PostgreSQL 18 with pgbench, the policy's cost per statement fell from about 117 µs to about 77 µs
+on one table and from about 255 µs to about 142 µs on a two-table join, 35 to 45% less, on every
+tenant read Trenova sends.
+
 ## 2026-10-23
 
 Medians of 6 runs on a 4-vCPU Xeon VM, Postgres 18 in Docker on the same host. Raw output:
