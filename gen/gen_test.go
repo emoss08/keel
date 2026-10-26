@@ -610,3 +610,11 @@ func TestLookupTag(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+func TestLoaderEnvDropsTrimpath(t *testing.T) {
+	got := loaderEnv([]string{"HOME=/h", "GOFLAGS=-trimpath -tags=x -p=4", "GOFLAGS=-trimpath=true"})
+	want := []string{"HOME=/h", "GOFLAGS=-tags=x -p=4", "GOFLAGS="}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("loaderEnv = %q, want %q", got, want)
+	}
+}

@@ -62,6 +62,7 @@ func Generate(o Options) ([]File, error) {
 	cfg := &packages.Config{
 		Mode: packages.NeedName | packages.NeedTypes | packages.NeedSyntax | packages.NeedModule | packages.NeedFiles,
 		Dir:  o.Dir,
+		Env:  loaderEnv(os.Environ()),
 	}
 	if len(o.Tags) > 0 {
 		cfg.BuildFlags = []string{"-tags=" + strings.Join(o.Tags, ",")}
@@ -240,4 +241,24 @@ func isGenerated(p *packages.Package) bool {
 		}
 	}
 	return false
+}
+
+// loaderEnv is env without -trimpath in GOFLAGS: the generator reads doc comments and enum
+// declarations from the files that dependencies' positions name, and a trimmed build names them
+// by module path instead of the file on disk.
+func loaderEnv(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		if flags, ok := strings.CutPrefix(kv, "GOFLAGS="); ok {
+			kept := make([]string, 0, 4)
+			for _, f := range strings.Fields(flags) {
+				if f != "-trimpath" && f != "-trimpath=true" {
+					kept = append(kept, f)
+				}
+			}
+			kv = "GOFLAGS=" + strings.Join(kept, " ")
+		}
+		out = append(out, kv)
+	}
+	return out
 }
