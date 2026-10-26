@@ -4,9 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/sourcegraph/conc/pool"
 )
 
 // job is one seed a run executes.
@@ -56,7 +57,7 @@ func (a *applier) schedule(ctx context.Context, jobs []*job) error {
 	running := 0
 	var errs []error
 	for {
-		for running < cap(a.slots) && len(errs) == 0 {
+		for running < a.parallel && len(errs) == 0 {
 			j := firstReady(jobs)
 			if j == nil {
 				break
@@ -200,43 +201,37 @@ func (a *applier) pendingTenants(ctx, sys context.Context, j *job) ([]Tenant, er
 	return pending, errors.Join(errs...)
 }
 
-// tenantRun runs one PerTenant seed across its tenants, up to Parallel at once, and dispenses no
+// tenantRun runs one PerTenant seed across its tenants, up to Parallel at once, and starts no
 // tenant after one fails.
 type tenantRun struct {
 	a       *applier
 	j       *job
 	tenants []Tenant
-	next    atomic.Int64
 	done    atomic.Int64
 	applied atomic.Int64
 	rows    atomic.Int64
 	failed  atomic.Bool
-	mu      sync.Mutex
-	errs    []error
 }
 
+// run seeds the tenants on a pool of up to Parallel goroutines and returns their errors joined.
 func (t *tenantRun) run(ctx context.Context) error {
-	var wg sync.WaitGroup
-	for range min(cap(t.a.slots), len(t.tenants)) {
-		wg.Go(func() { t.work(ctx) })
-	}
-	wg.Wait()
-	return errors.Join(t.errs...)
-}
-
-func (t *tenantRun) work(ctx context.Context) {
-	for !t.failed.Load() {
-		i := int(t.next.Add(1)) - 1
-		if i >= len(t.tenants) {
-			return
+	p := pool.New().WithErrors().WithMaxGoroutines(max(min(t.a.parallel, len(t.tenants)), 1))
+	for _, tn := range t.tenants {
+		if t.failed.Load() {
+			break
 		}
-		if err := t.one(ctx, t.tenants[i]); err != nil {
-			t.failed.Store(true)
-			t.mu.Lock()
-			t.errs = append(t.errs, err)
-			t.mu.Unlock()
-		}
+		p.Go(func() error {
+			if t.failed.Load() {
+				return nil
+			}
+			err := t.one(ctx, tn)
+			if err != nil {
+				t.failed.Store(true)
+			}
+			return err
+		})
 	}
+	return p.Wait()
 }
 
 // one runs the seed for one tenant, in the tenant's scope, recording the tenant in the same

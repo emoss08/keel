@@ -335,11 +335,7 @@ func (rs *replicaSet) poll(ctx context.Context, db *DB) {
 	}
 	var wg sync.WaitGroup
 	for _, rep := range rs.list {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			rs.check(ctx, rep, sampled)
-		}()
+		wg.Go(func() { rs.check(ctx, rep, sampled) })
 	}
 	wg.Wait()
 }

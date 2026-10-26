@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/emoss08/keel"
+	"golang.org/x/sync/semaphore"
 )
 
 // ErrRefused is returned when a run would apply Fixture seeds to a database marked production, or
@@ -116,19 +117,22 @@ func (g *Registry) Apply(ctx context.Context, db *keel.DB, opts Options) (Report
 
 // applier is one Apply call.
 type applier struct {
-	db     *keel.DB
-	opts   Options
-	slots  chan struct{}
-	values *values
-	env    Env
+	db       *keel.DB
+	opts     Options
+	parallel int
+	slots    *semaphore.Weighted
+	values   *values
+	env      Env
 }
 
 func newApplier(db *keel.DB, opts Options) *applier {
+	parallel := max(opts.Parallel, 1)
 	return &applier{
-		db:     db,
-		opts:   opts,
-		slots:  make(chan struct{}, max(opts.Parallel, 1)),
-		values: &values{m: map[string]any{}},
+		db:       db,
+		opts:     opts,
+		parallel: parallel,
+		slots:    semaphore.NewWeighted(int64(parallel)),
+		values:   &values{m: map[string]any{}},
 	}
 }
 
@@ -249,16 +253,9 @@ func newReport(plan Plan) Report {
 }
 
 // acquire takes one of the run's Parallel transaction slots.
-func (a *applier) acquire(ctx context.Context) error {
-	select {
-	case a.slots <- struct{}{}:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
+func (a *applier) acquire(ctx context.Context) error { return a.slots.Acquire(ctx, 1) }
 
-func (a *applier) release() { <-a.slots }
+func (a *applier) release() { a.slots.Release(1) }
 
 func (a *applier) newRun(p *prepared, t Tenant) *Run {
 	return &Run{DB: a.db, Seed: p.seed, Tenant: t, Environment: a.env, prep: p, values: a.values}

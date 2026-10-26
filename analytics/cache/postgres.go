@@ -193,16 +193,14 @@ func (p *Postgres) maybeCleanup() {
 		return
 	}
 	p.lastCleanup.Store(now)
-	p.wg.Add(1)
-	go func() {
-		defer p.wg.Done()
+	p.wg.Go(func() {
 		defer p.cleaning.Store(false)
 		ctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
 		defer cancel()
 		if _, err := p.Cleanup(ctx); err != nil && p.opts.OnError != nil {
 			p.opts.OnError(err)
 		}
-	}()
+	})
 }
 
 // ensure creates the table and its expiry index when they do not exist, under a transaction-scoped
