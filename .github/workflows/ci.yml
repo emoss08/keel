@@ -25,7 +25,6 @@ jobs:
     env:
       KEEL_TEST_DSN: postgres://keel:keel@localhost:5432/keel?sslmode=disable
       KEEL_TEST_REQUIRE: "1"
-      KEEL_TEST_PG_DUMP: docker exec ${{ job.services.postgres.id }} pg_dump -U keel -d {db}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -38,6 +37,8 @@ jobs:
       - name: generated code is current
         run: go run ./cmd/keel gen -check -kinds internal/testmodels/keelkinds -tables internal/testmodels/keeltables ./internal/testmodels/...
       - name: test
+        env:
+          KEEL_TEST_PG_DUMP: docker exec ${{ job.services.postgres.id }} pg_dump -U keel -d {db}
         run: go test -race -count=1 ./...
       - name: benchmarks compile and run once
         run: cd bench && go test -run xxx -bench . -benchtime 1x ./...
