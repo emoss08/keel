@@ -22,7 +22,7 @@ suite on the branch is [bench/results/2026-10-26.txt](../bench/results/2026-10-2
 |---|---|---|---|
 | 50 rows with a to-one and a to-many relation | 1.82 ms, 2,153 allocs | 1.56 ms, 2,002 allocs | 14% faster, 7% fewer allocs |
 | the same inside a snapshot (`OnBegin` read transaction) | two round trips | 1.58 ms, one round trip | the load rides the read's round trip |
-| a cached read, served from the in-process LRU | 391 µs (the database read) | 20.6 µs | 19× faster |
+| a cached read, served from the in-process memory cache | 391 µs (the database read) | 20.6 µs | 19× faster |
 | list 100 rows | 1.11 ms, 2,536 allocs | 1.12 ms, 2,437 allocs | even, 4% fewer allocs |
 | get one row by key | 408 µs | 387 µs | even |
 | read in a transaction with a `set_config` | 416 µs | 414 µs | even here; see below |

@@ -498,7 +498,7 @@ the tenant. It is built on data versions, which must be on.
 ```go
 cfg.DataVersions = keel.DataVersionsConfig{Enabled: true}
 cfg.Cache = &keel.CacheConfig{
-    Local:  keel.LRU(256 << 20),                     // default keel.LRU(64 MiB)
+    Local:  keel.MemoryCache(256 << 20),             // default keel.MemoryCache(64 MiB)
     Shared: rediscache.New(redisClient{rdb}, ""),     // optional: keel/cache/rediscache
     Key:    func(ctx context.Context) string { return readScopeOf(ctx) },
     OnError: func(err error) { log.Printf("result cache: %v", err) },
@@ -5392,7 +5392,7 @@ type Store interface {
 
 | Store | Where values live | Notes |
 |---|---|---|
-| `cache.NewMemory(cache.MemoryOptions{MaxBytes: 256 << 20})` | the process | 64 shards by default, each an LRU list under its own lock; entries expire at their TTL and the least recently used entry of a full shard is evicted. `Get` returns a shared slice: do not modify it |
+| `cache.NewMemory(cache.MemoryOptions{MaxBytes: 256 << 20})` | the process | [otter](https://github.com/maypok86/otter): entries expire at their TTL and a full store evicts the entries least likely to be read again (W-TinyLFU); `Get` returns a shared slice: do not modify it; `Close` stops its expiry goroutine |
 | `cache.NewPostgres(db.Pool(), cache.PostgresOptions{})` | `keel_analytics_cache`, an `UNLOGGED` table every process shares | created on first use under an advisory lock; expiry follows the database's clock; expired rows are deleted in batches of `CleanupBatch` in the background, at most every `CleanupEvery` per process, with `SKIP LOCKED`; `Cleanup` runs it on demand |
 | `cache.NewRedis(client, cache.RedisOptions{})` | Redis, Valkey, Dragonfly, … | keel has no Redis dependency: `client` is three methods (`Get`, `Set`, `Del`) the application implements over its own client; the `RedisClient` comment shows go-redis |
 

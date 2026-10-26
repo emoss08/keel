@@ -3,67 +3,44 @@ package cache
 import (
 	"context"
 	"fmt"
-	"hash/maphash"
-	"math/bits"
-	"sync"
+	"math"
 	"time"
+
+	"github.com/maypok86/otter/v2"
+	"github.com/maypok86/otter/v2/stats"
 )
 
-// Defaults for MemoryOptions.
-const (
-	DefaultMemoryBytes  = 64 << 20
-	DefaultMemoryShards = 64
-)
+// DefaultMemoryBytes is MemoryOptions.MaxBytes when it is not set.
+const DefaultMemoryBytes = 64 << 20
 
-// entryOverhead is the bytes an entry costs beyond its key and value: the entry, its map slot and
-// its list links.
+// entryOverhead is the bytes an entry costs beyond its key and value: otter's node, its hash table
+// slot and the entry's TTL.
 const entryOverhead = 96
 
 // MemoryOptions configure a Memory store.
 type MemoryOptions struct {
-	// MaxBytes bounds the keys, values and bookkeeping held; default DefaultMemoryBytes. Each
-	// shard holds an equal part, and a value larger than a part is ErrTooLarge.
+	// MaxBytes bounds the keys, values and bookkeeping held; default DefaultMemoryBytes. A value
+	// larger than it is ErrTooLarge.
 	MaxBytes int64
-	// Shards is the number of independently locked parts, rounded up to a power of two; default
-	// DefaultMemoryShards.
-	Shards int
-	// Now is the clock entries expire by; default time.Now.
+	// Now is the clock entries expire by; default the wall clock, which also expires entries
+	// nobody reads once a second.
 	Now func() time.Time
 }
 
-// Memory is an in-process Store: a fixed number of shards, each an LRU list under its own lock,
-// so no lock is shared by every key. Entries expire at their TTL and the least recently used
-// entry of a full shard is evicted. Values returned by Get are shared and must not be modified.
+// Memory is an in-process Store on otter (github.com/maypok86/otter): entries expire at their TTL,
+// and a full store evicts the entries least likely to be read again (W-TinyLFU), so a scan of
+// one-off keys does not flush the ones read often. Values returned by Get are shared and must not
+// be modified. Close stops its expiry goroutine.
 type Memory struct {
-	shards []memShard
-	mask   uint64
-	seed   maphash.Seed
-	now    func() time.Time
+	c     *otter.Cache[string, memEntry]
+	max   int64
+	stats *stats.Counter
 }
 
-// memShard is one LRU part of a Memory store; head is the most recently used entry. The padding
-// keeps neighbouring shards' locks off one cache line.
-type memShard struct {
-	mu        sync.Mutex
-	items     map[string]*memEntry
-	head      *memEntry
-	tail      *memEntry
-	bytes     int64
-	max       int64
-	hits      int64
-	misses    int64
-	evictions int64
-	_         [64]byte
-}
-
-// memEntry is one cached value; expires is in Unix nanoseconds, zero for none.
+// memEntry is one cached value with the time to live it was stored for, zero for none.
 type memEntry struct {
-	key     string
-	value   []byte
-	expires int64
-	size    int64
-	prev    *memEntry
-	next    *memEntry
+	value []byte
+	ttl   time.Duration
 }
 
 // MemoryStats counts a Memory store's contents and traffic.
@@ -75,153 +52,108 @@ type MemoryStats struct {
 	Evictions int64
 }
 
+// forever is the time to live of an entry stored without one.
+const forever = time.Duration(math.MaxInt64 / 2)
+
 // NewMemory returns an empty Memory store.
 func NewMemory(o MemoryOptions) *Memory {
 	if o.MaxBytes <= 0 {
 		o.MaxBytes = DefaultMemoryBytes
 	}
-	if o.Shards <= 0 {
-		o.Shards = DefaultMemoryShards
+	m := &Memory{max: o.MaxBytes, stats: stats.NewCounter()}
+	opts := &otter.Options[string, memEntry]{
+		MaximumWeight:    uint64(o.MaxBytes),
+		Weigher:          weigh,
+		ExpiryCalculator: expiry{},
+		StatsRecorder:    m.stats,
 	}
-	if o.Now == nil {
-		o.Now = time.Now
+	if o.Now != nil {
+		opts.Clock = manualClock{now: o.Now}
 	}
-	n := 1 << bits.Len(uint(o.Shards-1))
-	m := &Memory{shards: make([]memShard, n), mask: uint64(n - 1), seed: maphash.MakeSeed(), now: o.Now}
-	per := max(o.MaxBytes/int64(n), 1)
-	for i := range m.shards {
-		m.shards[i].items = map[string]*memEntry{}
-		m.shards[i].max = per
-	}
+	m.c = otter.Must(opts)
 	return m
 }
 
-// shard returns the shard that holds key.
-func (m *Memory) shard(key string) *memShard {
-	return &m.shards[maphash.String(m.seed, key)&m.mask]
+// weigh returns an entry's share of MaxBytes.
+func weigh(key string, e memEntry) uint32 {
+	return uint32(min(entrySize(key, e.value), math.MaxUint32))
 }
 
-// Get returns the value under key; an expired entry is removed and reported missing.
+// entrySize is the bytes an entry of key and value holds.
+func entrySize(key string, value []byte) int64 {
+	return int64(len(key)+len(value)) + entryOverhead
+}
+
+// expiry expires an entry at the TTL it was last stored with; reads leave it.
+type expiry struct{}
+
+func (expiry) ExpireAfterCreate(e otter.Entry[string, memEntry]) time.Duration {
+	return lifetime(e.Value.ttl)
+}
+
+func (expiry) ExpireAfterUpdate(e otter.Entry[string, memEntry], _ memEntry) time.Duration {
+	return lifetime(e.Value.ttl)
+}
+
+func (expiry) ExpireAfterRead(e otter.Entry[string, memEntry]) time.Duration {
+	return e.ExpiresAfter()
+}
+
+// lifetime is otter's expiry of a TTL: forever for none.
+func lifetime(ttl time.Duration) time.Duration {
+	if ttl <= 0 {
+		return forever
+	}
+	return ttl
+}
+
+// manualClock is MemoryOptions.Now as otter's clock. It never ticks: expired entries are removed
+// when they are read or evicted.
+type manualClock struct{ now func() time.Time }
+
+func (c manualClock) NowNano() int64 { return c.now().UnixNano() }
+
+func (manualClock) Tick(time.Duration) <-chan time.Time { return nil }
+
+// Get returns the value under key; an expired one is missing.
 func (m *Memory) Get(_ context.Context, key string) ([]byte, bool, error) {
-	s := m.shard(key)
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e := s.items[key]
-	if e == nil {
-		s.misses++
+	e, ok := m.c.GetIfPresent(key)
+	if !ok {
 		return nil, false, nil
 	}
-	if e.expires != 0 && m.now().UnixNano() >= e.expires {
-		s.remove(e)
-		s.misses++
-		return nil, false, nil
-	}
-	s.toFront(e)
-	s.hits++
 	return e.value, true, nil
 }
 
-// Set stores a copy of value under key for ttl, evicting the shard's least recently used entries
-// beyond its share of MaxBytes.
+// Set stores a copy of value under key for ttl, evicting entries beyond MaxBytes.
 func (m *Memory) Set(_ context.Context, key string, value []byte, ttl time.Duration) error {
-	s := m.shard(key)
-	size := int64(len(key)+len(value)) + entryOverhead
-	var expires int64
-	if ttl > 0 {
-		expires = m.now().Add(ttl).UnixNano()
+	if size := entrySize(key, value); size > m.max {
+		m.c.Invalidate(key)
+		return fmt.Errorf("%w: %d bytes with its key, over the store's %d", ErrTooLarge, size, m.max)
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if size > s.max {
-		if e := s.items[key]; e != nil {
-			s.remove(e)
-		}
-		return fmt.Errorf("%w: %d bytes with its key, over a shard's %d", ErrTooLarge, size, s.max)
-	}
-	v := append([]byte(nil), value...)
-	if e := s.items[key]; e != nil {
-		s.bytes += size - e.size
-		e.value, e.size, e.expires = v, size, expires
-		s.toFront(e)
-	} else {
-		e = &memEntry{key: key, value: v, size: size, expires: expires}
-		s.items[key] = e
-		s.bytes += size
-		s.pushFront(e)
-	}
-	for s.bytes > s.max && s.tail != nil {
-		s.remove(s.tail)
-		s.evictions++
-	}
+	m.c.Set(key, memEntry{value: append([]byte(nil), value...), ttl: ttl})
 	return nil
 }
 
 // Delete removes the value under key.
 func (m *Memory) Delete(_ context.Context, key string) error {
-	s := m.shard(key)
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if e := s.items[key]; e != nil {
-		s.remove(e)
-	}
+	m.c.Invalidate(key)
 	return nil
 }
 
-// Stats sums the shards' counters, locking one shard at a time.
+// Stats returns the store's contents and traffic, after the evictions and expiries otter has
+// buffered.
 func (m *Memory) Stats() MemoryStats {
-	var st MemoryStats
-	for i := range m.shards {
-		s := &m.shards[i]
-		s.mu.Lock()
-		st.Entries += len(s.items)
-		st.Bytes += s.bytes
-		st.Hits += s.hits
-		st.Misses += s.misses
-		st.Evictions += s.evictions
-		s.mu.Unlock()
-	}
-	return st
-}
-
-// pushFront links e as the most recently used entry.
-func (s *memShard) pushFront(e *memEntry) {
-	e.prev, e.next = nil, s.head
-	if s.head != nil {
-		s.head.prev = e
-	}
-	s.head = e
-	if s.tail == nil {
-		s.tail = e
+	m.c.CleanUp()
+	s := m.stats.Snapshot()
+	return MemoryStats{
+		Entries:   m.c.EstimatedSize(),
+		Bytes:     int64(m.c.WeightedSize()),
+		Hits:      int64(s.Hits),
+		Misses:    int64(s.Misses),
+		Evictions: int64(s.Evictions),
 	}
 }
 
-// unlink takes e out of the list.
-func (s *memShard) unlink(e *memEntry) {
-	if e.prev != nil {
-		e.prev.next = e.next
-	} else {
-		s.head = e.next
-	}
-	if e.next != nil {
-		e.next.prev = e.prev
-	} else {
-		s.tail = e.prev
-	}
-	e.prev, e.next = nil, nil
-}
-
-// toFront marks e as the most recently used entry.
-func (s *memShard) toFront(e *memEntry) {
-	if s.head == e {
-		return
-	}
-	s.unlink(e)
-	s.pushFront(e)
-}
-
-// remove drops e from the shard.
-func (s *memShard) remove(e *memEntry) {
-	s.unlink(e)
-	delete(s.items, e.key)
-	s.bytes -= e.size
-}
+// Close stops the goroutine that expires entries nobody reads. The store keeps working, expiring
+// entries when they are read.
+func (m *Memory) Close() { m.c.StopAllGoroutines() }

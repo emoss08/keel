@@ -17,7 +17,7 @@ import (
 
 // LocalCache is the in-process store of the result cache (CacheConfig.Local): encoded entries by
 // key, each with a time to live. Values it returns are only read, never changed; every hit
-// decodes them into new rows. keel.LRU is the implementation keel provides.
+// decodes them into new rows. keel.MemoryCache is the implementation keel provides.
 type LocalCache interface {
 	// Get returns the value stored under key and true, or false when there is none or it expired.
 	Get(key string) ([]byte, bool)
@@ -37,20 +37,22 @@ type SharedCache interface {
 	Set(ctx context.Context, key string, value []byte, ttl time.Duration) error
 }
 
-// DefaultCacheBytes is the size of the LRU the result cache keeps when CacheConfig.Local is nil.
+// DefaultCacheBytes is the size of the MemoryCache the result cache keeps when CacheConfig.Local
+// is nil.
 const DefaultCacheBytes = 64 << 20
 
-// LRU returns a LocalCache of at most maxBytes bytes of keys, values and bookkeeping: 64
-// independently locked shards, each a least-recently-used list holding an equal part, so a value
-// larger than a part is not kept. A maxBytes of zero or less is DefaultCacheBytes.
-func LRU(maxBytes int64) LocalCache {
+// MemoryCache returns a LocalCache of at most maxBytes bytes of keys, values and bookkeeping,
+// analytics' otter-backed memory store: a full store evicts the entries least likely to be read
+// again, and a value larger than maxBytes is not kept. A maxBytes of zero or less is
+// DefaultCacheBytes.
+func MemoryCache(maxBytes int64) LocalCache {
 	if maxBytes <= 0 {
 		maxBytes = DefaultCacheBytes
 	}
 	return &lru{m: analyticscache.NewMemory(analyticscache.MemoryOptions{MaxBytes: maxBytes})}
 }
 
-// lru is LRU's LocalCache: analytics' sharded memory store.
+// lru is MemoryCache's LocalCache: analytics' memory store.
 type lru struct {
 	m *analyticscache.Memory
 }

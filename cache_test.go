@@ -24,7 +24,7 @@ func cacheDB(t *testing.T, rec *recorder, edit func(cfg *keel.Config)) *keel.DB 
 	db(t)
 	cfg := testConfig(testDSN)
 	cfg.DataVersions = keel.DataVersionsConfig{Enabled: true, Interval: time.Hour}
-	cfg.Cache = &keel.CacheConfig{Local: keel.LRU(8 << 20)}
+	cfg.Cache = &keel.CacheConfig{Local: keel.MemoryCache(8 << 20)}
 	if rec != nil {
 		cfg.Observers = []keel.Observer{rec}
 	}

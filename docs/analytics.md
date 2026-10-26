@@ -386,7 +386,7 @@ fresh exactly until one of those changes for T.
 The cache applies to every entry point, previews and dashboards included, which is where repeated reads
 actually happen.
 
-> **Status: built.** `analytics/cache` has the in-memory store (sharded LRU with TTLs), the Postgres
+> **Status: built.** `analytics/cache` has the in-memory store (otter, with TTLs), the Postgres
 > store (`keel_analytics_cache`, unlogged, created on first use, batched expiry cleanup, capped
 > values) and a Redis adapter over a three-method client interface, plus `cache.Loader`, which shares
 > one load between concurrent misses of a key. The engine adapts `cache.Store` to `analytics.Cache`.

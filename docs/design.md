@@ -813,7 +813,7 @@ pos := keel.CommitPosition(ctx, db)                 // for keel.OnReplicaAfter i
 
 `Query.Cache(keel.TTL(d), keel.AlsoReads(tables...))` serves `One`, `First`, `List`, `All`,
 `Count`, `CountUpTo`, `CountEstimate`, `Exists` and `Page` and their `Batch` items from
-`Config.Cache` (`Local keel.LocalCache`, default `keel.LRU(64 MiB)`; `Shared keel.SharedCache`;
+`Config.Cache` (`Local keel.LocalCache`, default `keel.MemoryCache(64 MiB)`; `Shared keel.SharedCache`;
 `Key func(ctx) string`; `MaxEntryBytes`, default 1 MiB; `OnError`). `Open` refuses a cache
 without `DataVersions.Enabled`, and one without `Key` when `OnBegin` is set (the rows OnBegin's
 settings expose are invisible to the key otherwise). `Key` and `OnBegin` run on a callback context: the caller's

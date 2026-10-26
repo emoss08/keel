@@ -1,5 +1,5 @@
 // Package cache holds result caches for keel/analytics: byte values by key, each with a time to
-// live. Memory is a sharded, size-bounded LRU for one process; Postgres keeps values in an unlogged
+// live. Memory is a size-bounded otter cache for one process; Postgres keeps values in an unlogged
 // table every process shares; Redis adapts any Redis client through a three-method interface.
 // Loader puts one of them in front of a computation, so concurrent misses of a key in a process
 // compute it once.

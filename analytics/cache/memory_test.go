@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -76,36 +75,31 @@ func TestMemoryExpiry(t *testing.T) {
 	}
 }
 
-func TestMemoryEvictsLeastRecentlyUsed(t *testing.T) {
+func TestMemoryEvictsBeyondMaxBytes(t *testing.T) {
 	ctx := context.Background()
-	m := cache.NewMemory(cache.MemoryOptions{Shards: 1, MaxBytes: 3 * (96 + 1 + 10)})
+	const size = 96 + 1 + 10
+	m := cache.NewMemory(cache.MemoryOptions{MaxBytes: 3 * size})
 	val := []byte("0123456789")
 	for _, k := range []string{"a", "b", "c"} {
 		if err := m.Set(ctx, k, val, 0); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, ok, _ := m.Get(ctx, "a"); !ok {
-		t.Fatal("a was evicted before the store was full")
-	}
-	_ = m.Set(ctx, "d", val, 0)
-	if _, ok, _ := m.Get(ctx, "b"); ok {
-		t.Fatal("b, the least recently used, survived")
-	}
-	for _, k := range []string{"a", "c", "d"} {
+	for _, k := range []string{"a", "b", "c"} {
 		if _, ok, _ := m.Get(ctx, k); !ok {
-			t.Fatalf("%s was evicted", k)
+			t.Fatalf("%s was evicted before the store was full", k)
 		}
 	}
+	_ = m.Set(ctx, "d", val, 0)
 	st := m.Stats()
-	if st.Evictions != 1 || st.Entries != 3 || st.Bytes != 3*107 {
+	if st.Evictions != 1 || st.Entries != 3 || st.Bytes != 3*size {
 		t.Fatalf("stats = %+v", st)
 	}
 }
 
 func TestMemoryTooLarge(t *testing.T) {
 	ctx := context.Background()
-	m := cache.NewMemory(cache.MemoryOptions{Shards: 1, MaxBytes: 200})
+	m := cache.NewMemory(cache.MemoryOptions{MaxBytes: 200})
 	_ = m.Set(ctx, "k", []byte("small"), 0)
 	err := m.Set(ctx, "k", make([]byte, 500), 0)
 	if !errors.Is(err, cache.ErrTooLarge) {
@@ -113,17 +107,6 @@ func TestMemoryTooLarge(t *testing.T) {
 	}
 	if _, ok, _ := m.Get(ctx, "k"); ok {
 		t.Fatal("the previous value survived a rejected Set")
-	}
-}
-
-func TestMemoryShardsRoundUp(t *testing.T) {
-	ctx := context.Background()
-	m := cache.NewMemory(cache.MemoryOptions{Shards: 5, MaxBytes: 8 << 20})
-	for i := range 1000 {
-		_ = m.Set(ctx, strconv.Itoa(i), []byte("v"), 0)
-	}
-	if st := m.Stats(); st.Entries != 1000 {
-		t.Fatalf("entries = %d", st.Entries)
 	}
 }
 

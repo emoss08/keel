@@ -175,7 +175,7 @@ func build() (*env, error) {
 	}
 	cc := keelConfig(dsn)
 	cc.DataVersions = keel.DataVersionsConfig{Enabled: true}
-	cc.Cache = &keel.CacheConfig{Local: keel.LRU(64 << 20)}
+	cc.Cache = &keel.CacheConfig{Local: keel.MemoryCache(64 << 20)}
 	if e.cached, err = keel.Open(ctx, cc); err != nil {
 		return nil, err
 	}

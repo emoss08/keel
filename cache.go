@@ -16,7 +16,7 @@ import (
 // that read them and served while the data versions of every table they read are unchanged, so a
 // hit costs no round trip. It needs Config.DataVersions.Enabled.
 type CacheConfig struct {
-	// Local is the in-process store; nil keeps an LRU of DefaultCacheBytes.
+	// Local is the in-process store; nil keeps a MemoryCache of DefaultCacheBytes.
 	Local LocalCache
 	// Shared, when set, is a store every process shares, such as Redis (keel/cache/rediscache). A
 	// local miss reads it, and an entry read while this process had no unflushed writes to its
@@ -164,6 +164,7 @@ type resultCache struct {
 	db       *DB
 	cfg      CacheConfig
 	local    LocalCache
+	ownLocal bool
 	shared   SharedCache
 	maxEntry int
 	bus      *versionBus
@@ -192,7 +193,8 @@ func (db *DB) openCache(ctx context.Context) error {
 	c := &resultCache{db: db, cfg: *cc, local: cc.Local, shared: cc.Shared, maxEntry: cc.MaxEntryBytes,
 		seed: maphash.MakeSeed()}
 	if c.local == nil {
-		c.local = LRU(DefaultCacheBytes)
+		c.local = MemoryCache(DefaultCacheBytes)
+		c.ownLocal = true
 	}
 	if c.maxEntry <= 0 {
 		c.maxEntry = defaultMaxEntryBytes
@@ -207,11 +209,15 @@ func (db *DB) openCache(ctx context.Context) error {
 	return nil
 }
 
-// closeCache stops the listener. The cache stays in place, bypassed, so writes that end after it
-// still find it.
+// closeCache stops the listener and the expiry goroutine of the local store keel made. The cache
+// stays in place, bypassed, so writes that end after it still find it.
 func (db *DB) closeCache() {
-	if db.cache != nil {
-		db.cache.bus.stop()
+	if db.cache == nil {
+		return
+	}
+	db.cache.bus.stop()
+	if db.cache.ownLocal {
+		db.cache.local.(*lru).m.Close()
 	}
 }
 
