@@ -57,6 +57,84 @@ level of moves, stops and locations, all filtered to the tenant on the context.
 
 keel is Postgres-only and uses pgx v5, never `database/sql`.
 
+## Is keel right for you?
+
+keel is not a general-purpose ORM. It is the data layer of one kind of application, built with
+strong opinions, and it carries machinery many projects will never want. Read this before the
+quick start.
+
+### What it is for
+
+A backend that serves **many organizations from one PostgreSQL database**: every tenant table
+carries tenant columns, the same code serves every tenant, and the data is relational enough that
+most screens read a record with several levels of related rows. Think of a transportation
+management system (keel is built alongside [Trenova](https://github.com/emoss08/Trenova)), a CRM,
+a helpdesk, an ERP or a marketplace back office: B2B SaaS with a large schema, deep detail pages,
+long lists, bulk imports and reports.
+
+### What it does very well
+
+- **Keeping tenants apart.** You cannot forget the tenant filter: keel adds it to every read, join,
+  relation load, subquery and write, and fails a statement that has no scope. Work across tenants
+  is written down, with a reason:
+
+  ```go
+  ctx := withSystem(ctx, "purge canceled shipments") // your Config.System reads this
+  n, err := s.AllTenants().
+      Where(s.Status.Eq(fleet.StatusCanceled), s.CanceledAt.Lt(cutoff)).
+      Delete(ctx, db)
+  ```
+
+- **Detail pages and lists in one round trip.** A shipment with its customer, moves, stops and
+  locations, or a page of fifty with a total count, is one exchange with Postgres outside a
+  transaction. The saving grows with the distance to the database.
+- **Dashboards.** Independent reads of a screen go in one round trip with `keel.Batch`, and reads
+  that ask for the result cache come back from memory until a table they read changes:
+
+  ```go
+  err = keel.Batch(ctx, db,
+      keel.ListInto(s.Where(s.Hazmat.IsTrue()).Order(s.CreatedAt.Desc()).Limit(50).Cache(), &recent),
+      keel.CountInto(s.Where(s.Status.Eq(fleet.StatusNew)).Cache(), &unassigned),
+      keel.OneInto(c.Where(c.Code.Eq("ACME")).Cache(), &cust),
+  )
+  ```
+
+- **Imports and bulk changes.** `CreateMany` sends one array per column, `Copy` streams binary
+  `COPY` with IDs, tenant columns and hooks applied, and upserts and bulk updates are one
+  statement each.
+- **Staying up when one tenant misbehaves.** Per-tenant concurrency limits, query budgets that fail
+  an N+1 loop, a ceiling on waits, and slow-wait reports that name the code holding the slots.
+- **Reports users build themselves.** `keel/analytics` turns a report definition (columns across
+  relations, filters, grouping, pivots, formulas) into tenant-scoped SQL, with exports and rollups.
+- **Living with a large schema.** Typed columns and relations, labels and descriptions derived from
+  the models, `keel.Verify` to catch drift between models and migrations, golden SQL snapshots and
+  index assertions in tests.
+
+### When to choose something else
+
+- **You need another database, or database portability.** keel is PostgreSQL only and leans on it:
+  arrays, `unnest`, `COPY`, pipelining, `LISTEN/NOTIFY`, advisory locks, row-level security.
+- **Your application is single-tenant and small.** keel works without tenant columns, but you would
+  pay for code generation, a large API and opinionated runtime machinery to get a query builder.
+  [sqlc](https://sqlc.dev) or plain [pgx](https://github.com/jackc/pgx) will serve you better.
+- **You want to write SQL first.** keel builds SQL from typed Go. If you would rather keep queries in
+  `.sql` files and generate Go from them, use sqlc.
+- **You want the schema generated from your models.** keel never writes migrations from structs; the
+  schema lives in SQL migrations you write. GORM's `AutoMigrate` and ent's schema migrations do the
+  opposite.
+- **You expect classic ORM behaviour.** There is no lazy loading, no identity map, no unit of work,
+  no built-in soft delete and no polymorphic associations. Every load is asked for explicitly
+  (an interceptor can add a soft-delete filter if you want one).
+- **You need `database/sql`.** keel runs on pgx v5 and nothing else, so libraries that want a
+  `*sql.DB` cannot share its connections.
+- **You want a small dependency graph.** keel is one module with its CLI, migrations, seeds and
+  analytics. Go compiles only the packages you import, but `go.mod` lists their dependencies
+  (Charm's terminal libraries, excelize, Arrow) all the same.
+- **You need a stable API today.** keel is pre-1.0 and shaped by one application's needs; minor
+  versions can still change the API.
+
+[docs/design.md](docs/design.md) has the full design and its non-goals.
+
 ## What's in the box
 
 | Package | What it does |
@@ -478,17 +556,6 @@ res, err := m.Up(ctx, migrate.UpOptions{})
 
 and at server startup, `migrate.RequireWait(ctx, pool, schema.Version, time.Second)`. Tests copy a
 migrated database from a template in milliseconds with `migrate.Template`.
-
-## What keel does not do
-
-- **Migrations from models.** The schema lives in SQL migrations. `keel.Verify` reports where models
-  and the live catalog disagree, so drift fails a test instead of production.
-- **Soft deletes, identity maps or lazy loading.** Loads are explicit. An interceptor adds a
-  soft-delete or ownership filter to every read and write of a table if you want one.
-- **Other databases.** keel uses Postgres features directly: arrays, `unnest`, `COPY`, pipelining,
-  `LISTEN/NOTIFY`, advisory locks and row-level security.
-
-[docs/design.md](docs/design.md) has the full design and its non-goals.
 
 ## Performance
 
