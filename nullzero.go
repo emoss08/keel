@@ -96,13 +96,14 @@ func containsZero(list any) bool {
 	return false
 }
 
-// nullZeroCmp is col op v on a nullzero column, where a zero value means NULL: = zero is IS NULL,
-// <> zero and IS DISTINCT FROM zero are IS NOT NULL, and <> of any other value is IS DISTINCT FROM,
-// so the rows that hold the zero value match it. It returns nil for every other comparison.
+// nullZeroCmp is col op v on a nullzero column, where a zero value means NULL: = zero and IS NOT
+// DISTINCT FROM zero are IS NULL, <> zero and IS DISTINCT FROM zero are IS NOT NULL, and <> of any
+// other value is IS DISTINCT FROM, so the rows that hold the zero value match it. It returns nil
+// for every other comparison.
 func nullZeroCmp(c Col, op string, v any) Pred {
 	zero := isZeroValue(v)
 	switch {
-	case zero && op == " = ":
+	case zero && (op == " = " || op == " IS NOT DISTINCT FROM "):
 		return c.IsNull()
 	case zero && (op == " <> " || op == " IS DISTINCT FROM "):
 		return c.IsNotNull()

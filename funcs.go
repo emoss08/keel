@@ -517,14 +517,16 @@ func (e NumericExpr) Least(others ...NumericValue) NumericExpr {
 	return NumericExpr{e: callOf("least", exprsOf(e.e, others)...)}
 }
 
-// CastInt64 is CAST(v AS bigint); a fraction rounds to the nearest integer.
-func CastInt64(v NumberValue) Int64Expr { return Int64Expr{e: castTo(v, "bigint")} }
+// CastInt64 is CAST(e AS bigint) of a number of another kind (a fraction rounds to the nearest
+// integer), of text holding an integer, or of any expression Postgres casts to bigint.
+func CastInt64(e Expr) Int64Expr { return Int64Expr{e: castTo(e, "bigint")} }
 
-// CastFloat64 is CAST(v AS double precision).
-func CastFloat64(v NumberValue) Float64Expr { return Float64Expr{e: castTo(v, "double precision")} }
+// CastFloat64 is CAST(e AS double precision) of a number or of text holding one.
+func CastFloat64(e Expr) Float64Expr { return Float64Expr{e: castTo(e, "double precision")} }
 
-// CastNumeric is CAST(v AS numeric), exact arithmetic and rounding to decimal places.
-func CastNumeric(v NumberValue) NumericExpr { return NumericExpr{e: castTo(v, "numeric")} }
+// CastNumeric is CAST(e AS numeric) of a number or of text holding one: exact arithmetic and
+// rounding to decimal places.
+func CastNumeric(e Expr) NumericExpr { return NumericExpr{e: castTo(e, "numeric")} }
 
 // WidthBucket is width_bucket(v, bounds): the number of bounds, sorted ascending, that are at most
 // v (0 below the first, len(bounds) at or above the last). bounds binds as one bigint[] parameter.
