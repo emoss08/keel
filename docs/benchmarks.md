@@ -40,10 +40,12 @@ version):
   statements as pgx does, with as many pool connections as pgxpool's default; sqlc runs on
   pgxpool itself. Each write benchmark deletes the rows it inserted when it ends, so no library
   writes into, or reads, a table another one grew.
+- Every library decodes the same thing into the same shape: `jsonb` into a map through sonic
+  (keel through `Config.JSON`, pgx and sqlc through pgx's `jsonb` codec, the rest through a
+  shared `sql.Scanner`, and Jet, whose generator types the column as text, right after its scan),
+  `numeric` into a string or, for keel, a binary-decoded money value.
 - ent keys an entity by one column, so its models use `id` alone where the tables have a
-  composite primary key. Rows decode into each library's natural types: `jsonb` into a map where
-  the library decodes JSON itself (keel, Bun, GORM, ent) and into bytes elsewhere, `numeric` into
-  a decimal or a string. sqlc, sqlx and raw pgx build no statements, so they have no
+  composite primary key. sqlc, sqlx and raw pgx build no statements, so they have no
   statement-building number, and ent cannot render a typed query without running it.
 - The generated code of ent, sqlc, Bob and Jet is checked in under `bench/` with its schema,
   queries and generator configuration.
@@ -54,31 +56,42 @@ A round trip took 1.73 ms through the proxy against 0.23 ms direct. Fastest in b
 
 | Operation | keel | sqlc | sqlx | pgx | Bob | ent | GORM | Jet | Bun |
 |---|---|---|---|---|---|---|---|---|---|
-| get one row by key | 1.87 ms | 1.89 ms | 1.87 ms | **1.82 ms** | 1.91 ms | 1.99 ms | 1.91 ms | 2.02 ms | 2.04 ms |
-| list 100 rows | 2.61 ms | **2.53 ms** | 2.75 ms | 2.92 ms | 2.72 ms | 2.78 ms | 3.68 ms | 3.39 ms | 3.19 ms |
-| list 1,000 rows | 6.74 ms | **5.88 ms** | 7.48 ms | 7.15 ms | 8.06 ms | 8.65 ms | 12.32 ms | 13.50 ms | 8.39 ms |
-| 50 rows with a to-one and a to-many relation | **3.42 ms** | 6.98 ms | 7.03 ms | – | 9.57 ms | 7.49 ms | 9.37 ms | 6.99 ms | 7.42 ms |
-| read in a transaction with a `set_config` | **1.96 ms** | 7.08 ms | 7.50 ms | – | 7.21 ms | 7.29 ms | 7.48 ms | 7.58 ms | 7.44 ms |
-| keyset page of 50 with its total | **2.84 ms** | 4.34 ms | 4.54 ms | 4.52 ms | 4.85 ms | 4.82 ms | 5.05 ms | 5.12 ms | 4.70 ms |
-| insert one row | 2.48 ms | **2.33 ms** | 2.53 ms | – | 2.49 ms | 2.38 ms | 2.35 ms | 2.50 ms | 2.51 ms |
-| insert 1,000 rows | 18.33 ms (16.96 ms with `Copy`) | **16.99 ms** | 20.09 ms | – | 22.92 ms | 23.69 ms | 19.84 ms | 27.11 ms | 25.85 ms |
-| save with optimistic locking | 2.25 ms | 2.20 ms | 2.23 ms | – | 2.31 ms | 2.20 ms | **2.19 ms** | 2.27 ms | 2.35 ms |
-| build a statement, no database | 4.5 µs | – | – | – | 13.1 µs | – | 8.4 µs | 23.5 µs | **3.9 µs** |
+| get one row by key | 1.88 ms | 1.87 ms | 1.88 ms | **1.80 ms** | 1.95 ms | 1.93 ms | 1.89 ms | 1.99 ms | 2.00 ms |
+| list 100 rows | **2.48 ms** | 2.76 ms | 2.79 ms | 2.89 ms | 2.71 ms | 2.76 ms | 3.45 ms | 3.59 ms | 2.93 ms |
+| list 1,000 rows | **5.62 ms** | 6.42 ms | 7.54 ms | 5.96 ms | 7.10 ms | 7.74 ms | 10.77 ms | 12.96 ms | 8.30 ms |
+| 50 rows with a to-one and a to-many relation | **3.02 ms** | 6.47 ms | 6.83 ms | – | 8.40 ms | 6.96 ms | 8.71 ms | 7.25 ms | 6.95 ms |
+| read in a transaction with a `set_config` | **1.98 ms** | 6.99 ms | 7.00 ms | – | 7.31 ms | 7.22 ms | 7.07 ms | 7.41 ms | 7.34 ms |
+| keyset page of 50 with its total | **2.71 ms** | 4.47 ms | 4.66 ms | 4.69 ms | 4.42 ms | 4.72 ms | 4.84 ms | 5.05 ms | 4.86 ms |
+| insert one row | 2.24 ms | **2.22 ms** | 2.36 ms | – | 2.36 ms | 2.39 ms | 2.28 ms | 2.41 ms | 2.37 ms |
+| insert 1,000 rows | **15.97 ms** (16.75 ms with `Copy`) | 16.97 ms | 20.02 ms | – | 22.70 ms | 22.69 ms | 19.01 ms | 26.40 ms | 24.72 ms |
+| save with optimistic locking | **2.19 ms** | 2.24 ms | 2.23 ms | – | 2.43 ms | 2.22 ms | 2.32 ms | 2.37 ms | 2.46 ms |
+| build a statement, no database | 4.1 µs | – | – | – | 12.6 µs | – | 8.2 µs | 22.2 µs | **3.6 µs** |
 
 ### With Postgres on the same host
 
 | Operation | keel | sqlc | sqlx | pgx | Bob | ent | GORM | Jet | Bun |
 |---|---|---|---|---|---|---|---|---|---|
-| get one row by key | 351 µs | **323 µs** | 350 µs | 331 µs | 371 µs | 379 µs | 381 µs | 431 µs | 480 µs |
-| list 100 rows | 966 µs | **846 µs** | 1.05 ms | 1.21 ms | 1.07 ms | 1.11 ms | 1.62 ms | 1.80 ms | 1.40 ms |
-| list 1,000 rows | 4.66 ms | **3.93 ms** | 5.30 ms | 5.39 ms | 5.87 ms | 6.62 ms | 9.88 ms | 11.53 ms | 6.97 ms |
-| 50 rows with a to-one and a to-many relation | **1.34 ms** | 1.96 ms | 2.12 ms | – | 3.80 ms | 2.54 ms | 4.29 ms | 4.79 ms | 4.00 ms |
-| read in a transaction with a `set_config` | **377 µs** | 892 µs | 1.07 ms | – | 1.15 ms | 1.11 ms | 1.12 ms | 1.21 ms | 1.36 ms |
-| keyset page of 50 with its total | **1.12 ms** | 1.33 ms | 1.62 ms | 1.55 ms | 1.62 ms | 1.89 ms | 1.76 ms | 2.02 ms | 1.77 ms |
-| insert one row | 761 µs | 767 µs | **730 µs** | – | 865 µs | 921 µs | 818 µs | 797 µs | 769 µs |
-| insert 1,000 rows | **15.80 ms** (15.58 ms with `Copy`) | 16.10 ms | 19.48 ms | – | 23.57 ms | 22.08 ms | 18.86 ms | 26.57 ms | 25.55 ms |
-| save with optimistic locking | **755 µs** | 761 µs | 823 µs | – | 844 µs | 808 µs | 788 µs | 794 µs | 862 µs |
-| build a statement, no database | 5.0 µs | – | – | – | 12.7 µs | – | 8.8 µs | 23.1 µs | **4.2 µs** |
+| get one row by key | **345 µs** | 345 µs | 346 µs | 349 µs | 402 µs | 424 µs | 397 µs | 412 µs | 510 µs |
+| list 100 rows | **742 µs** | 1.04 ms | 1.24 ms | 969 µs | 1.01 ms | 1.13 ms | 1.61 ms | 1.79 ms | 1.28 ms |
+| list 1,000 rows | **4.09 ms** | 5.15 ms | 6.26 ms | 4.75 ms | 5.84 ms | 5.90 ms | 10.00 ms | 12.73 ms | 6.47 ms |
+| 50 rows with a to-one and a to-many relation | **1.35 ms** | 2.26 ms | 2.52 ms | – | 3.90 ms | 2.55 ms | 4.36 ms | 5.64 ms | 3.94 ms |
+| read in a transaction with a `set_config` | **408 µs** | 965 µs | 1.10 ms | – | 1.15 ms | 1.26 ms | 1.17 ms | 1.33 ms | 1.36 ms |
+| keyset page of 50 with its total | **1.11 ms** | 1.43 ms | 1.40 ms | 1.29 ms | 1.49 ms | 1.83 ms | 1.68 ms | 1.82 ms | 1.63 ms |
+| insert one row | 564 µs | 571 µs | 577 µs | – | 627 µs | **562 µs** | 564 µs | 593 µs | 592 µs |
+| insert 1,000 rows | 17.63 ms (18.30 ms with `Copy`) | **17.34 ms** | 18.90 ms | – | 24.22 ms | 21.71 ms | 21.94 ms | 26.36 ms | 28.98 ms |
+| save with optimistic locking | 693 µs | 692 µs | 798 µs | – | 744 µs | 736 µs | **649 µs** | 718 µs | 745 µs |
+| build a statement, no database | 4.6 µs | – | – | – | 13.4 µs | – | 8.9 µs | 23.4 µs | **4.1 µs** |
+
+### Allocations
+
+Allocations per operation with Postgres on the same host, bytes in parentheses; fewest in bold.
+
+| Operation | keel | sqlc | sqlx | pgx | Bob | ent | GORM | Jet | Bun |
+|---|---|---|---|---|---|---|---|---|---|
+| get one row by key | 61 (5.4 KB) | 40 (3.2 KB) | 93 (5.1 KB) | **39 (3.2 KB)** | 157 (13 KB) | 289 (13 KB) | 177 (11 KB) | 465 (29 KB) | 55 (7.6 KB) |
+| list 1,000 rows | **14,051 (912 KB)** | 22,030 (1,967 KB) | 36,814 (1,873 KB) | 19,025 (1,133 KB) | 33,885 (1,189 KB) | 52,008 (1,790 KB) | 51,891 (2,268 KB) | 73,171 (4,645 KB) | 33,784 (1,194 KB) |
+| 50 rows with a to-one and a to-many relation | **1,512 (104 KB)** | 2,656 (237 KB) | 4,284 (230 KB) | – | 5,897 (252 KB) | 6,881 (255 KB) | 8,396 (416 KB) | 22,024 (1,303 KB) | 6,596 (202 KB) |
+| keyset page of 50 with its total | **835 (55 KB)** | 1,135 (93 KB) | 1,931 (91 KB) | 985 (59 KB) | 1,969 (79 KB) | 3,026 (110 KB) | 2,782 (117 KB) | 4,170 (256 KB) | 1,761 (68 KB) |
 
 ### What it shows
 
@@ -87,21 +100,27 @@ A round trip took 1.73 ms through the proxy against 0.23 ms direct. Fastest in b
   and moves take keel one round trip and the others three. A scoped read is `BEGIN`, the
   `set_config`, the read and `COMMIT` pipelined in one round trip, without waiting for the
   `COMMIT`'s reply; every other library makes four. A page and its count share a round trip.
-  Through 1 ms of latency that makes keel 2.0 to 2.8 times as fast as every other library on
-  relation loads, 3.6 to 3.9 times on scoped reads and 1.5 to 1.8 times on pages, and the gap
+  Through 1 ms of latency that makes keel 2.1 to 2.9 times as fast as every other library on
+  relation loads, 3.5 to 3.7 times on scoped reads and 1.6 to 1.9 times on pages, and the gap
   grows with the distance to the database.
+- **keel decodes rows fastest.** It is the fastest list on the same host and through the proxy:
+  the next fastest list of 100, raw pgx's, takes 1.3 times keel's time on the same host, and
+  sqlc's 1.4 times. keel allocates 14 times a row on a list of 1,000, raw pgx 19 and sqlc 22.
+- **Decoding is the work, not the generated code.** An earlier version of this run left sqlc's
+  `jsonb` as bytes and decoded keel's `numeric` through its text form; sqlc's list of 1,000 then
+  took 3.93 ms on the same host against keel's 4.66 ms. Decoding the same map costs sqlc 1.2 ms,
+  and reading `numeric` in binary and `jsonb` through sonic saves keel 0.6 ms.
 - **Where an operation is one round trip, the network evens everyone out.** A get by key, an
-  insert and a save land within about 10% of each other through the proxy, keel among them.
-- **sqlc decodes faster.** Its generated scan code beats keel's on plain lists, by 12 to 16% on
-  the same host and 3 to 13% through the proxy, and it is the fastest single-row read on the same
-  host. keel is second on every list, ahead of raw pgx's generic row mapping and every ORM.
-- **The ORMs pay in allocations.** GORM, ent, Bob and Jet allocate two to four times what keel
-  does on lists and relation loads, which shows on the same host: Jet's list of 1,000 takes 2.5
-  times keel's time and GORM's 2.1 times.
-- **Bun builds statements fastest**, about 15% ahead of keel; GORM takes 1.8 times keel's time,
-  Bob 2.5 to 2.9 times and Jet 4.6 to 5.2 times.
-- **Bulk inserts:** keel's `CreateMany` and `Copy` and sqlc's `COPY` lead; multi-row `INSERT`s,
-  with one parameter per value, trail them by 20 to 70%.
+  insert and a save land within 12% of each other through the proxy, and a get by key is a
+  tie on the same host, although keel's tenant scope and statement building cost it 61
+  allocations against sqlc's and raw pgx's 40.
+- **The ORMs pay in allocations.** Bob, Bun, ent, GORM and Jet allocate 2.4 to 5.2 times what
+  keel does on a list of 1,000 and 3.9 to 15 times on a relation load, which shows on the same
+  host: GORM's list of 1,000 takes 2.4 times keel's time and Jet's 3.1 times.
+- **Bun builds statements fastest**, about 13% ahead of keel; GORM takes 1.9 to 2.0 times keel's
+  time, Bob 2.9 to 3.1 times and Jet 5.1 to 5.4 times.
+- **Bulk inserts:** keel's `CreateMany` and `Copy` and sqlc's `COPY` lead, within about 6%
+  of each other; multi-row `INSERT`s, with one parameter per value, trail them by 9 to 67%.
 
 ### Rerunning
 

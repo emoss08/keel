@@ -567,27 +567,28 @@ on 2026-10-26; fastest in bold):
 
 | Operation | keel | sqlc | sqlx | pgx | Bob | ent | GORM | Jet | Bun |
 |---|---|---|---|---|---|---|---|---|---|
-| get one row by key | 1.87 ms | 1.89 ms | 1.87 ms | **1.82 ms** | 1.91 ms | 1.99 ms | 1.91 ms | 2.02 ms | 2.04 ms |
-| list 100 rows | 2.61 ms | **2.53 ms** | 2.75 ms | 2.92 ms | 2.72 ms | 2.78 ms | 3.68 ms | 3.39 ms | 3.19 ms |
-| list 1,000 rows | 6.74 ms | **5.88 ms** | 7.48 ms | 7.15 ms | 8.06 ms | 8.65 ms | 12.32 ms | 13.50 ms | 8.39 ms |
-| 50 rows with a to-one and a to-many relation | **3.42 ms** | 6.98 ms | 7.03 ms | – | 9.57 ms | 7.49 ms | 9.37 ms | 6.99 ms | 7.42 ms |
-| read in a transaction with a `set_config` | **1.96 ms** | 7.08 ms | 7.50 ms | – | 7.21 ms | 7.29 ms | 7.48 ms | 7.58 ms | 7.44 ms |
-| keyset page of 50 with its total | **2.84 ms** | 4.34 ms | 4.54 ms | 4.52 ms | 4.85 ms | 4.82 ms | 5.05 ms | 5.12 ms | 4.70 ms |
-| insert one row | 2.48 ms | **2.33 ms** | 2.53 ms | – | 2.49 ms | 2.38 ms | 2.35 ms | 2.50 ms | 2.51 ms |
-| insert 1,000 rows | 18.33 ms (16.96 ms with `Copy`) | **16.99 ms** | 20.09 ms | – | 22.92 ms | 23.69 ms | 19.84 ms | 27.11 ms | 25.85 ms |
-| save with optimistic locking | 2.25 ms | 2.20 ms | 2.23 ms | – | 2.31 ms | 2.20 ms | **2.19 ms** | 2.27 ms | 2.35 ms |
-| build a statement, no database | 4.5 µs | – | – | – | 13.1 µs | – | 8.4 µs | 23.5 µs | **3.9 µs** |
+| get one row by key | 1.88 ms | 1.87 ms | 1.88 ms | **1.80 ms** | 1.95 ms | 1.93 ms | 1.89 ms | 1.99 ms | 2.00 ms |
+| list 100 rows | **2.48 ms** | 2.76 ms | 2.79 ms | 2.89 ms | 2.71 ms | 2.76 ms | 3.45 ms | 3.59 ms | 2.93 ms |
+| list 1,000 rows | **5.62 ms** | 6.42 ms | 7.54 ms | 5.96 ms | 7.10 ms | 7.74 ms | 10.77 ms | 12.96 ms | 8.30 ms |
+| 50 rows with a to-one and a to-many relation | **3.02 ms** | 6.47 ms | 6.83 ms | – | 8.40 ms | 6.96 ms | 8.71 ms | 7.25 ms | 6.95 ms |
+| read in a transaction with a `set_config` | **1.98 ms** | 6.99 ms | 7.00 ms | – | 7.31 ms | 7.22 ms | 7.07 ms | 7.41 ms | 7.34 ms |
+| keyset page of 50 with its total | **2.71 ms** | 4.47 ms | 4.66 ms | 4.69 ms | 4.42 ms | 4.72 ms | 4.84 ms | 5.05 ms | 4.86 ms |
+| insert one row | 2.24 ms | **2.22 ms** | 2.36 ms | – | 2.36 ms | 2.39 ms | 2.28 ms | 2.41 ms | 2.37 ms |
+| insert 1,000 rows | **15.97 ms** (16.75 ms with `Copy`) | 16.97 ms | 20.02 ms | – | 22.70 ms | 22.69 ms | 19.01 ms | 26.40 ms | 24.72 ms |
+| save with optimistic locking | **2.19 ms** | 2.24 ms | 2.23 ms | – | 2.43 ms | 2.22 ms | 2.32 ms | 2.37 ms | 2.46 ms |
+| build a statement, no database | 4.1 µs | – | – | – | 12.6 µs | – | 8.2 µs | 22.2 µs | **3.6 µs** |
 
 - **keel wins where it saves round trips.** A relation tree loads in the read's own round trip (the
   others take one per level), a scoped read pipelines `BEGIN`, the `set_config`, the read and
   `COMMIT` into one round trip (the others take four), and a page shares its round trip with its
-  count. That makes keel 2.0 to 2.8 times as fast as every other library on relation loads, 3.6 to
-  3.9 times on scoped reads and 1.5 to 1.8 times on pages, and the gap grows with the distance to
+  count. That makes keel 2.1 to 2.9 times as fast as every other library on relation loads, 3.5 to
+  3.7 times on scoped reads and 1.6 to 1.9 times on pages, and the gap grows with the distance to
   the database.
+- **keel decodes rows fastest.** Its lists lead here and with the database on the same host,
+  where the next fastest list of 100 takes 1.3 times keel's time. It allocates 14 times a row on
+  a list of 1,000, against 19 for raw pgx, 22 for sqlc and 34 to 73 for the ORMs.
 - **Where an operation is one round trip, everyone is close.** Gets, inserts and saves land within
-  about 10% of each other.
-- **sqlc decodes faster.** Its generated scan code beats keel on plain lists, by 3 to 13% here and
-  12 to 16% with the database on the same host. Bun builds statements about 15% faster than keel.
+  12% of each other. Bun builds statements about 13% faster than keel.
 
 [docs/benchmarks.md](docs/benchmarks.md) has the same table with the database on the same host,
 how each library is written, allocations, the raw output and how to rerun everything.
