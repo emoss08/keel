@@ -77,14 +77,15 @@ type bunShipment struct {
 }
 
 type env struct {
-	keel  *keel.DB
-	scope *keel.DB
-	bun   *bun.DB
-	pgx   *pgxpool.Pool
-	ctx   context.Context
-	org   ids.ID
-	bu    ids.ID
-	ship  []*fleet.Shipment
+	keel   *keel.DB
+	scope  *keel.DB
+	cached *keel.DB
+	bun    *bun.DB
+	pgx    *pgxpool.Pool
+	ctx    context.Context
+	org    ids.ID
+	bu     ids.ID
+	ship   []*fleet.Shipment
 }
 
 var (
@@ -170,6 +171,12 @@ func build() (*env, error) {
 		return []keel.Statement{{SQL: "SELECT set_config('app.org', $1, true)", Args: []any{"org_bench"}}}, nil
 	}
 	if e.scope, err = keel.Open(ctx, sc); err != nil {
+		return nil, err
+	}
+	cc := keelConfig(dsn)
+	cc.DataVersions = keel.DataVersionsConfig{Enabled: true}
+	cc.Cache = &keel.CacheConfig{Local: keel.LRU(64 << 20)}
+	if e.cached, err = keel.Open(ctx, cc); err != nil {
 		return nil, err
 	}
 	sqldb := sql.OpenDB(pgdriver.NewConnector(pgdriver.WithDSN(dsn)))
@@ -347,6 +354,16 @@ func BenchmarkLoadRelations(b *testing.B) {
 			}
 		}
 	})
+	b.Run("keel-snapshot", func(b *testing.B) {
+		b.ReportAllocs()
+		s := fleetdb.Shipments
+		for b.Loop() {
+			rows, err := s.Load(s.Customer(), s.Moves()).Order(s.ProNumber.Asc()).Limit(50).List(e.ctx, e.scope)
+			if err != nil || len(rows) != 50 || len(rows[0].Moves) != 3 {
+				b.Fatal(err)
+			}
+		}
+	})
 	b.Run("bun", func(b *testing.B) {
 		b.ReportAllocs()
 		for b.Loop() {
@@ -387,6 +404,28 @@ func BenchmarkScopedRead(b *testing.B) {
 					Where("sp.id = ?", string(id)).Scan(ctx)
 			})
 			if err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
+
+func BenchmarkCachedRead(b *testing.B) {
+	e := setup(b)
+	id := e.ship[11].ID
+	s := fleetdb.Shipments
+	b.Run("keel", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			if _, err := s.Get(e.ctx, e.cached, id); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("keel-cached", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			if _, err := s.Cache(keel.TTL(time.Minute)).Where(s.ID.Eq(id)).One(e.ctx, e.cached); err != nil {
 				b.Fatal(err)
 			}
 		}
