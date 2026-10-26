@@ -561,3 +561,45 @@ func (e TimeArrayExpr) IsNull() Pred { return suffix(e.e, " IS NULL") }
 
 // IsNotNull is e IS NOT NULL.
 func (e TimeArrayExpr) IsNotNull() Pred { return suffix(e.e, " IS NOT NULL") }
+
+// NullIf is nullif(e, o): NULL where e equals o, as NullIf(keel.TextArray(nil)) turns an empty
+// array into NULL.
+func (e StringArrayExpr) NullIf(o StringArrayValue) StringArrayExpr {
+	return StringArrayExpr{e: callOf("nullif", e.e, o)}
+}
+
+// NullIf is nullif(e, o): NULL where e equals o, as NullIf(keel.Int64Array(nil)) turns an empty
+// array into NULL.
+func (e Int64ArrayExpr) NullIf(o Int64ArrayValue) Int64ArrayExpr {
+	return Int64ArrayExpr{e: callOf("nullif", e.e, o)}
+}
+
+// NullIf is nullif(e, o): NULL where e equals o, as NullIf(keel.Int32Array(nil)) turns an empty
+// array into NULL.
+func (e Int32ArrayExpr) NullIf(o Int32ArrayValue) Int32ArrayExpr {
+	return Int32ArrayExpr{e: callOf("nullif", e.e, o)}
+}
+
+// NullIf is nullif(e, o): NULL where e equals o, as NullIf(keel.Float64Array(nil)) turns an empty
+// array into NULL.
+func (e Float64ArrayExpr) NullIf(o Float64ArrayValue) Float64ArrayExpr {
+	return Float64ArrayExpr{e: callOf("nullif", e.e, o)}
+}
+
+// NullIf is nullif(e, o): NULL where e equals o, as NullIf(keel.NumericArray(nil)) turns an empty
+// array into NULL.
+func (e NumericArrayExpr) NullIf(o NumericArrayValue) NumericArrayExpr {
+	return NumericArrayExpr{e: callOf("nullif", e.e, o)}
+}
+
+// NullIf is nullif(e, o): NULL where e equals o, as NullIf(keel.BoolArray(nil)) turns an empty
+// array into NULL.
+func (e BoolArrayExpr) NullIf(o BoolArrayValue) BoolArrayExpr {
+	return BoolArrayExpr{e: callOf("nullif", e.e, o)}
+}
+
+// NullIf is nullif(e, o): NULL where e equals o, as NullIf(keel.TimeArray(nil)) turns an empty
+// array into NULL.
+func (e TimeArrayExpr) NullIf(o TimeArrayValue) TimeArrayExpr {
+	return TimeArrayExpr{e: callOf("nullif", e.e, o)}
+}

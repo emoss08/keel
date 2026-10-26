@@ -209,6 +209,13 @@ func TestTypedOperatorPredicatesRender(t *testing.T) {
 			`(lower(s."pro_number") ILIKE 'p%')`},
 		{"coalesce of several", s.Pick(s.ID).Where(s.ProNumber.Coalesce(s.ID, "none").Eq("x")),
 			`coalesce(s."pro_number", s."id", $3) = $4`},
+		{"split part with constants", s.Pick(s.ID).Where(s.ProNumber.SplitPartExpr(keel.ConstText("-"), keel.ConstInt32(2)).Lower().Eq("x")),
+			`lower(split_part(s."pro_number", '-', 2)) = $3`},
+		{"array case", s.Pick(s.ID).Where(keel.CaseStringArray().When(s.Hazmat.IsTrue(), keel.StringArrayOf(s.Labels)).
+			Else(keel.TextArray(nil)).Len().Gt(0)),
+			`cardinality(CASE WHEN s."hazmat" IS TRUE THEN s."labels" ELSE $3::text[] END) > $4`},
+		{"array nullif", s.Pick(s.ID).Where(keel.StringArrayOf(s.Labels).NullIf(keel.TextArray(nil)).IsNull()),
+			`nullif(s."labels", $3::text[]) IS NULL`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

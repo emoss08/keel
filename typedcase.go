@@ -213,3 +213,136 @@ func (b IntervalCase) Else(v IntervalValue) IntervalExpr {
 
 // End ends the CASE without ELSE.
 func (b IntervalCase) End() IntervalExpr { return IntervalExpr{e: b.c.end(nil)} }
+
+// StringArrayCase builds a CASE whose result is text[]. Start it with CaseStringArray.
+type StringArrayCase struct{ c caseWhens }
+
+// CaseStringArray starts a CASE whose result is text[].
+func CaseStringArray() StringArrayCase { return StringArrayCase{} }
+
+// When adds WHEN cond THEN v.
+func (b StringArrayCase) When(cond Pred, v StringArrayValue) StringArrayCase {
+	return StringArrayCase{c: b.c.add(cond, v)}
+}
+
+// Else ends the CASE with ELSE v.
+func (b StringArrayCase) Else(v StringArrayValue) StringArrayExpr {
+	return StringArrayExpr{e: b.c.end(elseOf(v))}
+}
+
+// End ends the CASE without ELSE.
+func (b StringArrayCase) End() StringArrayExpr { return StringArrayExpr{e: b.c.end(nil)} }
+
+// Int64ArrayCase builds a CASE whose result is bigint[]. Start it with CaseInt64Array.
+type Int64ArrayCase struct{ c caseWhens }
+
+// CaseInt64Array starts a CASE whose result is bigint[].
+func CaseInt64Array() Int64ArrayCase { return Int64ArrayCase{} }
+
+// When adds WHEN cond THEN v.
+func (b Int64ArrayCase) When(cond Pred, v Int64ArrayValue) Int64ArrayCase {
+	return Int64ArrayCase{c: b.c.add(cond, v)}
+}
+
+// Else ends the CASE with ELSE v.
+func (b Int64ArrayCase) Else(v Int64ArrayValue) Int64ArrayExpr {
+	return Int64ArrayExpr{e: b.c.end(elseOf(v))}
+}
+
+// End ends the CASE without ELSE.
+func (b Int64ArrayCase) End() Int64ArrayExpr { return Int64ArrayExpr{e: b.c.end(nil)} }
+
+// Int32ArrayCase builds a CASE whose result is integer[]. Start it with CaseInt32Array.
+type Int32ArrayCase struct{ c caseWhens }
+
+// CaseInt32Array starts a CASE whose result is integer[].
+func CaseInt32Array() Int32ArrayCase { return Int32ArrayCase{} }
+
+// When adds WHEN cond THEN v.
+func (b Int32ArrayCase) When(cond Pred, v Int32ArrayValue) Int32ArrayCase {
+	return Int32ArrayCase{c: b.c.add(cond, v)}
+}
+
+// Else ends the CASE with ELSE v.
+func (b Int32ArrayCase) Else(v Int32ArrayValue) Int32ArrayExpr {
+	return Int32ArrayExpr{e: b.c.end(elseOf(v))}
+}
+
+// End ends the CASE without ELSE.
+func (b Int32ArrayCase) End() Int32ArrayExpr { return Int32ArrayExpr{e: b.c.end(nil)} }
+
+// Float64ArrayCase builds a CASE whose result is double precision[]. Start it with CaseFloat64Array.
+type Float64ArrayCase struct{ c caseWhens }
+
+// CaseFloat64Array starts a CASE whose result is double precision[].
+func CaseFloat64Array() Float64ArrayCase { return Float64ArrayCase{} }
+
+// When adds WHEN cond THEN v.
+func (b Float64ArrayCase) When(cond Pred, v Float64ArrayValue) Float64ArrayCase {
+	return Float64ArrayCase{c: b.c.add(cond, v)}
+}
+
+// Else ends the CASE with ELSE v.
+func (b Float64ArrayCase) Else(v Float64ArrayValue) Float64ArrayExpr {
+	return Float64ArrayExpr{e: b.c.end(elseOf(v))}
+}
+
+// End ends the CASE without ELSE.
+func (b Float64ArrayCase) End() Float64ArrayExpr { return Float64ArrayExpr{e: b.c.end(nil)} }
+
+// NumericArrayCase builds a CASE whose result is numeric[]. Start it with CaseNumericArray.
+type NumericArrayCase struct{ c caseWhens }
+
+// CaseNumericArray starts a CASE whose result is numeric[].
+func CaseNumericArray() NumericArrayCase { return NumericArrayCase{} }
+
+// When adds WHEN cond THEN v.
+func (b NumericArrayCase) When(cond Pred, v NumericArrayValue) NumericArrayCase {
+	return NumericArrayCase{c: b.c.add(cond, v)}
+}
+
+// Else ends the CASE with ELSE v.
+func (b NumericArrayCase) Else(v NumericArrayValue) NumericArrayExpr {
+	return NumericArrayExpr{e: b.c.end(elseOf(v))}
+}
+
+// End ends the CASE without ELSE.
+func (b NumericArrayCase) End() NumericArrayExpr { return NumericArrayExpr{e: b.c.end(nil)} }
+
+// BoolArrayCase builds a CASE whose result is boolean[]. Start it with CaseBoolArray.
+type BoolArrayCase struct{ c caseWhens }
+
+// CaseBoolArray starts a CASE whose result is boolean[].
+func CaseBoolArray() BoolArrayCase { return BoolArrayCase{} }
+
+// When adds WHEN cond THEN v.
+func (b BoolArrayCase) When(cond Pred, v BoolArrayValue) BoolArrayCase {
+	return BoolArrayCase{c: b.c.add(cond, v)}
+}
+
+// Else ends the CASE with ELSE v.
+func (b BoolArrayCase) Else(v BoolArrayValue) BoolArrayExpr {
+	return BoolArrayExpr{e: b.c.end(elseOf(v))}
+}
+
+// End ends the CASE without ELSE.
+func (b BoolArrayCase) End() BoolArrayExpr { return BoolArrayExpr{e: b.c.end(nil)} }
+
+// TimeArrayCase builds a CASE whose result is timestamptz[]. Start it with CaseTimeArray.
+type TimeArrayCase struct{ c caseWhens }
+
+// CaseTimeArray starts a CASE whose result is timestamptz[].
+func CaseTimeArray() TimeArrayCase { return TimeArrayCase{} }
+
+// When adds WHEN cond THEN v.
+func (b TimeArrayCase) When(cond Pred, v TimeArrayValue) TimeArrayCase {
+	return TimeArrayCase{c: b.c.add(cond, v)}
+}
+
+// Else ends the CASE with ELSE v.
+func (b TimeArrayCase) Else(v TimeArrayValue) TimeArrayExpr {
+	return TimeArrayExpr{e: b.c.end(elseOf(v))}
+}
+
+// End ends the CASE without ELSE.
+func (b TimeArrayCase) End() TimeArrayExpr { return TimeArrayExpr{e: b.c.end(nil)} }

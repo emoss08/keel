@@ -1365,6 +1365,9 @@ dynamic one adds):
 |---|---|
 | `keel.DynOf(a).Like(pattern)`, `.ILike` with an expression pattern | `a.LikeExpr(pattern)`, `a.ILikeExpr(pattern)` (`%` and `_` in the computed pattern keep their meaning) |
 | nested `coalesce(a, coalesce(b, c))` | `a.Coalesce(b, c)`: `coalesce(a, b, c)` |
+| `keel.DynCase()` with an array result | `keel.CaseStringArray()`, `CaseInt64Array()`, … (one per array kind) |
+| `keel.DynOf(arr).NullIf([]T{})` | `arr.NullIf(keel.TextArray(nil))` on any array expression |
+| `keel.DynFunc("split_part", c, keel.DynConst("@"), keel.DynConst(2))` | `c.SplitPartExpr(keel.ConstText("@"), keel.ConstInt32(2))`, constants written into the SQL to match an expression index |
 | `keel.DynOf(a).Add(b)`, `.Sub`, `.Mul`, `.Div`, `.Mod` | `a.Add(b)`, … with `b` a column, an expression or `keel.Int64(n)` (`keel.DynOf(a).Div(86400)` is `a.Div(keel.Int64(86400))`) |
 | `keel.DynLit(asOf).Sub(inv.DueDate)` | `keel.Int64(asOf).Sub(inv.DueDate)` |
 | `keel.DynOf(a).Neg()` | `a.Neg()` |

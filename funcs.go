@@ -194,6 +194,13 @@ func (e StringExpr) SplitPart(delim string, n int) StringExpr {
 	return StringExpr{e: callOf("split_part", e.e, bindOf(delim), bindOf(int64(n)))}
 }
 
+// SplitPartExpr is split_part(e, delim, n) with the delimiter and field number as expressions:
+// keel.ConstText and keel.ConstInt32 write them into the statement, so it matches an expression
+// index such as lower(split_part(to_address, '@', 2)).
+func (e StringExpr) SplitPartExpr(delim StringValue, n Int32Value) StringExpr {
+	return StringExpr{e: callOf("split_part", e.e, delim, n)}
+}
+
 // MD5 is md5(e), the hex digest.
 func (e StringExpr) MD5() StringExpr { return StringExpr{e: callOf("md5", e.e)} }
 
@@ -273,6 +280,11 @@ func (c StringCol) Replace(from, to string) StringExpr { return c.asText().Repla
 
 // SplitPart is split_part(col, delim, n).
 func (c StringCol) SplitPart(delim string, n int) StringExpr { return c.asText().SplitPart(delim, n) }
+
+// SplitPartExpr is split_part(col, delim, n) with the delimiter and field number as expressions.
+func (c StringCol) SplitPartExpr(delim StringValue, n Int32Value) StringExpr {
+	return c.asText().SplitPartExpr(delim, n)
+}
 
 // MD5 is md5(col).
 func (c StringCol) MD5() StringExpr { return c.asText().MD5() }
