@@ -9,6 +9,7 @@ import (
 	"entgo.io/ent/schema"
 	"entgo.io/ent/schema/edge"
 	"entgo.io/ent/schema/field"
+	"github.com/emoss08/keel/bench/benchjson"
 	"github.com/lib/pq"
 )
 
@@ -58,7 +59,7 @@ func (Shipment) Fields() []ent.Field {
 		field.String("total").SchemaType(map[string]string{dialect.Postgres: "numeric(19,4)"}),
 		field.Bool("hazmat"),
 		field.Other("labels", pq.StringArray{}).SchemaType(map[string]string{dialect.Postgres: "text[]"}),
-		field.JSON("attributes", map[string]any{}),
+		field.Other("attributes", benchjson.Map{}).SchemaType(map[string]string{dialect.Postgres: "jsonb"}),
 		field.Int16("stage_rank").Immutable(),
 		field.Int64("canceled_at").Optional().Nillable(),
 		field.Int64("version"),

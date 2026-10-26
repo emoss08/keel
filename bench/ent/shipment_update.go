@@ -10,6 +10,7 @@ import (
 	"entgo.io/ent/dialect/sql"
 	"entgo.io/ent/dialect/sql/sqlgraph"
 	"entgo.io/ent/schema/field"
+	"github.com/emoss08/keel/bench/benchjson"
 	"github.com/emoss08/keel/bench/ent/customer"
 	"github.com/emoss08/keel/bench/ent/move"
 	"github.com/emoss08/keel/bench/ent/predicate"
@@ -203,7 +204,7 @@ func (_u *ShipmentUpdate) SetLabels(v pq.StringArray) *ShipmentUpdate {
 }
 
 // SetAttributes sets the "attributes" field.
-func (_u *ShipmentUpdate) SetAttributes(v map[string]interface{}) *ShipmentUpdate {
+func (_u *ShipmentUpdate) SetAttributes(v benchjson.Map) *ShipmentUpdate {
 	_u.mutation.SetAttributes(v)
 	return _u
 }
@@ -440,7 +441,7 @@ func (_u *ShipmentUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 		_spec.SetField(shipment.FieldLabels, field.TypeOther, value)
 	}
 	if value, ok := _u.mutation.Attributes(); ok {
-		_spec.SetField(shipment.FieldAttributes, field.TypeJSON, value)
+		_spec.SetField(shipment.FieldAttributes, field.TypeOther, value)
 	}
 	if value, ok := _u.mutation.CanceledAt(); ok {
 		_spec.SetField(shipment.FieldCanceledAt, field.TypeInt64, value)
@@ -736,7 +737,7 @@ func (_u *ShipmentUpdateOne) SetLabels(v pq.StringArray) *ShipmentUpdateOne {
 }
 
 // SetAttributes sets the "attributes" field.
-func (_u *ShipmentUpdateOne) SetAttributes(v map[string]interface{}) *ShipmentUpdateOne {
+func (_u *ShipmentUpdateOne) SetAttributes(v benchjson.Map) *ShipmentUpdateOne {
 	_u.mutation.SetAttributes(v)
 	return _u
 }
@@ -1003,7 +1004,7 @@ func (_u *ShipmentUpdateOne) sqlSave(ctx context.Context) (_node *Shipment, err 
 		_spec.SetField(shipment.FieldLabels, field.TypeOther, value)
 	}
 	if value, ok := _u.mutation.Attributes(); ok {
-		_spec.SetField(shipment.FieldAttributes, field.TypeJSON, value)
+		_spec.SetField(shipment.FieldAttributes, field.TypeOther, value)
 	}
 	if value, ok := _u.mutation.CanceledAt(); ok {
 		_spec.SetField(shipment.FieldCanceledAt, field.TypeInt64, value)

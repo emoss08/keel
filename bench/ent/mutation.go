@@ -10,6 +10,7 @@ import (
 
 	"entgo.io/ent"
 	"entgo.io/ent/dialect/sql"
+	"github.com/emoss08/keel/bench/benchjson"
 	"github.com/emoss08/keel/bench/ent/customer"
 	"github.com/emoss08/keel/bench/ent/move"
 	"github.com/emoss08/keel/bench/ent/predicate"
@@ -1755,7 +1756,7 @@ type ShipmentMutation struct {
 	total            *string
 	hazmat           *bool
 	labels           *pq.StringArray
-	attributes       *map[string]interface{}
+	attributes       *benchjson.Map
 	stage_rank       *int16
 	addstage_rank    *int16
 	canceled_at      *int64
@@ -2345,12 +2346,12 @@ func (m *ShipmentMutation) ResetLabels() {
 }
 
 // SetAttributes sets the "attributes" field.
-func (m *ShipmentMutation) SetAttributes(value map[string]interface{}) {
-	m.attributes = &value
+func (m *ShipmentMutation) SetAttributes(b benchjson.Map) {
+	m.attributes = &b
 }
 
 // Attributes returns the value of the "attributes" field in the mutation.
-func (m *ShipmentMutation) Attributes() (r map[string]interface{}, exists bool) {
+func (m *ShipmentMutation) Attributes() (r benchjson.Map, exists bool) {
 	v := m.attributes
 	if v == nil {
 		return
@@ -2361,7 +2362,7 @@ func (m *ShipmentMutation) Attributes() (r map[string]interface{}, exists bool) 
 // OldAttributes returns the old "attributes" field's value of the Shipment entity.
 // If the Shipment object wasn't provided to the builder, the object is fetched from the database.
 // An error is returned if the mutation operation is not UpdateOne, or the database query fails.
-func (m *ShipmentMutation) OldAttributes(ctx context.Context) (v map[string]interface{}, err error) {
+func (m *ShipmentMutation) OldAttributes(ctx context.Context) (v benchjson.Map, err error) {
 	if !m.op.Is(OpUpdateOne) {
 		return v, errors.New("OldAttributes is only allowed on UpdateOne operations")
 	}
@@ -3013,7 +3014,7 @@ func (m *ShipmentMutation) SetField(name string, value ent.Value) error {
 		m.SetLabels(v)
 		return nil
 	case shipment.FieldAttributes:
-		v, ok := value.(map[string]interface{})
+		v, ok := value.(benchjson.Map)
 		if !ok {
 			return fmt.Errorf("unexpected type %T for field %s", value, name)
 		}

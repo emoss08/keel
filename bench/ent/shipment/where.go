@@ -5,6 +5,7 @@ package shipment
 import (
 	"entgo.io/ent/dialect/sql"
 	"entgo.io/ent/dialect/sql/sqlgraph"
+	"github.com/emoss08/keel/bench/benchjson"
 	"github.com/emoss08/keel/bench/ent/predicate"
 	"github.com/lib/pq"
 )
@@ -117,6 +118,11 @@ func Hazmat(v bool) predicate.Shipment {
 // Labels applies equality check predicate on the "labels" field. It's identical to LabelsEQ.
 func Labels(v pq.StringArray) predicate.Shipment {
 	return predicate.Shipment(sql.FieldEQ(FieldLabels, v))
+}
+
+// Attributes applies equality check predicate on the "attributes" field. It's identical to AttributesEQ.
+func Attributes(v benchjson.Map) predicate.Shipment {
+	return predicate.Shipment(sql.FieldEQ(FieldAttributes, v))
 }
 
 // StageRank applies equality check predicate on the "stage_rank" field. It's identical to StageRankEQ.
@@ -747,6 +753,46 @@ func LabelsLT(v pq.StringArray) predicate.Shipment {
 // LabelsLTE applies the LTE predicate on the "labels" field.
 func LabelsLTE(v pq.StringArray) predicate.Shipment {
 	return predicate.Shipment(sql.FieldLTE(FieldLabels, v))
+}
+
+// AttributesEQ applies the EQ predicate on the "attributes" field.
+func AttributesEQ(v benchjson.Map) predicate.Shipment {
+	return predicate.Shipment(sql.FieldEQ(FieldAttributes, v))
+}
+
+// AttributesNEQ applies the NEQ predicate on the "attributes" field.
+func AttributesNEQ(v benchjson.Map) predicate.Shipment {
+	return predicate.Shipment(sql.FieldNEQ(FieldAttributes, v))
+}
+
+// AttributesIn applies the In predicate on the "attributes" field.
+func AttributesIn(vs ...benchjson.Map) predicate.Shipment {
+	return predicate.Shipment(sql.FieldIn(FieldAttributes, vs...))
+}
+
+// AttributesNotIn applies the NotIn predicate on the "attributes" field.
+func AttributesNotIn(vs ...benchjson.Map) predicate.Shipment {
+	return predicate.Shipment(sql.FieldNotIn(FieldAttributes, vs...))
+}
+
+// AttributesGT applies the GT predicate on the "attributes" field.
+func AttributesGT(v benchjson.Map) predicate.Shipment {
+	return predicate.Shipment(sql.FieldGT(FieldAttributes, v))
+}
+
+// AttributesGTE applies the GTE predicate on the "attributes" field.
+func AttributesGTE(v benchjson.Map) predicate.Shipment {
+	return predicate.Shipment(sql.FieldGTE(FieldAttributes, v))
+}
+
+// AttributesLT applies the LT predicate on the "attributes" field.
+func AttributesLT(v benchjson.Map) predicate.Shipment {
+	return predicate.Shipment(sql.FieldLT(FieldAttributes, v))
+}
+
+// AttributesLTE applies the LTE predicate on the "attributes" field.
+func AttributesLTE(v benchjson.Map) predicate.Shipment {
+	return predicate.Shipment(sql.FieldLTE(FieldAttributes, v))
 }
 
 // StageRankEQ applies the EQ predicate on the "stage_rank" field.

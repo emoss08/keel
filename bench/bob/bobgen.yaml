@@ -23,6 +23,16 @@ plugins:
   models:
     pkgname: models
     destination: models
+types:
+  benchjson.Map:
+    no_randomization_test: true
+    imports:
+      - '"github.com/emoss08/keel/bench/benchjson"'
+replacements:
+  - tables: [shipments]
+    match:
+      name: attributes
+    replace: benchjson.Map
 constraints:
   moves:
     foreign:

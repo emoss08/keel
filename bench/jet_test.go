@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"time"
 
+	"github.com/emoss08/keel/bench/benchjson"
 	"github.com/emoss08/keel/bench/jet/enum"
 	"github.com/emoss08/keel/bench/jet/model"
 	. "github.com/emoss08/keel/bench/jet/table"
@@ -30,7 +31,10 @@ func openJet(e *env) (*contender, error) {
 		name: "jet",
 		get: func(ctx context.Context, id string) error {
 			var s model.Shipments
-			return getStmt(id).QueryContext(ctx, db, &s)
+			if err := getStmt(id).QueryContext(ctx, db, &s); err != nil {
+				return err
+			}
+			return jetAttributes(&s)
 		},
 		list: func(ctx context.Context, n int) error {
 			var rows []model.Shipments
@@ -39,6 +43,9 @@ func openJet(e *env) (*contender, error) {
 				ORDER_BY(Shipments.ProNumber.ASC()).LIMIT(int64(n)).
 				QueryContext(ctx, db, &rows)
 			if err != nil {
+				return err
+			}
+			if err := jetAttributes(shipmentPtrs(rows)...); err != nil {
 				return err
 			}
 			return checkLen("list", len(rows), n)
@@ -62,6 +69,11 @@ func openJet(e *env) (*contender, error) {
 			if err != nil {
 				return err
 			}
+			for i := range rows {
+				if err := jetAttributes(&rows[i].Shipments); err != nil {
+					return err
+				}
+			}
 			return checkRelations(len(rows), len(rows[0].Moves), rows[0].Customer != nil)
 		},
 		scoped: func(ctx context.Context, id string) error {
@@ -75,6 +87,10 @@ func openJet(e *env) (*contender, error) {
 			}
 			var s model.Shipments
 			if err := getStmt(id).QueryContext(ctx, tx, &s); err != nil {
+				_ = tx.Rollback()
+				return err
+			}
+			if err := jetAttributes(&s); err != nil {
 				_ = tx.Rollback()
 				return err
 			}
@@ -92,6 +108,9 @@ func openJet(e *env) (*contender, error) {
 				ORDER_BY(Shipments.CreatedAt.DESC(), Shipments.ID.DESC()).LIMIT(50).
 				QueryContext(ctx, db, &rows)
 			if err != nil {
+				return err
+			}
+			if err := jetAttributes(shipmentPtrs(rows)...); err != nil {
 				return err
 			}
 			return checkLen("page", len(rows), 50)
@@ -141,4 +160,25 @@ func openJet(e *env) (*contender, error) {
 		},
 		close: func() { _ = db.Close() },
 	}, nil
+}
+
+// jetAttributes decodes the jsonb column of rows, which Jet's generated model holds as text, the
+// way the other libraries decode it as they scan.
+func jetAttributes(rows ...*model.Shipments) error {
+	for _, r := range rows {
+		var m benchjson.Map
+		if err := m.Scan(r.Attributes); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// shipmentPtrs returns pointers to the elements of rows.
+func shipmentPtrs(rows []model.Shipments) []*model.Shipments {
+	out := make([]*model.Shipments, len(rows))
+	for i := range rows {
+		out[i] = &rows[i]
+	}
+	return out
 }

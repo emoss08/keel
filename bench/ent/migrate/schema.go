@@ -65,7 +65,7 @@ var (
 		{Name: "total", Type: field.TypeString, SchemaType: map[string]string{"postgres": "numeric(19,4)"}},
 		{Name: "hazmat", Type: field.TypeBool},
 		{Name: "labels", Type: field.TypeOther, SchemaType: map[string]string{"postgres": "text[]"}},
-		{Name: "attributes", Type: field.TypeJSON},
+		{Name: "attributes", Type: field.TypeOther, SchemaType: map[string]string{"postgres": "jsonb"}},
 		{Name: "stage_rank", Type: field.TypeInt16},
 		{Name: "canceled_at", Type: field.TypeInt64, Nullable: true},
 		{Name: "version", Type: field.TypeInt64},

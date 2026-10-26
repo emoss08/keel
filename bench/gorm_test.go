@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"time"
 
+	"github.com/emoss08/keel/bench/benchjson"
 	"github.com/lib/pq"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -51,7 +52,7 @@ type gormShipment struct {
 	Total          string
 	Hazmat         bool
 	Labels         pq.StringArray `gorm:"type:text[]"`
-	Attributes     map[string]any `gorm:"serializer:json"`
+	Attributes     benchjson.Map  `gorm:"type:jsonb"`
 	StageRank      int16          `gorm:"->"`
 	CanceledAt     *int64
 	Version        int64

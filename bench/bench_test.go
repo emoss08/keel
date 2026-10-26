@@ -16,12 +16,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/emoss08/keel"
+	"github.com/emoss08/keel/bench/benchjson"
 	"github.com/emoss08/keel/internal/testmodels/fleet"
 	"github.com/emoss08/keel/internal/testmodels/fleet/fleetdb"
 	"github.com/emoss08/keel/internal/testmodels/ids"
 	"github.com/emoss08/keel/migrate"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/dialect/pgdialect"
@@ -55,24 +58,24 @@ type bunMove struct {
 
 type bunShipment struct {
 	bun.BaseModel  `bun:"table:shipments,alias:sp"`
-	ID             string         `bun:"id,pk"`
-	OrganizationID string         `bun:"organization_id,pk"`
-	BusinessUnitID string         `bun:"business_unit_id,pk"`
-	CustomerID     string         `bun:"customer_id"`
-	BillToID       *string        `bun:"bill_to_id"`
-	ProNumber      string         `bun:"pro_number"`
-	Status         string         `bun:"status"`
-	Priority       int16          `bun:"priority"`
-	Weight         *int64         `bun:"weight"`
-	Total          fleet.Money    `bun:"total"`
-	Hazmat         bool           `bun:"hazmat"`
-	Labels         []string       `bun:"labels,array"`
-	Attributes     map[string]any `bun:"attributes,type:jsonb"`
-	StageRank      int16          `bun:"stage_rank,scanonly"`
-	CanceledAt     *int64         `bun:"canceled_at"`
-	Version        int64          `bun:"version"`
-	CreatedAt      int64          `bun:"created_at"`
-	UpdatedAt      int64          `bun:"updated_at"`
+	ID             string        `bun:"id,pk"`
+	OrganizationID string        `bun:"organization_id,pk"`
+	BusinessUnitID string        `bun:"business_unit_id,pk"`
+	CustomerID     string        `bun:"customer_id"`
+	BillToID       *string       `bun:"bill_to_id"`
+	ProNumber      string        `bun:"pro_number"`
+	Status         string        `bun:"status"`
+	Priority       int16         `bun:"priority"`
+	Weight         *int64        `bun:"weight"`
+	Total          fleet.Money   `bun:"total"`
+	Hazmat         bool          `bun:"hazmat"`
+	Labels         []string      `bun:"labels,array"`
+	Attributes     benchjson.Map `bun:"attributes,type:jsonb"`
+	StageRank      int16         `bun:"stage_rank,scanonly"`
+	CanceledAt     *int64        `bun:"canceled_at"`
+	Version        int64         `bun:"version"`
+	CreatedAt      int64         `bun:"created_at"`
+	UpdatedAt      int64         `bun:"updated_at"`
 
 	Customer *bunCustomer `bun:"rel:belongs-to,join:customer_id=id,join:organization_id=organization_id,join:business_unit_id=business_unit_id"`
 	Moves    []*bunMove   `bun:"rel:has-many,join:id=shipment_id,join:organization_id=organization_id,join:business_unit_id=business_unit_id"`
@@ -126,6 +129,7 @@ func keelConfig(dsn string) keel.Config {
 			}
 			return []any{v[0], v[1]}, true
 		},
+		JSON: &keel.JSONCodec{Marshal: sonic.Marshal, Unmarshal: sonic.Unmarshal},
 		NewID: func(prefix string) string {
 			b := make([]byte, 10)
 			_, _ = rand.Read(b)
@@ -191,7 +195,16 @@ func build() (*env, error) {
 	sqldb := sql.OpenDB(pgdriver.NewConnector(pgdriver.WithDSN(dsn)))
 	sqldb.SetMaxOpenConns(8)
 	e.bun = bun.NewDB(sqldb, pgdialect.New())
-	if e.pgx, err = pgxpool.New(ctx, dsn); err != nil {
+	pc, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return nil, err
+	}
+	pc.AfterConnect = func(_ context.Context, conn *pgx.Conn) error {
+		conn.TypeMap().RegisterType(&pgtype.Type{Name: "jsonb", OID: pgtype.JSONBOID,
+			Codec: &pgtype.JSONBCodec{Marshal: sonic.Marshal, Unmarshal: sonic.Unmarshal}})
+		return nil
+	}
+	if e.pgx, err = pgxpool.NewWithConfig(ctx, pc); err != nil {
 		return nil, err
 	}
 

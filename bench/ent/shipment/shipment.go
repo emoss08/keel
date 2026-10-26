@@ -163,6 +163,11 @@ func ByLabels(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldLabels, opts...).ToFunc()
 }
 
+// ByAttributes orders the results by the attributes field.
+func ByAttributes(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldAttributes, opts...).ToFunc()
+}
+
 // ByStageRank orders the results by the stage_rank field.
 func ByStageRank(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldStageRank, opts...).ToFunc()

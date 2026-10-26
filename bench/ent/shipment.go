@@ -3,12 +3,12 @@
 package ent
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 
 	"entgo.io/ent"
 	"entgo.io/ent/dialect/sql"
+	"github.com/emoss08/keel/bench/benchjson"
 	"github.com/emoss08/keel/bench/ent/customer"
 	"github.com/emoss08/keel/bench/ent/shipment"
 	"github.com/lib/pq"
@@ -42,7 +42,7 @@ type Shipment struct {
 	// Labels holds the value of the "labels" field.
 	Labels pq.StringArray `json:"labels,omitempty"`
 	// Attributes holds the value of the "attributes" field.
-	Attributes map[string]interface{} `json:"attributes,omitempty"`
+	Attributes benchjson.Map `json:"attributes,omitempty"`
 	// StageRank holds the value of the "stage_rank" field.
 	StageRank int16 `json:"stage_rank,omitempty"`
 	// CanceledAt holds the value of the "canceled_at" field.
@@ -96,7 +96,7 @@ func (*Shipment) scanValues(columns []string) ([]any, error) {
 	for i := range columns {
 		switch columns[i] {
 		case shipment.FieldAttributes:
-			values[i] = new([]byte)
+			values[i] = new(benchjson.Map)
 		case shipment.FieldLabels:
 			values[i] = new(pq.StringArray)
 		case shipment.FieldHazmat:
@@ -195,12 +195,10 @@ func (_m *Shipment) assignValues(columns []string, values []any) error {
 				_m.Labels = *value
 			}
 		case shipment.FieldAttributes:
-			if value, ok := values[i].(*[]byte); !ok {
+			if value, ok := values[i].(*benchjson.Map); !ok {
 				return fmt.Errorf("unexpected type %T for field attributes", values[i])
-			} else if value != nil && len(*value) > 0 {
-				if err := json.Unmarshal(*value, &_m.Attributes); err != nil {
-					return fmt.Errorf("unmarshal field attributes: %w", err)
-				}
+			} else if value != nil {
+				_m.Attributes = *value
 			}
 		case shipment.FieldStageRank:
 			if value, ok := values[i].(*sql.NullInt64); !ok {

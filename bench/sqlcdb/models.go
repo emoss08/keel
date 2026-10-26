@@ -8,6 +8,7 @@ import (
 	"database/sql/driver"
 	"fmt"
 
+	"github.com/emoss08/keel/bench/benchjson"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
@@ -92,7 +93,7 @@ type Shipment struct {
 	Total          pgtype.Numeric
 	Hazmat         bool
 	Labels         []string
-	Attributes     []byte
+	Attributes     benchjson.Map
 	SearchVector   interface{}
 	StageRank      int16
 	CanceledAt     *int64

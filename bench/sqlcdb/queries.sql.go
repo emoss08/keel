@@ -8,6 +8,7 @@ package sqlcdb
 import (
 	"context"
 
+	"github.com/emoss08/keel/bench/benchjson"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
@@ -107,7 +108,7 @@ type GetShipmentRow struct {
 	Total          pgtype.Numeric
 	Hazmat         bool
 	Labels         []string
-	Attributes     []byte
+	Attributes     benchjson.Map
 	StageRank      int16
 	CanceledAt     *int64
 	Version        int64
@@ -201,7 +202,7 @@ type ListShipmentsRow struct {
 	Total          pgtype.Numeric
 	Hazmat         bool
 	Labels         []string
-	Attributes     []byte
+	Attributes     benchjson.Map
 	StageRank      int16
 	CanceledAt     *int64
 	Version        int64
@@ -277,7 +278,7 @@ type ListShipmentsByStatusRow struct {
 	Total          pgtype.Numeric
 	Hazmat         bool
 	Labels         []string
-	Attributes     []byte
+	Attributes     benchjson.Map
 	StageRank      int16
 	CanceledAt     *int64
 	Version        int64
@@ -402,7 +403,7 @@ type PageShipmentsAfterRow struct {
 	Total          pgtype.Numeric
 	Hazmat         bool
 	Labels         []string
-	Attributes     []byte
+	Attributes     benchjson.Map
 	StageRank      int16
 	CanceledAt     *int64
 	Version        int64

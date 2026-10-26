@@ -9,6 +9,7 @@ import (
 
 	"entgo.io/ent/dialect/sql/sqlgraph"
 	"entgo.io/ent/schema/field"
+	"github.com/emoss08/keel/bench/benchjson"
 	"github.com/emoss08/keel/bench/ent/customer"
 	"github.com/emoss08/keel/bench/ent/move"
 	"github.com/emoss08/keel/bench/ent/shipment"
@@ -105,7 +106,7 @@ func (_c *ShipmentCreate) SetLabels(v pq.StringArray) *ShipmentCreate {
 }
 
 // SetAttributes sets the "attributes" field.
-func (_c *ShipmentCreate) SetAttributes(v map[string]interface{}) *ShipmentCreate {
+func (_c *ShipmentCreate) SetAttributes(v benchjson.Map) *ShipmentCreate {
 	_c.mutation.SetAttributes(v)
 	return _c
 }
@@ -329,7 +330,7 @@ func (_c *ShipmentCreate) createSpec() (*Shipment, *sqlgraph.CreateSpec) {
 		_node.Labels = value
 	}
 	if value, ok := _c.mutation.Attributes(); ok {
-		_spec.SetField(shipment.FieldAttributes, field.TypeJSON, value)
+		_spec.SetField(shipment.FieldAttributes, field.TypeOther, value)
 		_node.Attributes = value
 	}
 	if value, ok := _c.mutation.StageRank(); ok {

@@ -5,7 +5,6 @@ package models
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
@@ -13,6 +12,7 @@ import (
 	"github.com/aarondl/opt/null"
 	"github.com/aarondl/opt/omit"
 	"github.com/aarondl/opt/omitnull"
+	"github.com/emoss08/keel/bench/benchjson"
 	enums "github.com/emoss08/keel/bench/bob/enums"
 	"github.com/lib/pq"
 	"github.com/shopspring/decimal"
@@ -25,31 +25,30 @@ import (
 	"github.com/stephenafamo/bob/expr"
 	"github.com/stephenafamo/bob/mods"
 	"github.com/stephenafamo/bob/orm"
-	"github.com/stephenafamo/bob/types"
 	"github.com/stephenafamo/bob/types/pgtypes"
 	"github.com/stephenafamo/scan"
 )
 
 // Shipment is an object representing the database table.
 type Shipment struct {
-	ID             string                      `db:"id,pk" `
-	OrganizationID string                      `db:"organization_id,pk" `
-	BusinessUnitID string                      `db:"business_unit_id,pk" `
-	CustomerID     string                      `db:"customer_id" `
-	BillToID       null.Val[string]            `db:"bill_to_id" `
-	ProNumber      string                      `db:"pro_number" `
-	Status         enums.ShipmentStatus        `db:"status" `
-	Priority       int16                       `db:"priority" `
-	Weight         null.Val[int64]             `db:"weight" `
-	Total          decimal.Decimal             `db:"total" `
-	Hazmat         bool                        `db:"hazmat" `
-	Labels         pq.StringArray              `db:"labels" `
-	Attributes     types.JSON[json.RawMessage] `db:"attributes" `
-	StageRank      int16                       `db:"stage_rank,generated" `
-	CanceledAt     null.Val[int64]             `db:"canceled_at" `
-	Version        int64                       `db:"version" `
-	CreatedAt      int64                       `db:"created_at" `
-	UpdatedAt      int64                       `db:"updated_at" `
+	ID             string               `db:"id,pk" `
+	OrganizationID string               `db:"organization_id,pk" `
+	BusinessUnitID string               `db:"business_unit_id,pk" `
+	CustomerID     string               `db:"customer_id" `
+	BillToID       null.Val[string]     `db:"bill_to_id" `
+	ProNumber      string               `db:"pro_number" `
+	Status         enums.ShipmentStatus `db:"status" `
+	Priority       int16                `db:"priority" `
+	Weight         null.Val[int64]      `db:"weight" `
+	Total          decimal.Decimal      `db:"total" `
+	Hazmat         bool                 `db:"hazmat" `
+	Labels         pq.StringArray       `db:"labels" `
+	Attributes     benchjson.Map        `db:"attributes" `
+	StageRank      int16                `db:"stage_rank,generated" `
+	CanceledAt     null.Val[int64]      `db:"canceled_at" `
+	Version        int64                `db:"version" `
+	CreatedAt      int64                `db:"created_at" `
+	UpdatedAt      int64                `db:"updated_at" `
 
 	R shipmentR `db:"-" `
 
@@ -181,23 +180,23 @@ func (c shipmentColumn) ShouldOmitParens() bool {
 // All values are optional, and do not have to be set
 // Generated columns are not included
 type ShipmentSetter struct {
-	ID             omit.Val[string]                      `db:"id,pk" `
-	OrganizationID omit.Val[string]                      `db:"organization_id,pk" `
-	BusinessUnitID omit.Val[string]                      `db:"business_unit_id,pk" `
-	CustomerID     omit.Val[string]                      `db:"customer_id" `
-	BillToID       omitnull.Val[string]                  `db:"bill_to_id" `
-	ProNumber      omit.Val[string]                      `db:"pro_number" `
-	Status         omit.Val[enums.ShipmentStatus]        `db:"status" `
-	Priority       omit.Val[int16]                       `db:"priority" `
-	Weight         omitnull.Val[int64]                   `db:"weight" `
-	Total          omit.Val[decimal.Decimal]             `db:"total" `
-	Hazmat         omit.Val[bool]                        `db:"hazmat" `
-	Labels         omit.Val[pq.StringArray]              `db:"labels" `
-	Attributes     omit.Val[types.JSON[json.RawMessage]] `db:"attributes" `
-	CanceledAt     omitnull.Val[int64]                   `db:"canceled_at" `
-	Version        omit.Val[int64]                       `db:"version" `
-	CreatedAt      omit.Val[int64]                       `db:"created_at" `
-	UpdatedAt      omit.Val[int64]                       `db:"updated_at" `
+	ID             omit.Val[string]               `db:"id,pk" `
+	OrganizationID omit.Val[string]               `db:"organization_id,pk" `
+	BusinessUnitID omit.Val[string]               `db:"business_unit_id,pk" `
+	CustomerID     omit.Val[string]               `db:"customer_id" `
+	BillToID       omitnull.Val[string]           `db:"bill_to_id" `
+	ProNumber      omit.Val[string]               `db:"pro_number" `
+	Status         omit.Val[enums.ShipmentStatus] `db:"status" `
+	Priority       omit.Val[int16]                `db:"priority" `
+	Weight         omitnull.Val[int64]            `db:"weight" `
+	Total          omit.Val[decimal.Decimal]      `db:"total" `
+	Hazmat         omit.Val[bool]                 `db:"hazmat" `
+	Labels         omit.Val[pq.StringArray]       `db:"labels" `
+	Attributes     omit.Val[benchjson.Map]        `db:"attributes" `
+	CanceledAt     omitnull.Val[int64]            `db:"canceled_at" `
+	Version        omit.Val[int64]                `db:"version" `
+	CreatedAt      omit.Val[int64]                `db:"created_at" `
+	UpdatedAt      omit.Val[int64]                `db:"updated_at" `
 }
 
 func (s ShipmentSetter) SetColumns() []string {
@@ -1070,7 +1069,7 @@ type shipmentWhere[Q psql.Filterable] struct {
 	Total          psql.WhereMod[Q, decimal.Decimal]
 	Hazmat         psql.WhereMod[Q, bool]
 	Labels         psql.WhereMod[Q, pq.StringArray]
-	Attributes     psql.WhereMod[Q, types.JSON[json.RawMessage]]
+	Attributes     psql.WhereMod[Q, benchjson.Map]
 	StageRank      psql.WhereMod[Q, int16]
 	CanceledAt     psql.WhereNullMod[Q, int64]
 	Version        psql.WhereMod[Q, int64]
@@ -1098,7 +1097,7 @@ func buildShipmentWhere[Q psql.Filterable](cols shipmentColumns) shipmentWhere[Q
 		Total:          psql.Where[Q, decimal.Decimal](cols.Total.Expression),
 		Hazmat:         psql.Where[Q, bool](cols.Hazmat.Expression),
 		Labels:         psql.Where[Q, pq.StringArray](cols.Labels.Expression),
-		Attributes:     psql.Where[Q, types.JSON[json.RawMessage]](cols.Attributes.Expression),
+		Attributes:     psql.Where[Q, benchjson.Map](cols.Attributes.Expression),
 		StageRank:      psql.Where[Q, int16](cols.StageRank.Expression),
 		CanceledAt:     psql.WhereNull[Q, int64](cols.CanceledAt.Expression),
 		Version:        psql.Where[Q, int64](cols.Version.Expression),
@@ -1163,7 +1162,7 @@ type shipmentPreloadBuf struct {
 	Total          null.Val[decimal.Decimal]
 	Hazmat         null.Val[bool]
 	Labels         null.Val[pq.StringArray]
-	Attributes     null.Val[types.JSON[json.RawMessage]]
+	Attributes     null.Val[benchjson.Map]
 	StageRank      null.Val[int16]
 	CanceledAt     null.Val[int64]
 	Version        null.Val[int64]

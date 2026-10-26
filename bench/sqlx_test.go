@@ -3,9 +3,9 @@ package bench
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"time"
 
+	"github.com/emoss08/keel/bench/benchjson"
 	"github.com/jmoiron/sqlx"
 	"github.com/lib/pq"
 )
@@ -34,24 +34,24 @@ type sqlxMove struct {
 }
 
 type sqlxShipment struct {
-	ID             string          `db:"id"`
-	OrganizationID string          `db:"organization_id"`
-	BusinessUnitID string          `db:"business_unit_id"`
-	CustomerID     string          `db:"customer_id"`
-	BillToID       *string         `db:"bill_to_id"`
-	ProNumber      string          `db:"pro_number"`
-	Status         string          `db:"status"`
-	Priority       int16           `db:"priority"`
-	Weight         *int64          `db:"weight"`
-	Total          string          `db:"total"`
-	Hazmat         bool            `db:"hazmat"`
-	Labels         pq.StringArray  `db:"labels"`
-	Attributes     json.RawMessage `db:"attributes"`
-	StageRank      int16           `db:"stage_rank"`
-	CanceledAt     *int64          `db:"canceled_at"`
-	Version        int64           `db:"version"`
-	CreatedAt      int64           `db:"created_at"`
-	UpdatedAt      int64           `db:"updated_at"`
+	ID             string         `db:"id"`
+	OrganizationID string         `db:"organization_id"`
+	BusinessUnitID string         `db:"business_unit_id"`
+	CustomerID     string         `db:"customer_id"`
+	BillToID       *string        `db:"bill_to_id"`
+	ProNumber      string         `db:"pro_number"`
+	Status         string         `db:"status"`
+	Priority       int16          `db:"priority"`
+	Weight         *int64         `db:"weight"`
+	Total          string         `db:"total"`
+	Hazmat         bool           `db:"hazmat"`
+	Labels         pq.StringArray `db:"labels"`
+	Attributes     benchjson.Map  `db:"attributes"`
+	StageRank      int16          `db:"stage_rank"`
+	CanceledAt     *int64         `db:"canceled_at"`
+	Version        int64          `db:"version"`
+	CreatedAt      int64          `db:"created_at"`
+	UpdatedAt      int64          `db:"updated_at"`
 }
 
 const sqlxShipmentColumns = `id, organization_id, business_unit_id, customer_id, bill_to_id, pro_number, status,
