@@ -34,7 +34,8 @@ type txState struct {
 	afterCommit []func(context.Context)
 
 	// hold is the tenant slot the transaction holds (hold.owned) or runs under, an enclosing
-	// transaction's or write's, when Config.TenantConcurrency is set.
+	// transaction's or write's, or, for an implicit one, its terminal's, when
+	// Config.TenantConcurrency is set.
 	hold slotHold
 
 	rep         *replica
@@ -231,6 +232,20 @@ func AfterCommit(ctx context.Context, fn func(ctx context.Context)) {
 		return
 	}
 	fn(ctx)
+}
+
+// callbackCtx returns the context Config.OnBegin and CacheConfig.Key run with: ctx without a
+// transaction of db, so a statement they send runs in a transaction of its own and never joins or
+// begins the one they work for, and carrying slot, the tenant slot of that work, which such a
+// statement shares rather than waiting for a second.
+func (db *DB) callbackCtx(ctx context.Context, slot *tenantSlot) context.Context {
+	if txFrom(ctx, db) != nil {
+		ctx = context.WithValue(ctx, txKey{}, (*txState)(nil))
+	}
+	if slot != nil {
+		ctx = context.WithValue(ctx, slotKey{}, slot)
+	}
+	return ctx
 }
 
 func txFrom(ctx context.Context, db *DB) *txState {
@@ -462,7 +477,8 @@ func (tx *txState) queueBegin(ctx context.Context, b *pgx.Batch) (int, error) {
 		n++
 	}
 	if tx.db.cfg.OnBegin != nil {
-		stmts, err := tx.db.cfg.OnBegin(tx.scopeCtx, TxInfo{ReadOnly: tx.readOnly, Implicit: tx.implicit})
+		info := TxInfo{ReadOnly: tx.readOnly, Implicit: tx.implicit}
+		stmts, err := tx.db.cfg.OnBegin(tx.db.callbackCtx(tx.scopeCtx, tx.hold.slot), info)
 		if err != nil {
 			return 0, err
 		}

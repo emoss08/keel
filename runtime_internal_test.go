@@ -3,6 +3,7 @@ package keel
 import (
 	"context"
 	"errors"
+	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -261,5 +262,61 @@ func TestBudgetCountsTextsOncePerRoundTrip(t *testing.T) {
 	}
 	if err := refuseBudgets(ctx); !errors.Is(err, ErrBudgetExceeded) {
 		t.Fatalf("an exceeded budget did not refuse: %v", err)
+	}
+}
+
+func TestRunnerIdleReturnsAConnectionNothingWasSentOn(t *testing.T) {
+	dsn := os.Getenv("KEEL_TEST_DSN")
+	if dsn == "" {
+		t.Skip("KEEL_TEST_DSN is not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	db, err := Open(ctx, Config{DSN: dsn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	held := func(want int32) {
+		t.Helper()
+		if got := db.pool.Stat().AcquiredConns(); got != want {
+			t.Errorf("acquired connections: got %d, want %d", got, want)
+		}
+	}
+
+	r, err := db.runnerFor(ctx, modeRead)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.acquire(ctx); err != nil {
+		t.Fatal(err)
+	}
+	held(1)
+	r.idle()
+	held(0)
+	if err := r.close(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	err = Read(ctx, db, func(ctx context.Context) error {
+		r, err := db.runnerFor(ctx, modeRead)
+		if err != nil {
+			return err
+		}
+		if _, err := r.acquire(ctx); err != nil {
+			return err
+		}
+		held(1)
+		r.idle()
+		held(0)
+		if _, err := QueryValue[int](ctx, db, "SELECT 1"); err != nil {
+			return err
+		}
+		r.idle()
+		held(1)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }

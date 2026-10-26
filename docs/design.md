@@ -816,7 +816,10 @@ pos := keel.CommitPosition(ctx, db)                 // for keel.OnReplicaAfter i
 `Config.Cache` (`Local keel.LocalCache`, default `keel.LRU(64 MiB)`; `Shared keel.SharedCache`;
 `Key func(ctx) string`; `MaxEntryBytes`, default 1 MiB; `OnError`). `Open` refuses a cache
 without `DataVersions.Enabled`, and one without `Key` when `OnBegin` is set (the rows OnBegin's
-settings expose are invisible to the key otherwise). `DB.CacheStats()` reports hits, misses,
+settings expose are invisible to the key otherwise). `Key` and `OnBegin` run on a callback context: the caller's
+context without the transaction of this DB and with the tenant slot of the work they serve. A
+statement they send can neither join the transaction they compute for (and begin it, re-entering
+`OnBegin`) nor wait for a second slot of the tenant, which at `TenantConcurrency: 1` deadlocks. `DB.CacheStats()` reports hits, misses,
 bypasses, errors, local bytes, pairs held and whether the listener is up.
 
 - **Granularity.** One entry per terminal call (`runReads`): every item of a `Batch` must ask,
@@ -885,7 +888,8 @@ bypasses, errors, local bytes, pairs held and whether the listener is up.
   from the application's pool.
 - **Stores.** A local miss reads the shared store; a shared hit is validated the same way and
   copied into the local store. Concurrent misses of one key in a process wait for the first and
-  look again. Shared-store errors are misses, reported to `OnError`.
+  look again; a waiter first returns a connection its lookup took to read versions (its own, or
+  that of a transaction that has not begun), so waiters hold no pool connections. Shared-store errors are misses, reported to `OnError`.
 - Not covered: `DynQuery` and `Into` projections; data read by raw SQL without `AlsoReads`;
   writes keel cannot see without `MarkChanged`. Changes by other processes are visible after their
   flush interval plus the notification's delivery.

@@ -24,7 +24,10 @@ type CacheConfig struct {
 	Shared SharedCache
 	// Key returns key material for what the scope does not capture but the rows depend on, such
 	// as the row-level security settings Config.OnBegin sets (Trenova returns its encoded read
-	// scope). It is required when Config.OnBegin is set.
+	// scope). It is required when Config.OnBegin is set. It runs on the terminal's context without
+	// its transaction and with its tenant slot: a statement it sends runs in a transaction of its
+	// own (on a second pool connection when the caller holds one), never joins or begins the one
+	// the terminal reads in, and shares the terminal's slot rather than waiting for another.
 	Key func(ctx context.Context) string
 	// MaxEntryBytes caps an encoded entry; a larger result is not cached. Default 1 MiB.
 	MaxEntryBytes int
@@ -281,8 +284,8 @@ type cacheRun struct {
 // start returns the cache's part in a terminal whose reads have been prepared, or nil when no
 // read asks for the cache. It bypasses the cache where it does not apply, and otherwise looks the
 // terminal's entry up (unless refill is set, after a hit that could not be replayed): a valid
-// entry is a hit. A miss of a key another goroutine of the process is reading waits for it and
-// looks again.
+// entry is a hit. A miss of a key another goroutine of the process is reading waits for it, with
+// the connection the lookup took back in the pool, and looks again.
 func (c *resultCache) start(ctx context.Context, run *runner, reads []*read, stmts []*stmt,
 	refill bool,
 ) *cacheRun {
@@ -304,7 +307,7 @@ func (c *resultCache) start(ctx context.Context, run *runner, reads []*read, stm
 	}
 	extra := ""
 	if c.cfg.Key != nil {
-		extra = c.cfg.Key(ctx)
+		extra = c.cfg.Key(run.db.callbackCtx(ctx, run.hold.slot))
 	}
 	key, ok := cacheKey(tenant, extra, readShape(reads), stmts)
 	if !ok {
@@ -318,6 +321,7 @@ func (c *resultCache) start(ctx context.Context, run *runner, reads []*read, stm
 			return cr
 		}
 		if wait := c.join(key); wait != nil {
+			run.idle()
 			run.db.waitFill(ctx, wait, tenant)
 			if cr.hit() {
 				return cr

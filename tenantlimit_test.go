@@ -3,6 +3,7 @@ package keel_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -83,6 +84,52 @@ func TestTenantConcurrencyWriteHooksShareTheSlot(t *testing.T) {
 	if err := c.Create(ctx, d, &fleet.Customer{Name: "Again", Code: "SLOT"}); !errors.Is(err, errDuplicate) {
 		t.Fatalf("got %v, want the hook's error", err)
 	}
+	eq(t, d.TenantWaits(), int64(0))
+}
+
+// onBeginReadKey marks the context of OnBegin's own read, whose transaction calls OnBegin again.
+type onBeginReadKey struct{}
+
+func TestTenantConcurrencyOnBeginRunsOutsideTheTransactionUnderItsSlot(t *testing.T) {
+	var d *keel.DB
+	c := fleetdb.Customers
+	var seen []int64
+	d = openDB(t, func(cfg *keel.Config) {
+		cfg.TenantConcurrency = 1
+		cfg.OnBegin = func(ctx context.Context, _ keel.TxInfo) ([]keel.Statement, error) {
+			if ctx.Value(onBeginReadKey{}) != nil {
+				return nil, nil
+			}
+			ctx, cancel := context.WithTimeout(context.WithValue(ctx, onBeginReadKey{}, true), 2*time.Second)
+			defer cancel()
+			n, err := c.Query().Count(ctx, d)
+			if err != nil {
+				return nil, err
+			}
+			seen = append(seen, n)
+			return nil, nil
+		}
+	})
+	ctx := newTenant()
+	ok(t, c.Create(ctx, d, &fleet.Customer{Name: "A", Code: "A"}))
+	_, err := c.Query().Count(ctx, d)
+	ok(t, err)
+	ok(t, keel.Read(ctx, d, func(ctx context.Context) error {
+		_, err := c.Query().Count(ctx, d)
+		return err
+	}))
+
+	seen = nil
+	ok(t, keel.Write(ctx, d, func(ctx context.Context) error {
+		if err := c.Create(ctx, d, &fleet.Customer{Name: "B", Code: "B"}); err != nil {
+			return err
+		}
+		return keel.Read(ctx, d, func(ctx context.Context) error {
+			_, err := c.Query().Count(ctx, d)
+			return err
+		}, keel.Detached())
+	}))
+	eq(t, fmt.Sprint(seen), "[1 1]")
 	eq(t, d.TenantWaits(), int64(0))
 }
 

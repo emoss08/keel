@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -544,3 +545,39 @@ func (failingStore) Get(context.Context, string) ([]byte, bool, error) {
 }
 
 func (failingStore) Set(context.Context, string, []byte, time.Duration) error { return errStoreDown }
+
+func TestCacheKeyRunsOutsideTheTransactionUnderTheTerminalsSlot(t *testing.T) {
+	var d *keel.DB
+	c := fleetdb.Customers
+	keyed := 0
+	d = cacheDB(t, nil, func(cfg *keel.Config) {
+		cfg.TenantConcurrency = 1
+		cfg.Cache.Key = func(ctx context.Context) string {
+			ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			defer cancel()
+			n, err := c.Query().Count(ctx, d)
+			if err != nil {
+				t.Errorf("the key's read: %v", err)
+			}
+			keyed++
+			return strconv.Itoa(int(n))
+		}
+	})
+	ctx := newTenant()
+	ok(t, c.Create(ctx, d, &fleet.Customer{Name: "A", Code: "A"}))
+	ok(t, d.FlushDataVersions(context.Background()))
+	eq(t, len(cachedCustomers(t, ctx, d)), 1)
+	eq(t, keyed, 1)
+	eq(t, d.TenantWaits(), int64(0))
+
+	ok(t, keel.Read(ctx, d, func(ctx context.Context) error {
+		hits := d.CacheStats().Hits
+		eq(t, len(cachedCustomers(t, ctx, d)), 1)
+		eq(t, d.CacheStats().Hits, hits+1)
+		level := must(keel.QueryValue[string](ctx, d, "SELECT current_setting('transaction_isolation')"))(t)
+		eq(t, level, "repeatable read")
+		return nil
+	}, keel.RepeatableRead))
+	eq(t, keyed, 2)
+	eq(t, d.TenantWaits(), int64(0))
+}

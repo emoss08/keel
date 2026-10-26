@@ -30,7 +30,11 @@ type Config struct {
 
 	// OnBegin returns statements to run at the start of every transaction, explicit or implicit,
 	// for example a row-level security set_config. When it is set, terminals outside a transaction
-	// run in an implicit one.
+	// run in an implicit one. It is called when the transaction begins, with its first statement,
+	// whichever terminal or callback sends it, on the context the transaction was opened with,
+	// without that transaction and with its tenant slot: a statement it sends runs in a transaction
+	// of its own on a second pool connection, which calls OnBegin again, and shares the slot rather
+	// than waiting for another.
 	OnBegin func(ctx context.Context, tx TxInfo) ([]Statement, error)
 
 	// NewID returns a new primary key for autoid columns.

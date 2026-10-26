@@ -101,7 +101,7 @@ func (db *DB) runnerFor(ctx context.Context, mode runMode) (*runner, error) {
 	}
 	if db.cfg.OnBegin != nil || rt != nil {
 		r.tx = &txState{db: db, readOnly: !write, implicit: true, scopeCtx: ctx, scope: r.sc, rep: r.rep,
-			route: rt}
+			route: rt, hold: slotHold{slot: r.hold.slot}}
 		r.own = true
 	}
 	return r, nil
@@ -145,6 +145,20 @@ func (r *runner) acquire(ctx context.Context) (pgConn, error) {
 	}
 	r.conn = conn
 	return conn, nil
+}
+
+// idle returns to the pool a connection the runner holds without having sent anything on it, its
+// own or that of a transaction that has not begun, which a result cache lookup took to read data
+// versions; the runner's next statement takes one again.
+func (r *runner) idle() {
+	if r.conn != nil {
+		r.conn.Release()
+		r.conn = nil
+	}
+	if tx := r.tx; tx != nil && !tx.begun && !tx.joined && tx.pooled != nil {
+		tx.pooled.Release()
+		tx.conn, tx.pooled = nil, nil
+	}
 }
 
 // started returns the runner's connection with its transaction, if it has one, begun, for a

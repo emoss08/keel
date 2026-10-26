@@ -131,6 +131,14 @@ the request context.
 `keel.TxInfo` tells `OnBegin` whether the transaction is `ReadOnly` and whether it is `Implicit`
 (opened by keel for a single terminal). A `keel.Statement` is `SQL` plus `Args`.
 
+`OnBegin` is called when the transaction begins, with its first statement, whichever terminal sends
+it. Its context is the one the transaction was opened with, without that transaction and with its
+tenant slot. A statement `OnBegin` sends through keel therefore runs in a transaction of its own,
+on a second pool connection, and that transaction calls `OnBegin` again; it shares the tenant slot
+rather than waiting for a second one, which under `TenantConcurrency: 1` would never come. Prefer
+an `OnBegin` that only reads its context; one that must query should cache what it reads on the
+context and send nothing on the nested call.
+
 ### A multi-tenant application
 
 For an application like Trenova, where every tenant table carries `organization_id` and
@@ -518,6 +526,10 @@ open, err := s.Where(s.Status.Eq(fleet.StatusNew)).
   setting row-level security from a user's permissions, two users of one tenant may see different
   rows, so `Open` refuses a cache without `Key` when `OnBegin` is set. Return the encoded settings
   OnBegin applies.
+- `Key` runs on the terminal's context without its transaction and with its tenant slot, like
+  `OnBegin`: a statement it sends runs in a transaction of its own (on a second pool connection
+  when the caller's transaction holds one), never joins or begins the transaction the cached read
+  runs in, and shares the terminal's slot.
 - A write of this process is visible to its next cached read at once, before the versions are
   flushed. A write of another process is visible after its `DataVersions.Interval` and the
   notification's delivery (milliseconds).
