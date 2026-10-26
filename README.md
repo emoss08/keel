@@ -559,23 +559,38 @@ migrated database from a template in milliseconds with `migrate.Template`.
 
 ## Performance
 
-`bench/` runs the same operations through keel, Bun and raw pgx. Medians of 6 runs on a 4-vCPU Xeon
-VM with Postgres 18 in Docker on the same host, recorded on 2026-10-23:
+`bench/` runs the same operations through keel, sqlc, sqlx, raw pgx, Bob, ent, GORM, Jet and Bun,
+each written the way its documentation writes it, with the tenant filter added by hand where the
+library has no tenancy. Medians of 6 runs on a 4-vCPU Xeon VM, Postgres 18 in Docker, through a
+proxy that adds 1 ms to every round trip, as a database in the same cloud region would (recorded
+on 2026-10-26; fastest in bold):
 
-| Operation | keel | Bun | keel vs Bun |
-|---|---|---|---|
-| get one row by key | 328 µs, 94 allocs | 441 µs, 56 allocs | 26% faster |
-| list 100 rows | 812 µs, 2,953 allocs | 1,253 µs, 3,623 allocs | 35% faster |
-| 50 rows with a to-one and a to-many relation | 1.52 ms, 3,377 allocs | 3.34 ms, 6,735 allocs | 55% faster |
-| read in a transaction with a `set_config` (row-level security) | 326 µs, 127 allocs | 1,077 µs, 73 allocs | 70% faster |
-| save with optimistic locking | 1.02 ms, 44 allocs | 1.20 ms, 29 allocs | 15% faster |
-| build a statement, no database | 3.8 µs, 2.7 KiB | 3.3 µs, 3.0 KiB | 13% slower |
+| Operation | keel | sqlc | sqlx | pgx | Bob | ent | GORM | Jet | Bun |
+|---|---|---|---|---|---|---|---|---|---|
+| get one row by key | 1.87 ms | 1.89 ms | 1.87 ms | **1.82 ms** | 1.91 ms | 1.99 ms | 1.91 ms | 2.02 ms | 2.04 ms |
+| list 100 rows | 2.61 ms | **2.53 ms** | 2.75 ms | 2.92 ms | 2.72 ms | 2.78 ms | 3.68 ms | 3.39 ms | 3.19 ms |
+| list 1,000 rows | 6.74 ms | **5.88 ms** | 7.48 ms | 7.15 ms | 8.06 ms | 8.65 ms | 12.32 ms | 13.50 ms | 8.39 ms |
+| 50 rows with a to-one and a to-many relation | **3.42 ms** | 6.98 ms | 7.03 ms | – | 9.57 ms | 7.49 ms | 9.37 ms | 6.99 ms | 7.42 ms |
+| read in a transaction with a `set_config` | **1.96 ms** | 7.08 ms | 7.50 ms | – | 7.21 ms | 7.29 ms | 7.48 ms | 7.58 ms | 7.44 ms |
+| keyset page of 50 with its total | **2.84 ms** | 4.34 ms | 4.54 ms | 4.52 ms | 4.85 ms | 4.82 ms | 5.05 ms | 5.12 ms | 4.70 ms |
+| insert one row | 2.48 ms | **2.33 ms** | 2.53 ms | – | 2.49 ms | 2.38 ms | 2.35 ms | 2.50 ms | 2.51 ms |
+| insert 1,000 rows | 18.33 ms (16.96 ms with `Copy`) | **16.99 ms** | 20.09 ms | – | 22.92 ms | 23.69 ms | 19.84 ms | 27.11 ms | 25.85 ms |
+| save with optimistic locking | 2.25 ms | 2.20 ms | 2.23 ms | – | 2.31 ms | 2.20 ms | **2.19 ms** | 2.27 ms | 2.35 ms |
+| build a statement, no database | 4.5 µs | – | – | – | 13.1 µs | – | 8.4 µs | 23.5 µs | **3.9 µs** |
 
-Most of the gain is server work: prepared statements skip parsing and planning, and pipelining
-saves round trips, a gap that grows with network latency. keel allocates more than Bun per
-single-row statement. Later work (pipelined relation trees, the result cache, read transactions
-that end without waiting for `COMMIT`) is measured in [docs/benchmarks.md](docs/benchmarks.md),
-with the raw output and how to rerun everything.
+- **keel wins where it saves round trips.** A relation tree loads in the read's own round trip (the
+  others take one per level), a scoped read pipelines `BEGIN`, the `set_config`, the read and
+  `COMMIT` into one round trip (the others take four), and a page shares its round trip with its
+  count. That makes keel 2.0 to 2.8 times as fast as every other library on relation loads, 3.6 to
+  3.9 times on scoped reads and 1.5 to 1.8 times on pages, and the gap grows with the distance to
+  the database.
+- **Where an operation is one round trip, everyone is close.** Gets, inserts and saves land within
+  about 10% of each other.
+- **sqlc decodes faster.** Its generated scan code beats keel on plain lists, by 3 to 13% here and
+  12 to 16% with the database on the same host. Bun builds statements about 15% faster than keel.
+
+[docs/benchmarks.md](docs/benchmarks.md) has the same table with the database on the same host,
+how each library is written, allocations, the raw output and how to rerun everything.
 
 ## Status
 

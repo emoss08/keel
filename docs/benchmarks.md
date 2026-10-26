@@ -1,12 +1,131 @@
 # Benchmarks
 
-`bench/` runs the same operations through keel, Bun (Trenova's fork at `2580fd2`) and raw pgx on one
-schema and data set (2,000 shipments, 600 moves, 10 customers in one tenant).
+`bench/` runs the same operations through keel, GORM, ent, sqlc, Bob, Jet, sqlx, Bun (Trenova's
+fork at `2580fd2`) and raw pgx on one schema and data set (2,000 shipments, 600 moves, 10 customers
+in one tenant).
 
 ```sh
 cd bench && go test -run xxx -bench . -benchmem -count 6 > new.txt
 go run golang.org/x/perf/cmd/benchstat@latest -col /impl new.txt
 ```
+
+## 2026-10-26: keel against other Go libraries
+
+The suite now runs every operation through **GORM, ent, sqlc, Bob, Jet and sqlx** as well as Bun
+and raw pgx, on the same schema and data (2,000 shipments, 600 moves and 10 customers in one
+tenant), twice: with Postgres on the same host, and through a proxy that adds a millisecond to
+every round trip, as a database in the same cloud region would. Medians of 6 runs on the 4-vCPU
+Xeon VM, Postgres 18 in Docker. Raw output:
+[bench/results/2026-10-26-libraries-loopback.txt](../bench/results/2026-10-26-libraries-loopback.txt)
+and [bench/results/2026-10-26-libraries-latency.txt](../bench/results/2026-10-26-libraries-latency.txt).
+
+**How each library is written.** Every operation is written the way the library's own
+documentation writes it, and each checks its result (row counts, loaded relations, a changed
+version):
+
+- No other library scopes queries to a tenant, so each filters on the tenant columns by hand, on
+  its relation loads too. keel adds the same filter itself.
+- Relation loads use each library's own mechanism: GORM's `Preload`, ent's `With…`, Bob's
+  `Preload` and `ThenLoad`, one join query for Jet (the 50 shipments limited in a subquery
+  first), and for sqlc and sqlx the usual three queries stitched together by key.
+- The scoped read is a read-only transaction that runs the `set_config` a row-level security
+  policy needs, then the read.
+- The page is a keyset page of 50 after a cursor plus a count of the tenant's shipments. keel's
+  `Page(…, keel.After(cursor, 50).Total(10_000))` caps the count at 10,000, which on 2,000 rows
+  counts them all.
+- The 1,000-row insert is each library's bulk path: one multi-row `INSERT` for GORM, ent, Bob,
+  Jet, sqlx and Bun, `COPY` for sqlc (`:copyfrom`), and for keel `CreateMany` (one array per
+  column through `unnest`) with `Copy` alongside.
+- Every library on `database/sql` runs on pgx's stdlib driver, which prepares and caches
+  statements as pgx does, with as many pool connections as pgxpool's default; sqlc runs on
+  pgxpool itself. Each write benchmark deletes the rows it inserted when it ends, so no library
+  writes into, or reads, a table another one grew.
+- ent keys an entity by one column, so its models use `id` alone where the tables have a
+  composite primary key. Rows decode into each library's natural types: `jsonb` into a map where
+  the library decodes JSON itself (keel, Bun, GORM, ent) and into bytes elsewhere, `numeric` into
+  a decimal or a string. sqlc, sqlx and raw pgx build no statements, so they have no
+  statement-building number, and ent cannot render a typed query without running it.
+- The generated code of ent, sqlc, Bob and Jet is checked in under `bench/` with its schema,
+  queries and generator configuration.
+
+### Through 1 ms of added latency
+
+A round trip took 1.73 ms through the proxy against 0.23 ms direct. Fastest in bold.
+
+| Operation | keel | sqlc | sqlx | pgx | Bob | ent | GORM | Jet | Bun |
+|---|---|---|---|---|---|---|---|---|---|
+| get one row by key | 1.87 ms | 1.89 ms | 1.87 ms | **1.82 ms** | 1.91 ms | 1.99 ms | 1.91 ms | 2.02 ms | 2.04 ms |
+| list 100 rows | 2.61 ms | **2.53 ms** | 2.75 ms | 2.92 ms | 2.72 ms | 2.78 ms | 3.68 ms | 3.39 ms | 3.19 ms |
+| list 1,000 rows | 6.74 ms | **5.88 ms** | 7.48 ms | 7.15 ms | 8.06 ms | 8.65 ms | 12.32 ms | 13.50 ms | 8.39 ms |
+| 50 rows with a to-one and a to-many relation | **3.42 ms** | 6.98 ms | 7.03 ms | – | 9.57 ms | 7.49 ms | 9.37 ms | 6.99 ms | 7.42 ms |
+| read in a transaction with a `set_config` | **1.96 ms** | 7.08 ms | 7.50 ms | – | 7.21 ms | 7.29 ms | 7.48 ms | 7.58 ms | 7.44 ms |
+| keyset page of 50 with its total | **2.84 ms** | 4.34 ms | 4.54 ms | 4.52 ms | 4.85 ms | 4.82 ms | 5.05 ms | 5.12 ms | 4.70 ms |
+| insert one row | 2.48 ms | **2.33 ms** | 2.53 ms | – | 2.49 ms | 2.38 ms | 2.35 ms | 2.50 ms | 2.51 ms |
+| insert 1,000 rows | 18.33 ms (16.96 ms with `Copy`) | **16.99 ms** | 20.09 ms | – | 22.92 ms | 23.69 ms | 19.84 ms | 27.11 ms | 25.85 ms |
+| save with optimistic locking | 2.25 ms | 2.20 ms | 2.23 ms | – | 2.31 ms | 2.20 ms | **2.19 ms** | 2.27 ms | 2.35 ms |
+| build a statement, no database | 4.5 µs | – | – | – | 13.1 µs | – | 8.4 µs | 23.5 µs | **3.9 µs** |
+
+### With Postgres on the same host
+
+| Operation | keel | sqlc | sqlx | pgx | Bob | ent | GORM | Jet | Bun |
+|---|---|---|---|---|---|---|---|---|---|
+| get one row by key | 351 µs | **323 µs** | 350 µs | 331 µs | 371 µs | 379 µs | 381 µs | 431 µs | 480 µs |
+| list 100 rows | 966 µs | **846 µs** | 1.05 ms | 1.21 ms | 1.07 ms | 1.11 ms | 1.62 ms | 1.80 ms | 1.40 ms |
+| list 1,000 rows | 4.66 ms | **3.93 ms** | 5.30 ms | 5.39 ms | 5.87 ms | 6.62 ms | 9.88 ms | 11.53 ms | 6.97 ms |
+| 50 rows with a to-one and a to-many relation | **1.34 ms** | 1.96 ms | 2.12 ms | – | 3.80 ms | 2.54 ms | 4.29 ms | 4.79 ms | 4.00 ms |
+| read in a transaction with a `set_config` | **377 µs** | 892 µs | 1.07 ms | – | 1.15 ms | 1.11 ms | 1.12 ms | 1.21 ms | 1.36 ms |
+| keyset page of 50 with its total | **1.12 ms** | 1.33 ms | 1.62 ms | 1.55 ms | 1.62 ms | 1.89 ms | 1.76 ms | 2.02 ms | 1.77 ms |
+| insert one row | 761 µs | 767 µs | **730 µs** | – | 865 µs | 921 µs | 818 µs | 797 µs | 769 µs |
+| insert 1,000 rows | **15.80 ms** (15.58 ms with `Copy`) | 16.10 ms | 19.48 ms | – | 23.57 ms | 22.08 ms | 18.86 ms | 26.57 ms | 25.55 ms |
+| save with optimistic locking | **755 µs** | 761 µs | 823 µs | – | 844 µs | 808 µs | 788 µs | 794 µs | 862 µs |
+| build a statement, no database | 5.0 µs | – | – | – | 12.7 µs | – | 8.8 µs | 23.1 µs | **4.2 µs** |
+
+### What it shows
+
+- **Round trips decide most of it, and keel saves them.** keel sends a relation tree and its root
+  in one round trip; every other library sends one per level, so 50 shipments with their customer
+  and moves take keel one round trip and the others three. A scoped read is `BEGIN`, the
+  `set_config`, the read and `COMMIT` pipelined in one round trip, without waiting for the
+  `COMMIT`'s reply; every other library makes four. A page and its count share a round trip.
+  Through 1 ms of latency that makes keel 2.0 to 2.8 times as fast as every other library on
+  relation loads, 3.6 to 3.9 times on scoped reads and 1.5 to 1.8 times on pages, and the gap
+  grows with the distance to the database.
+- **Where an operation is one round trip, the network evens everyone out.** A get by key, an
+  insert and a save land within about 10% of each other through the proxy, keel among them.
+- **sqlc decodes faster.** Its generated scan code beats keel's on plain lists, by 12 to 16% on
+  the same host and 3 to 13% through the proxy, and it is the fastest single-row read on the same
+  host. keel is second on every list, ahead of raw pgx's generic row mapping and every ORM.
+- **The ORMs pay in allocations.** GORM, ent, Bob and Jet allocate two to four times what keel
+  does on lists and relation loads, which shows on the same host: Jet's list of 1,000 takes 2.5
+  times keel's time and GORM's 2.1 times.
+- **Bun builds statements fastest**, about 15% ahead of keel; GORM takes 1.8 times keel's time,
+  Bob 2.5 to 2.9 times and Jet 4.6 to 5.2 times.
+- **Bulk inserts:** keel's `CreateMany` and `Copy` and sqlc's `COPY` lead; multi-row `INSERT`s,
+  with one parameter per value, trail them by 20 to 70%.
+
+### Rerunning
+
+```sh
+cd bench && KEEL_TEST_DSN=postgres://keel:keel@localhost:55432/keel?sslmode=disable \
+    go test -run xxx -bench . -benchmem -count 6 -timeout 3h > loopback.txt
+```
+
+For the latency run, start [Toxiproxy](https://github.com/Shopify/toxiproxy) in front of the
+server and point `KEEL_TEST_DSN` at it. It runs as a process of its own, so its work does not
+reach the benchmark's allocation counts:
+
+```sh
+go install github.com/Shopify/toxiproxy/v2/cmd/server@latest && server &
+curl -X POST localhost:8474/proxies -d '{"name":"pg","listen":"127.0.0.1:55435","upstream":"127.0.0.1:55432"}'
+curl -X POST localhost:8474/proxies/pg/toxics -d '{"type":"latency","stream":"downstream","attributes":{"latency":1}}'
+cd bench && KEEL_TEST_DSN=postgres://keel:keel@127.0.0.1:55435/keel?sslmode=disable \
+    go test -run xxx -bench . -benchmem -count 6 -timeout 4h > latency.txt
+```
+
+After a schema change, regenerate each library's code: `sqlc generate` in `bench/sqlc`,
+`go generate ./ent` in `bench`, `bobgen-psql -c bobgen.yaml` in `bench/bob`, and Jet's
+`jet -dsn=… -tables=customers,shipments,moves -path=./jetgen` in `bench`, then move
+`jetgen/<database>/public` to `bench/jet`.
 
 ## 2026-10-26
 
