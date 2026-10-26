@@ -66,9 +66,10 @@ type Config struct {
 	// bind as arrays and decode into one shared string per label, so enum columns cost no
 	// allocation per row.
 	SkipEnums bool
-	// JSON encodes and decodes json and jsonb values. Defaults to encoding/json; set it to a faster
-	// library (sonic, go-json) with the same signatures. Its UnmarshalNumber decodes the columns
-	// tagged jsonnumber.
+	// JSON encodes and decodes json and jsonb values. Each function left nil defaults to sonic in
+	// its encoding/json-compatible mode, which encodes a value to the bytes encoding/json would;
+	// set sonic.ConfigDefault's functions, which skip HTML escaping and map key sorting, for more
+	// speed. Its UnmarshalNumber decodes the columns tagged jsonnumber.
 	JSON *JSONCodec
 	// PlanCache chooses how statements are prepared. The default, PlanCacheAuto, prepares every
 	// statement shape once per connection.
@@ -155,9 +156,8 @@ type JSONCodec struct {
 	Unmarshal func(data []byte, v any) error
 	// UnmarshalNumber decodes the columns tagged jsonnumber: as Unmarshal, except that a number
 	// decoded into an interface value (map[string]any, []any, any) is a json.Number holding its
-	// literal instead of a float64, so integers past 2^53 keep every digit. Nil uses
-	// encoding/json's Decoder with UseNumber; with sonic, sonic.Config{UseNumber:
-	// true}.Froze().Unmarshal.
+	// literal instead of a float64, so integers past 2^53 keep every digit. With sonic,
+	// sonic.Config{UseNumber: true}.Froze().Unmarshal.
 	UnmarshalNumber func(data []byte, v any) error
 }
 
@@ -224,6 +224,7 @@ func Open(ctx context.Context, cfg Config) (*DB, error) {
 	if cfg.TenantConcurrency < 0 {
 		return nil, errf("Config.TenantConcurrency must not be negative")
 	}
+	cfg.JSON = resolveJSON(cfg.JSON)
 	cfg.configure(pc)
 	pool, err := pgxpool.NewWithConfig(ctx, pc)
 	if err != nil {
@@ -294,12 +295,8 @@ func (cfg *Config) configure(pc *pgxpool.Config) {
 	poolAfterConnect := pc.AfterConnect
 	codec, loadTypes, skipEnums, afterConnect := cfg.JSON, cfg.LoadTypes, cfg.SkipEnums, cfg.AfterConnect
 	pc.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
-		if codec != nil {
-			registerJSON(conn.TypeMap(), codec)
-			if codec.UnmarshalNumber != nil {
-				conn.PgConn().CustomData()[jsonNumberKey] = codec.UnmarshalNumber
-			}
-		}
+		registerJSON(conn.TypeMap(), codec)
+		conn.PgConn().CustomData()[jsonNumberKey] = codec.UnmarshalNumber
 		var loaded []*pgtype.Type
 		if !skipEnums {
 			enums, err := registerEnums(ctx, conn)

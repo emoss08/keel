@@ -2,7 +2,6 @@ package keel
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"reflect"
 	"strconv"
@@ -260,13 +259,7 @@ func (r *render) colArg(c *schema.Column, v any) {
 		r.arg(string(b))
 		return
 	}
-	var b []byte
-	var err error
-	if r.db != nil {
-		b, err = r.db.marshalJSON(v)
-	} else {
-		b, err = json.Marshal(v)
-	}
+	b, err := r.db.marshalJSON(v)
 	if err != nil {
 		r.fail(fmt.Errorf("keel: %s: %w", c.Name, err))
 		return

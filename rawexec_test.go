@@ -78,7 +78,6 @@ func TestDBJSON(t *testing.T) {
 	calls := 0
 	cfg := testConfig(testDSN)
 	cfg.JSON = &keel.JSONCodec{
-		Marshal: json.Marshal,
 		Unmarshal: func(b []byte, v any) error {
 			calls++
 			return json.Unmarshal(b, v)
@@ -89,6 +88,7 @@ func TestDBJSON(t *testing.T) {
 	ok(t, custom.JSON().Unmarshal([]byte(`{"a":2}`), &out))
 	eq(t, out["a"], 2)
 	eq(t, calls, 1)
+	eq(t, string(must(custom.JSON().Marshal(map[string]int{"b": 1, "a": 2}))(t)), `{"a":2,"b":1}`)
 }
 
 func newTenantID() string {

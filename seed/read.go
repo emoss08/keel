@@ -24,8 +24,8 @@ func YAML[T any](r *Run, path string) (T, error) {
 	return v, nil
 }
 
-// JSON decodes the seed's input file at path into a T with the database's JSON implementation
-// (keel.Config.JSON, or encoding/json).
+// JSON decodes the seed's input file at path into a T with the database's JSON codec
+// (keel.Config.JSON).
 func JSON[T any](r *Run, path string) (T, error) {
 	var v T
 	data, err := r.ReadFile(path)

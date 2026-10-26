@@ -2,7 +2,6 @@ package keel
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -159,19 +158,4 @@ func (db *DB) execOn(ctx context.Context, pool *pgxpool.Pool, rep *replica, sql 
 		err = fmt.Errorf("keel: replica %s: %w", rep.name, err)
 	}
 	return tag.RowsAffected(), err
-}
-
-// JSON returns the JSON implementation db encodes and decodes json and jsonb values with:
-// Config.JSON, or encoding/json when it is unset, with UnmarshalNumber always set (encoding/json's
-// Decoder with UseNumber when the configuration leaves it nil). Packages built on keel use it to
-// read JSON the way the application configured.
-func (db *DB) JSON() JSONCodec {
-	c := JSONCodec{Marshal: json.Marshal, Unmarshal: json.Unmarshal}
-	if cfg := db.cfg.JSON; cfg != nil && cfg.Marshal != nil && cfg.Unmarshal != nil {
-		c = *cfg
-	}
-	if c.UnmarshalNumber == nil {
-		c.UnmarshalNumber = UnmarshalJSONNumber
-	}
-	return c
 }

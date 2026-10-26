@@ -3,7 +3,6 @@ package keel
 import (
 	"context"
 	"database/sql/driver"
-	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -341,13 +340,6 @@ func (db *DB) textValue(c *schema.Column, v any) (s string, null bool, err error
 		return x.Format(time.RFC3339Nano), false, nil
 	}
 	return fmt.Sprint(v), false, nil
-}
-
-func (db *DB) marshalJSON(v any) ([]byte, error) {
-	if db.cfg.JSON != nil {
-		return db.cfg.JSON.Marshal(v)
-	}
-	return json.Marshal(v)
 }
 
 // stringArrayLiteral renders a text array literal with every element quoted.

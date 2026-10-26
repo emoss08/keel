@@ -400,11 +400,7 @@ func (l *jsonLit) writeSQL(r *render) {
 	case json.RawMessage:
 		b = x
 	default:
-		if r.db != nil {
-			b, err = r.db.marshalJSON(l.v)
-		} else {
-			b, err = json.Marshal(l.v)
-		}
+		b, err = r.db.marshalJSON(l.v)
 	}
 	if err != nil {
 		r.fail(fmt.Errorf("keel: JSONB: %w", err))

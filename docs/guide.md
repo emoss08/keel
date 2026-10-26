@@ -114,7 +114,7 @@ the request context.
 | `AfterConnect` | `func(ctx, *pgx.Conn) error` | runs on every new connection after keel registers its types; register codecs here |
 | `LoadTypes` | `[]string` | user-defined types (domains, composites) and their array types to register on every connection |
 | `SkipEnums` | `bool` | stops keel registering every enum type of the database on each new connection |
-| `JSON` | `*keel.JSONCodec` | the JSON implementation for `json` and `jsonb` values (`Marshal`, `Unmarshal`, and `UnmarshalNumber` for `jsonnumber` columns); defaults to `encoding/json` |
+| `JSON` | `*keel.JSONCodec` | the JSON implementation for `json` and `jsonb` values (`Marshal`, `Unmarshal`, and `UnmarshalNumber` for `jsonnumber` columns); each nil function defaults to sonic's `encoding/json`-compatible mode |
 | `PlanCache` | `keel.PlanCache` | how statements are prepared: `PlanCacheAuto` (default), `PlanCacheCustom`, `PlanCacheOff` |
 | `StatementCacheCapacity` | `int` | prepared statements (or, with `PlanCacheOff`, statement descriptions) kept per connection; defaults to 512 |
 | `Replicas` | `[]keel.ReplicaConfig` | streaming replicas (`DSN` or `Pool`, and a `Weight`) that reads marked with `keel.OnReplica` run on; see [Read replicas](#read-replicas) |
@@ -210,11 +210,15 @@ deallocated beyond it.
 
 ### JSON
 
-`jsonb` fields are encoded and decoded with `encoding/json` unless `Config.JSON` names another
-implementation with the same signatures:
+`jsonb` fields are encoded and decoded with [sonic](https://github.com/bytedance/sonic) in its
+`encoding/json`-compatible mode (`sonic.ConfigStd`): a value encodes to the bytes `encoding/json`
+would give it, HTML escaped and with map keys sorted, and decodes as `encoding/json` would decode
+it, several times faster. `Config.JSON` replaces any of the three functions; one it leaves nil
+keeps the default. sonic's fastest mode skips the escaping and the key sorting:
 
 ```go
-JSON: &keel.JSONCodec{Marshal: sonic.Marshal, Unmarshal: sonic.Unmarshal},
+JSON: &keel.JSONCodec{Marshal: sonic.Marshal, Unmarshal: sonic.Unmarshal,
+    UnmarshalNumber: sonic.Config{UseNumber: true}.Froze().Unmarshal},
 ```
 
 The codec is registered for `json` and `jsonb` on every connection and also encodes `jsonb` values
@@ -234,15 +238,13 @@ type AuditEntry struct {
     Arguments map[string]any `keel:"arguments,jsonb,jsonnumber"`
 }
 
-// The default decodes with encoding/json's Decoder and UseNumber (keel.UnmarshalJSONNumber).
-// With sonic, give its number-preserving configuration:
-JSON: &keel.JSONCodec{Marshal: sonic.Marshal, Unmarshal: sonic.Unmarshal,
-    UnmarshalNumber: sonic.Config{UseNumber: true}.Froze().Unmarshal},
 ```
+
+The default `UnmarshalNumber` is `sonic.ConfigStd` with `UseNumber`.
 
 `jsonnumber` applies wherever keel decodes the model's rows (queries, relation loads, values
 read back after writes) on connections keel opened; on a connection joined with `JoinTx`, which
-keel did not set up, it uses `keel.UnmarshalJSONNumber`. `keel.Into` projections and dynamic
+keel did not set up, it uses the default. `keel.Into` projections and dynamic
 results are not models: a projection decodes with `Unmarshal`, and `DynResult` keeps the JSON
 text. `DB.JSON()` returns the codec with `UnmarshalNumber` filled in, for packages that decode
 JSON themselves.
@@ -4382,7 +4384,7 @@ seed.Production`, fails with `seed.ErrRefused` before anything runs, whichever b
 | `r.Rand()` | a PCG generator seeded from the seed's name, fingerprint and tenant key: the same data on every machine |
 | `r.Count(n)` | adds to the rows the report shows; feed it `Copy`, `CreateOrSkip`, `Upsert` results |
 | `seed.YAML[T](r, path)` | decodes YAML with `github.com/goccy/go-yaml`; a duplicated key is an error |
-| `seed.JSON[T](r, path)` | decodes JSON with `keel.Config.JSON`, or `encoding/json` |
+| `seed.JSON[T](r, path)` | decodes JSON with the database's codec (`keel.Config.JSON`) |
 | `seed.CSV[T](r, path)` | decodes every CSV record into a struct `T` |
 | `seed.CSVEach(r, path, fn)` | streams records one at a time, for files too large to hold |
 | `r.Open(path)`, `r.ReadFile(path)`, `r.Inputs()` | raw access to the declared inputs |

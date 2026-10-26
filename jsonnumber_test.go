@@ -1,6 +1,7 @@
 package keel_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"reflect"
@@ -71,7 +72,9 @@ func TestJSONNumberUsesTheConfiguredDecoder(t *testing.T) {
 		},
 		UnmarshalNumber: func(data []byte, v any) error {
 			numbers.Add(1)
-			return keel.UnmarshalJSONNumber(data, v)
+			d := json.NewDecoder(bytes.NewReader(data))
+			d.UseNumber()
+			return d.Decode(v)
 		},
 	}
 	d, err := keel.Open(context.Background(), cfg)
@@ -90,17 +93,28 @@ func TestJSONNumberUsesTheConfiguredDecoder(t *testing.T) {
 	}
 }
 
-func TestUnmarshalJSONNumber(t *testing.T) {
+// TestDefaultJSONMatchesEncodingJSON checks that the default codec, used when Config.JSON is
+// unset, encodes to the bytes encoding/json gives and decodes jsonnumber values to json.Number,
+// rejecting what encoding/json rejects.
+func TestDefaultJSONMatchesEncodingJSON(t *testing.T) {
+	c := db(t).JSON()
+	in := map[string]any{"z": 1, "a": "<b>&", "m": []any{1.5, nil, true}, "n": map[string]any{"y": "é", "b": 2}}
+	got, err := c.Marshal(in)
+	ok(t, err)
+	want, err := json.Marshal(in)
+	ok(t, err)
+	if string(got) != string(want) {
+		t.Fatalf("marshaled %s, encoding/json gives %s", got, want)
+	}
 	var v any
-	ok(t, keel.UnmarshalJSONNumber([]byte(` {"a": [`+big+`, 2.50]} `), &v))
+	ok(t, c.UnmarshalNumber([]byte(` {"a": [`+big+`, 2.50]} `), &v))
 	if !reflect.DeepEqual(v, map[string]any{"a": []any{json.Number(big), json.Number("2.50")}}) {
 		t.Fatalf("decoded %#v", v)
 	}
-	if err := keel.UnmarshalJSONNumber([]byte(`{} {}`), &v); err == nil {
-		t.Fatal("data after the value was accepted")
-	}
-	if err := keel.UnmarshalJSONNumber([]byte(`{`), &v); err == nil {
-		t.Fatal("truncated JSON was accepted")
+	for _, bad := range []string{`{} {}`, `{`, `{"a":1,}`} {
+		if c.Unmarshal([]byte(bad), &v) == nil || c.UnmarshalNumber([]byte(bad), &v) == nil {
+			t.Fatalf("%s was accepted", bad)
+		}
 	}
 }
 
