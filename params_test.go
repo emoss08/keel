@@ -36,8 +36,8 @@ func TestParameterSharing(t *testing.T) {
 	sql, args, err = s.Pick(bucket, keel.Count()).Group(bucket).Order(keel.Asc(bucket)).ToSQL(ctx, d)
 	ok(t, err)
 	expr := `CASE WHEN s."priority" >= $3 THEN $4 ELSE $5 END`
-	if strings.Count(sql, expr) != 3 {
-		t.Fatalf("a reused expression renders identically in every clause:\n%s", sql)
+	if strings.Count(sql, expr) != 1 || !strings.HasSuffix(sql, " GROUP BY 1 ORDER BY 1 ASC") {
+		t.Fatalf("a reused expression is named by its output position:\n%s", sql)
 	}
 	eq(t, len(args), 5)
 

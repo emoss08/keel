@@ -422,6 +422,9 @@ func (q *Query[T]) LoadStrategy(s LoadStrategy) *Query[T] {
 	return q
 }
 
+// LoadStrategy starts a query that loads its relations with s, as Query.LoadStrategy does.
+func (h Handle[T]) LoadStrategy(s LoadStrategy) *Query[T] { return h.Query().LoadStrategy(s) }
+
 // strategy is the LoadStrategy of node n's statement: its own query's or the nearest one above
 // it that chose one, else Config.LoadStrategy.
 func (n *lnode) strategy(db *DB) LoadStrategy {

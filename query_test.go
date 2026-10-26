@@ -466,7 +466,7 @@ func TestUpsertSet(t *testing.T) {
 	eq(t, must(c.Get(ctx, d, many[1].ID))(t).Name, "Fresh")
 
 	bump := []*fleet.Customer{{Name: "Three", Code: "S1"}}
-	_ = must(c.Upsert(ctx, d, bump, onCode.Update(c.Name).Set(c.Version.Add(10))))(t)
+	_ = must(c.Upsert(ctx, d, bump, onCode.Update(c.Name).Set(c.Version.Increment(10))))(t)
 	eq(t, bump[0].Version, int64(12))
 	got = must(c.Get(ctx, d, existing.ID))(t)
 	eq(t, got.Name, "Three")

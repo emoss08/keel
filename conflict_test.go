@@ -100,7 +100,7 @@ func TestUpdateWhereCapsAConflictingRow(t *testing.T) {
 			keel.DynLit("con_capped"), keel.DynLit("capped"), keel.DynLit(1))
 		return must(c.UpsertFrom(ctx, d, src,
 			keel.OnConflict(c.OrganizationID, c.BusinessUnitID, c.Name).
-				Set(c.Score.Add(1)).
+				Set(c.Score.Increment(1)).
 				UpdateWhere(c.Score.Lt(3)),
 			c.ID, c.Name, c.Score))(t)
 	}

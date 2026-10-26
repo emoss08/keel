@@ -203,7 +203,8 @@ func TestTypedFunctionPredicatesRender(t *testing.T) {
 
 	left := s.ProNumber.Left(3)
 	sql, args := renderOf(t, d, s.Pick(left, keel.Count()).Group(left))
-	if strings.Count(sql, "left(s.\"pro_number\", $3)") != 2 || len(args) != 3 {
+	if strings.Count(sql, "left(s.\"pro_number\", $3)") != 1 || !strings.HasSuffix(sql, " GROUP BY 1") ||
+		len(args) != 3 {
 		t.Fatalf("an expression written in Pick and Group binds its value once: %s %v", sql, args)
 	}
 }

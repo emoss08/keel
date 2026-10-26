@@ -134,8 +134,8 @@ func TestRecordShapesFromStatements(t *testing.T) {
 		ok(t, c.Create(ctx, d, cust))
 		must(c.Get(ctx, d, cust.ID))(t)
 	}
-	must(c.Where(c.Code.Eq("SH1")).List(ctx, d))(t)
-	must(c.Where(c.Code.Eq("SH2")).List(ctx, d))(t)
+	must(c.Where(c.Code.Eq("SH1")).Limit(10).List(ctx, d))(t)
+	must(c.Where(c.Code.Eq("SH2")).Limit(10).List(ctx, d))(t)
 	must(c.Where(c.Code.Eq("SH1")).Explain(ctx, d, keel.ExplainOptions{}))(t)
 	ok(t, keel.Write(ctx, d, func(ctx context.Context) error {
 		_, err := keel.Exec(ctx, d, "SAVEPOINT shapes_test")
@@ -161,7 +161,7 @@ func TestRecordShapesFromStatements(t *testing.T) {
 	if ops["select"] < 2 {
 		t.Fatalf("want the Get and the List shapes, got %d select shapes:\n%s", ops["select"], buf.String())
 	}
-	list, _, err := c.Where(c.Code.Eq("SH9")).ToSQL(ctx, d)
+	list, _, err := c.Where(c.Code.Eq("SH9")).Limit(10).ToSQL(ctx, d)
 	ok(t, err)
 	found := false
 	for _, s := range shapes {

@@ -61,7 +61,7 @@ func TestSaveExcept(t *testing.T) {
 	ok(t, c.Create(ctx, d, full))
 
 	stale := must(c.Get(ctx, d, full.ID))(t)
-	_, err := c.Where(c.ID.Eq(full.ID)).Update(ctx, d, c.Phone.To("555-9999"), c.Version.Add(0))
+	_, err := c.Where(c.ID.Eq(full.ID)).Update(ctx, d, c.Phone.To("555-9999"), c.Version.Increment(0))
 	ok(t, err)
 	fresh := must(c.Get(ctx, d, full.ID))(t)
 	fresh.Name, fresh.Phone = "renamed", "stale"

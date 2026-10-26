@@ -323,7 +323,7 @@ func ExampleQuery_Update() {
 	now := time.Now().Unix()
 	n, err := s.
 		Where(s.Status.Eq(fleet.StatusNew), s.Customer().Code.Eq("ACME")).
-		Update(ctx, db, s.Status.To(fleet.StatusCanceled), s.CanceledAt.To(now), s.Priority.Add(1))
+		Update(ctx, db, s.Status.To(fleet.StatusCanceled), s.CanceledAt.To(now), s.Priority.Increment(1))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -365,7 +365,7 @@ func ExampleConflict_Set() {
 		keel.OnConflict(c.OrganizationID, c.BusinessUnitID, c.Code).Set(
 			c.Name.ToExpr(c.Name.Excluded()),
 			c.Email.ToExpr(keel.Raw("coalesce(?, ?)", c.Email, c.Email.Excluded())),
-			c.Version.Add(10),
+			c.Version.Increment(10),
 		))
 	if err != nil {
 		log.Fatal(err)

@@ -166,7 +166,7 @@ func TestUpsertFromSQLRendersWithoutRunning(t *testing.T) {
 	c := fleetdb.Contacts
 	src := keel.Rows("src", []string{"id", "name", "score"}, keel.DynLit("con_1"), keel.DynLit("n"), keel.DynLit(1))
 	sql, args, err := c.UpsertFromSQL(ctx, d, src,
-		keel.OnConflict(c.OrganizationID, c.BusinessUnitID, c.Name).Set(c.Score.Add(1)).UpdateWhere(c.Score.Lt(3)),
+		keel.OnConflict(c.OrganizationID, c.BusinessUnitID, c.Name).Set(c.Score.Increment(1)).UpdateWhere(c.Score.Lt(3)),
 		c.ID, c.Name, c.Score)
 	ok(t, err)
 	if !strings.Contains(sql, `ON CONFLICT ("organization_id", "business_unit_id", "name") DO UPDATE SET "score" = c."score" + $`) ||
