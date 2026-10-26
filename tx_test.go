@@ -420,6 +420,18 @@ func TestSettingAppliesToTheTransactionAndRestoresAJoinedOne(t *testing.T) {
 		return nil
 	}))
 
+	ok(t, keel.Read(ctx, d, func(ctx context.Context) error {
+		ok(t, keel.Read(ctx, d, func(ctx context.Context) error {
+			must(keel.Exec(ctx, d, "LOAD 'auto_explain'"))(t)
+			eq(t, must(keel.QueryValue[string](ctx, d,
+				"SELECT current_setting('auto_explain.log_min_duration')"))(t), "5ms")
+			return nil
+		}, keel.Setting("auto_explain.log_min_duration", "5")))
+		eq(t, must(keel.QueryValue[string](ctx, d,
+			"SELECT current_setting('auto_explain.log_min_duration')"))(t), "-1")
+		return nil
+	}))
+
 	err := keel.Read(ctx, d, func(context.Context) error { return nil }, keel.Setting("work_mem;", "1MB"))
 	if err == nil || !strings.Contains(err.Error(), "setting name") {
 		t.Fatalf("got %v", err)

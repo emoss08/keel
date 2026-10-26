@@ -374,11 +374,14 @@ func (tx *txState) acquire(ctx context.Context) (pgConn, error) {
 
 // withSettings runs fn with settings applied to the transaction on ctx and restores their values
 // after it. A failed fn leaves them: its error rolls the transaction back or the caller handles it
-// after a savepoint rollback, which restores them itself.
+// after a savepoint rollback, which restores them itself. A setting the session did not know yet,
+// an extension's before its library loads, is restored to its reset value: fn may load the library
+// (pgvector's hnsw.ef_search on the first vector query of a connection), which turns the
+// placeholder into a typed setting that refuses the empty string.
 func (db *DB) withSettings(ctx context.Context, settings []setting, fn func(context.Context) error) error {
-	prev := make([]string, len(settings))
+	prev := make([]*string, len(settings))
 	for i, st := range settings {
-		v, err := QueryValue[string](ctx, db, "SELECT coalesce(current_setting($1, true), '')", st.name)
+		v, err := QueryValue[*string](ctx, db, "SELECT current_setting($1, true)", st.name)
 		if err != nil {
 			return err
 		}
@@ -391,12 +394,15 @@ func (db *DB) withSettings(ctx context.Context, settings []setting, fn func(cont
 		return err
 	}
 	for i := len(settings) - 1; i >= 0; i-- {
-		if _, err := Exec(ctx, db, "SELECT set_config($1, $2, true)", settings[i].name, prev[i]); err != nil {
+		if _, err := Exec(ctx, db, restoreSettingSQL, settings[i].name, prev[i]); err != nil {
 			return err
 		}
 	}
 	return nil
 }
+
+const restoreSettingSQL = "SELECT set_config($1, coalesce($2::text, " +
+	"(SELECT reset_val FROM pg_catalog.pg_settings WHERE name = $1), ''), true)"
 
 // level returns the isolation level the transaction begins with: its own option, else, for an
 // explicit Read, Config.ReadIsolation (REPEATABLE READ in place of SERIALIZABLE on a replica, which
