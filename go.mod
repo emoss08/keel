@@ -4,6 +4,11 @@ go 1.26.0
 
 toolchain go1.26.10
 
+retract (
+	v0.4.2 // Tagged on v0.3.0's commit by mistake; use v0.4.3.
+	v0.4.1 // Tagged on v0.3.0's commit by mistake; use v0.4.3.
+)
+
 require (
 	charm.land/bubbles/v2 v2.2.1
 	charm.land/bubbletea/v2 v2.1.0
