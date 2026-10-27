@@ -274,8 +274,9 @@ JSON themselves.
   `sql.Scanner`: each value is decoded, formatted and parsed again. Scanning decimals takes less
   than half the time and binding them a third, with 2.5 times fewer allocations. Values read
   match the text path exactly, coefficient and exponent, and NULL, NaN and infinities fail or
-  set `NullDecimal` invalid as before. `github.com/jackc/pgx-shopspring-decimal` no longer
-  speeds up reads: since pgx 5.6 a `sql.Scanner` is planned before its wrappers.
+  set `NullDecimal` invalid as before. Dynamic results, and the analytics engine on them, read
+  a numeric column as `TypeNumeric` with or without it. `github.com/jackc/pgx-shopspring-decimal`
+  no longer speeds up reads: since pgx 5.6 a `sql.Scanner` is planned before its wrappers.
 
 ```go
 AfterConnect: numeric.Register,

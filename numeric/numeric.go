@@ -23,7 +23,7 @@ import (
 // numeric as pgx does. Use it as Config.AfterConnect, or call it from one.
 func Register(_ context.Context, conn *pgx.Conn) error {
 	m := conn.TypeMap()
-	elem := &pgtype.Type{Name: "numeric", OID: pgtype.NumericOID, Codec: codec{}}
+	elem := &pgtype.Type{Name: "numeric", OID: pgtype.NumericOID, Codec: Codec{}}
 	m.RegisterType(elem)
 	m.RegisterType(&pgtype.Type{Name: "_numeric", OID: pgtype.NumericArrayOID,
 		Codec: &pgtype.ArrayCodec{ElementType: elem}})
@@ -38,10 +38,11 @@ func Register(_ context.Context, conn *pgx.Conn) error {
 	return nil
 }
 
-// codec is pgx's numeric codec with binary plans for the decimal types.
-type codec struct{ pgtype.NumericCodec }
+// Codec is pgx's numeric codec with binary plans for the decimal types. It is exported so code that
+// chooses a decoder by a type's codec, such as keel's dynamic results, reads it as numeric.
+type Codec struct{ pgtype.NumericCodec }
 
-func (c codec) PlanScan(m *pgtype.Map, oid uint32, format int16, target any) pgtype.ScanPlan {
+func (c Codec) PlanScan(m *pgtype.Map, oid uint32, format int16, target any) pgtype.ScanPlan {
 	if format == pgtype.BinaryFormatCode {
 		switch target.(type) {
 		case *decimal.Decimal, *decimal.NullDecimal:
@@ -51,7 +52,7 @@ func (c codec) PlanScan(m *pgtype.Map, oid uint32, format int16, target any) pgt
 	return c.NumericCodec.PlanScan(m, oid, format, target)
 }
 
-func (c codec) PlanEncode(m *pgtype.Map, oid uint32, format int16, value any) pgtype.EncodePlan {
+func (c Codec) PlanEncode(m *pgtype.Map, oid uint32, format int16, value any) pgtype.EncodePlan {
 	if format == pgtype.BinaryFormatCode {
 		switch value.(type) {
 		case decimal.Decimal, decimal.NullDecimal:

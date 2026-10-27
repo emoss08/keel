@@ -13,6 +13,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/emoss08/keel/numeric"
 	"github.com/emoss08/keel/schema"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -337,7 +338,7 @@ func dynDecoderFor(db *DB, m *pgtype.Map, fd pgconn.FieldDescription) (ValueType
 			return TypeFloat64, decodeFloatText
 		}
 		return TypeFloat64, decodeFloatBinary
-	case pgtype.NumericCodec:
+	case pgtype.NumericCodec, numeric.Codec:
 		if text {
 			return TypeNumeric, decodeNumericText
 		}

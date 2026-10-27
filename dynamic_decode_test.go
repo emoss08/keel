@@ -6,7 +6,10 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/emoss08/keel/numeric"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 func TestAppendNumeric(t *testing.T) {
@@ -125,6 +128,17 @@ func TestDynamicDecodeTextAndBinary(t *testing.T) {
 	for i := 18; i < len(binaryRes.Columns); i++ {
 		if !binaryRes.Columns[i].IsNull(0) || !textRes.Columns[i].IsNull(0) {
 			t.Fatalf("column %d is not NULL", i+1)
+		}
+	}
+}
+
+func TestDynamicDecodeRegisteredNumericCodec(t *testing.T) {
+	m := pgtype.NewMap()
+	m.RegisterType(&pgtype.Type{Name: "numeric", OID: pgtype.NumericOID, Codec: numeric.Codec{}})
+	for _, format := range []int16{pgtype.TextFormatCode, pgtype.BinaryFormatCode} {
+		fd := pgconn.FieldDescription{Name: "n", DataTypeOID: pgtype.NumericOID, Format: format}
+		if got, _ := dynDecoderFor(&DB{}, m, fd); got != TypeNumeric {
+			t.Fatalf("format %d: numeric decodes as %s, want %s", format, got, TypeNumeric)
 		}
 	}
 }
