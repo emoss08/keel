@@ -268,15 +268,17 @@ JSON themselves.
   `WHERE status = 'Active'`, which it never can from a parameter. Any other value is bound.
 - **Domains and composite types** must be listed in `LoadTypes`, each with its array type, by
   their unquoted names (`ops.label`). They load after the enums, through pgx's `LoadTypes`.
-- **Decimals:** register a binary codec in `AfterConnect`, for example
-  `github.com/jackc/pgx-shopspring-decimal`, so numeric values travel in binary instead of being
-  parsed from text:
+- **Decimals:** `github.com/emoss08/keel/numeric` reads and binds `shopspring/decimal` values
+  (`decimal.Decimal`, `decimal.NullDecimal`, and slices of them for `numeric[]` and bulk inserts)
+  in binary. Without it pgx hands a decimal the text of every value, because the type is a
+  `sql.Scanner`: each value is decoded, formatted and parsed again. Scanning decimals takes less
+  than half the time and binding them a third, with 2.5 times fewer allocations. Values read
+  match the text path exactly, coefficient and exponent, and NULL, NaN and infinities fail or
+  set `NullDecimal` invalid as before. `github.com/jackc/pgx-shopspring-decimal` no longer
+  speeds up reads: since pgx 5.6 a `sql.Scanner` is planned before its wrappers.
 
 ```go
-AfterConnect: func(ctx context.Context, conn *pgx.Conn) error {
-    pgxdecimal.Register(conn.TypeMap())
-    return nil
-},
+AfterConnect: numeric.Register,
 ```
 
 - **Extension types (PostGIS, pgvector):** a column of a Go type that implements `sql.Scanner`

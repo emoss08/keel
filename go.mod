@@ -19,6 +19,7 @@ require (
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/maypok86/otter/v2 v2.4.0
 	github.com/paulmach/orb v0.13.0
+	github.com/shopspring/decimal v1.5.0
 	github.com/sourcegraph/conc v0.3.1-0.20240121214520-5f936abd7ae8
 	github.com/xuri/excelize/v2 v2.11.0
 	golang.org/x/sync v0.24.0
