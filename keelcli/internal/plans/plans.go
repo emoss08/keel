@@ -31,7 +31,9 @@ type Rules struct {
 	MaxCost float64
 	// SortLimit flags a Sort under a Limit, a page sorted in full because no index gives its order,
 	// when the largest relation the sort reads has more rows than SeqScanRows: a sort of a small
-	// reference table is a correct plan.
+	// reference table is a correct plan. A sort of an aggregate's output is judged by the rows the
+	// aggregate returns, not the relations it reads: no index orders an aggregate, and ranking a
+	// few grouped rows is a correct plan.
 	SortLimit bool
 }
 
@@ -184,6 +186,36 @@ func (n Node) Relations() []Relation {
 	return out
 }
 
+// aggregates are the nodes whose output is rows they compute from their input, so a sort above one
+// orders those rows and not the relations below it.
+var aggregates = []string{"Aggregate", "Group"}
+
+// SortInput returns the relations a sort at n reads, in plan order, each once, stopping at an
+// aggregate, and the most rows any aggregate it stopped at returns.
+func (n Node) SortInput() ([]Relation, float64) {
+	var rels []Relation
+	var aggRows float64
+	var visit func(Node)
+	visit = func(x Node) {
+		if slices.Contains(aggregates, x.Type) {
+			aggRows = max(aggRows, x.PlanRows)
+			return
+		}
+		if x.Relation != "" {
+			if r := (Relation{Schema: x.Schema, Name: x.Relation}); !slices.Contains(rels, r) {
+				rels = append(rels, r)
+			}
+		}
+		for _, c := range x.Plans {
+			visit(c)
+		}
+	}
+	for _, c := range n.Plans {
+		visit(c)
+	}
+	return rels, aggRows
+}
+
 // largest returns the relation of rels with the most rows in tuples and its count, never
 // negative; the zero Relation and 0 when rels is empty.
 func largest(rels []Relation, tuples map[Relation]float64) (Relation, float64) {
@@ -215,7 +247,11 @@ func Check(root Node, rules Rules, tuples map[Relation]float64) []Finding {
 	}
 	if rules.SortLimit {
 		for _, s := range root.SortsUnderLimit() {
-			rel, rows := largest(s.Relations(), tuples)
+			rels, aggRows := s.SortInput()
+			rel, rows := largest(rels, tuples)
+			if aggRows > rows {
+				rel, rows = Relation{}, aggRows
+			}
 			if rows <= rules.SeqScanRows {
 				continue
 			}
@@ -223,8 +259,11 @@ func Check(root Node, rules Rules, tuples map[Relation]float64) []Finding {
 			if len(s.SortKey) > 0 {
 				detail = "sort by " + strings.Join(s.SortKey, ", ") + " under a limit"
 			}
-			if rel.Name != "" {
+			switch {
+			case rel.Name != "":
 				detail += fmt.Sprintf(" over %s (about %s rows)", rel, formatCount(rows))
+			case aggRows > 0:
+				detail += fmt.Sprintf(" over an aggregate (about %s rows)", formatCount(rows))
 			}
 			out = append(out, Finding{Kind: SortUnderLimit, Relation: rel.String(), Rows: rows, SortKey: s.SortKey,
 				Detail: detail + sortedInFull})
@@ -375,7 +414,8 @@ func Run(ctx context.Context, conn *pgx.Conn, shapes []keel.Shape, rules Rules) 
 		measured := root.SeqScans()
 		if rules.SortLimit {
 			for _, sn := range root.SortsUnderLimit() {
-				measured = append(measured, sn.Relations()...)
+				rels, _ := sn.SortInput()
+				measured = append(measured, rels...)
 			}
 		}
 		for _, r := range measured {

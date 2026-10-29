@@ -1,0 +1,48 @@
+[
+  {
+    "Plan": {
+      "Node Type": "Limit",
+      "Startup Cost": 9000.0,
+      "Total Cost": 9000.1,
+      "Plan Rows": 5,
+      "Plans": [
+        {
+          "Node Type": "Sort",
+          "Parent Relationship": "Outer",
+          "Startup Cost": 9000.0,
+          "Total Cost": 9001.0,
+          "Plan Rows": 50000,
+          "Sort Key": [
+            "(sum(shipments.total_charge_amount)) DESC"
+          ],
+          "Plans": [
+            {
+              "Node Type": "Aggregate",
+              "Strategy": "Hashed",
+              "Parent Relationship": "Outer",
+              "Startup Cost": 8000.0,
+              "Total Cost": 8500.0,
+              "Plan Rows": 50000,
+              "Group Key": [
+                "shipments.customer_id"
+              ],
+              "Plans": [
+                {
+                  "Node Type": "Index Scan",
+                  "Parent Relationship": "Outer",
+                  "Index Name": "idx_shipments_created",
+                  "Relation Name": "shipments",
+                  "Schema": "tms",
+                  "Alias": "shipments",
+                  "Startup Cost": 0.42,
+                  "Total Cost": 7000.0,
+                  "Plan Rows": 200000
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+]

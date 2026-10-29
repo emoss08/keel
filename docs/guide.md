@@ -4748,7 +4748,9 @@ keelcli: plans found 2 findings
   index gives its order. It uses the same threshold: the sort is flagged only when the largest
   relation it reads (by any scan, index scans included) has more than `-seq-scan-rows` rows, so a
   settings or reference table sorted under a limit passes, and `-seq-scan-rows -1` flags every
-  sort under a limit. An `Incremental Sort` passes.
+  sort under a limit. A sort of an aggregate's output (a top-N of grouped rows) is judged by the
+  rows the `Aggregate` or `Group` returns, not the relations it reads: no index orders an
+  aggregate, and ranking a few grouped rows is a correct plan. An `Incremental Sort` passes.
 - A shape EXPLAIN cannot plan (a temporary table, a parameter whose type Postgres cannot infer) is
   listed with its error and does not fail the run. Any finding exits 3, keelcli's "a check found
   problems"; `-json` writes one document with `shapes`, `findings`, `unplanned` and a report per
