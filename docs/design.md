@@ -988,9 +988,9 @@ before it ships, from the statements the application really sends:
   analyzed counts as empty; `-1` flags every one); a total cost over `-max-cost`; with
   `-sort-limit`, a `Sort` a `Limit` reads through `Gather`, `Gather Merge`, `Result`,
   `Subquery Scan`, `Materialize`, `Unique` or `Merge Append` only, when the largest relation the
-  sort reads has more than `-seq-scan-rows` rows, reading no further down than an `Aggregate` or
-  `Group`, whose returned rows count instead (an `Incremental Sort`, a sort feeding an aggregate,
-  a sort of a few grouped rows, or a sort of a small reference table is not one). A shape EXPLAIN cannot plan is reported with its error
+  sort reads has more than `-seq-scan-rows` rows, reading no further down than an `Aggregate`,
+  `Group`, `Unique` or `SetOp`, whose returned rows count instead (an `Incremental Sort`, a sort
+  feeding an aggregate, a sort of a few grouped or unioned rows, or a sort of a small reference table is not one). A shape EXPLAIN cannot plan is reported with its error
   and does not fail the run; any finding exits 3, keelcli's "a check found problems".
   PostgreSQL 16 or later is required.
 

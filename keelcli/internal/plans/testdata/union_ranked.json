@@ -1,0 +1,78 @@
+[
+  {
+    "Plan": {
+      "Node Type": "Limit",
+      "Startup Cost": 900.0,
+      "Total Cost": 900.1,
+      "Plan Rows": 50,
+      "Plans": [
+        {
+          "Node Type": "Sort",
+          "Parent Relationship": "Outer",
+          "Startup Cost": 900.0,
+          "Total Cost": 901.0,
+          "Plan Rows": 400,
+          "Sort Key": [
+            "shipments.updated_at DESC",
+            "shipments.id DESC"
+          ],
+          "Plans": [
+            {
+              "Node Type": "Unique",
+              "Parent Relationship": "Outer",
+              "Startup Cost": 800.0,
+              "Total Cost": 850.0,
+              "Plan Rows": 400,
+              "Plans": [
+                {
+                  "Node Type": "Sort",
+                  "Parent Relationship": "Outer",
+                  "Startup Cost": 700.0,
+                  "Total Cost": 750.0,
+                  "Plan Rows": 400,
+                  "Sort Key": [
+                    "shipments.id",
+                    "shipments.updated_at"
+                  ],
+                  "Plans": [
+                    {
+                      "Node Type": "Append",
+                      "Parent Relationship": "Outer",
+                      "Startup Cost": 0.42,
+                      "Total Cost": 600.0,
+                      "Plan Rows": 400,
+                      "Plans": [
+                        {
+                          "Node Type": "Index Scan",
+                          "Parent Relationship": "Member",
+                          "Index Name": "idx_shipments_open_status",
+                          "Relation Name": "shipments",
+                          "Schema": "tms",
+                          "Alias": "shipments",
+                          "Startup Cost": 0.42,
+                          "Total Cost": 300.0,
+                          "Plan Rows": 200
+                        },
+                        {
+                          "Node Type": "Index Scan",
+                          "Parent Relationship": "Member",
+                          "Index Name": "idx_shipments_updated",
+                          "Relation Name": "shipments",
+                          "Schema": "tms",
+                          "Alias": "shipments",
+                          "Startup Cost": 0.42,
+                          "Total Cost": 300.0,
+                          "Plan Rows": 200
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+]

@@ -80,6 +80,7 @@ func TestSortsUnderLimit(t *testing.T) {
 		{"incremental", nil},
 		{"aggregate_page", nil},
 		{"aggregate_ranked", [][]string{{"(sum(shipments.total_charge_amount)) DESC"}}},
+		{"union_ranked", [][]string{{"shipments.updated_at DESC", "shipments.id DESC"}}},
 		{"index_scan", nil},
 		{"joins", nil},
 	}
@@ -108,6 +109,13 @@ func TestRelations(t *testing.T) {
 	}
 	if rels, aggRows := ranked[0].SortInput(); len(rels) != 0 || aggRows != 300 {
 		t.Fatalf("sort input of a ranked aggregate: %v %v", rels, aggRows)
+	}
+	union := fixture(t, "union_ranked").SortsUnderLimit()
+	if len(union) != 1 {
+		t.Fatalf("union sorts %+v", union)
+	}
+	if rels, rows := union[0].SortInput(); len(rels) != 0 || rows != 400 {
+		t.Fatalf("sort input of a ranked union: %v %v", rels, rows)
 	}
 	if rels, aggRows := sorts[0].SortInput(); !slices.Equal(rels, []Relation{{"public", "big"}}) || aggRows != 0 {
 		t.Fatalf("sort input of a sorted page: %v %v", rels, aggRows)
@@ -157,6 +165,7 @@ func TestCheck(t *testing.T) {
 		{"aggregate_page", Rules{SeqScanRows: -1, SortLimit: true}, ""},
 		{"aggregate_ranked", Rules{SeqScanRows: 10000, SortLimit: true}, ""},
 		{"aggregate_ranked_wide", Rules{SeqScanRows: 10000, SortLimit: true}, "sort-under-limit"},
+		{"union_ranked", Rules{SeqScanRows: 10000, SortLimit: true}, ""},
 	}
 	for _, c := range cases {
 		if got := kinds(Check(fixture(t, c.fixture), c.rules, tuples)); got != c.want {
