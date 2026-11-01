@@ -250,6 +250,7 @@ Trenova's `seedtest` template harness and makes `db reset` instant.
 | `not-null-default` | `ADD COLUMN … NOT NULL` without a default on an existing table |
 | `notx-mixed` | `CONCURRENTLY` or `ALTER TYPE … ADD VALUE` in a transactional migration |
 | `lock-heavy` | `ALTER TABLE … SET DATA TYPE`, `VALIDATE` without a prior `NOT VALID` |
+| `table-rewrite` | `ADD COLUMN` that fills every existing row: serial, identity, stored generated or a volatile default |
 
 ```go
 migrate.LintRule{Name: "tenant-rls", Check: func(m migrate.Migration) []migrate.Finding { … }}
