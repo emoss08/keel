@@ -55,6 +55,8 @@ type LintRule struct {
 //	                    statements, or a notx statement sharing a --keel:split part with others
 //	lock-heavy          ALTER COLUMN … TYPE, SET NOT NULL, ADD CONSTRAINT that validates or builds an
 //	                    index under the table lock, VALIDATE in the migration that added it NOT VALID
+//	table-rewrite       ADD COLUMN on an existing table that fills every row: a serial or identity
+//	                    column, a stored generated column or a volatile DEFAULT
 func Lint(migrations []Migration, rules ...LintRule) []Finding {
 	all := append(builtinRules(), rules...)
 	var out []Finding
@@ -87,6 +89,7 @@ func builtinRules() []LintRule {
 		{Name: "not-null-default", Check: checkNotNullDefault},
 		{Name: "notx-mixed", Check: checkNoTxMixed},
 		{Name: "lock-heavy", Check: checkLockHeavy},
+		{Name: "table-rewrite", Check: checkTableRewrite},
 	}
 }
 
@@ -515,4 +518,84 @@ func (ms migrationSQL) lockHeavy(table string, a sqlStmt, notValid map[string]bo
 			"VALIDATE CONSTRAINT %s in the migration that added it NOT VALID holds the lock for the whole scan; validate it in a later migration", a.toks[2].text), true
 	}
 	return Finding{}, false
+}
+
+// serialTypes are the column types that add a sequence default, so adding one fills every row.
+var serialTypes = []string{"SMALLSERIAL", "SERIAL", "BIGSERIAL", "SERIAL2", "SERIAL4", "SERIAL8"}
+
+// volatileFuncs are the built-in volatile functions a column default commonly calls. Postgres
+// evaluates a volatile default once per existing row, so the column cannot be added from the
+// catalog alone.
+var volatileFuncs = []string{
+	"CLOCK_TIMESTAMP", "GEN_RANDOM_UUID", "NEXTVAL", "RANDOM", "TIMEOFDAY",
+	"UUID_GENERATE_V1", "UUID_GENERATE_V1MC", "UUID_GENERATE_V4", "UUIDV4", "UUIDV7",
+}
+
+// checkTableRewrite flags ADD COLUMN actions that rewrite an existing table under an ACCESS
+// EXCLUSIVE lock.
+func checkTableRewrite(m Migration) []Finding {
+	ms := parseSQL(m)
+	news := ms.created()
+	var out []Finding
+	for i, st := range ms.stmts {
+		table, actions, ok := alterTable(st)
+		if !ok || news[i][tableName(table)] {
+			continue
+		}
+		for _, toks := range actions {
+			a := action(toks)
+			col, ok := addedColumn(a)
+			if !ok {
+				continue
+			}
+			if why, ok := rewrites(a); ok {
+				out = append(out, ms.finding(toks[0], SeverityWarning,
+					"adding %s to %s with %s rewrites every row under an ACCESS EXCLUSIVE lock; add a plain nullable column, backfill it in batches and keep it current from the write path or a trigger",
+					col, table, why))
+			}
+		}
+	}
+	return out
+}
+
+// rewrites returns why an ADD COLUMN action fills every existing row, if it does.
+func rewrites(a sqlStmt) (string, bool) {
+	if typ := columnType(a); slices.Contains(serialTypes, typ) {
+		return "a " + strings.ToLower(typ) + " type", true
+	}
+	if g := a.find(0, "GENERATED"); g >= 0 {
+		switch {
+		case a.find(g, "IDENTITY") >= 0:
+			return "an identity", true
+		case a.find(g, "STORED") >= 0:
+			return "a stored generated expression", true
+		}
+	}
+	d := a.find(0, "DEFAULT")
+	if d < 0 {
+		return "", false
+	}
+	for j := d + 1; j+1 < len(a.toks); j++ {
+		name := a.toks[j].upper
+		name = name[strings.LastIndexByte(name, '.')+1:]
+		if a.toks[j+1].text == "(" && slices.Contains(volatileFuncs, name) {
+			return "the volatile default " + strings.ToLower(name) + "()", true
+		}
+	}
+	return "", false
+}
+
+// columnType returns the upper-cased first word of an ADD COLUMN action's type.
+func columnType(a sqlStmt) string {
+	i := 1
+	if a.is(i, "COLUMN") {
+		i++
+	}
+	if a.is(i, "IF", "NOT", "EXISTS") {
+		i += 3
+	}
+	if i+1 >= len(a.toks) {
+		return ""
+	}
+	return a.toks[i+1].upper
 }

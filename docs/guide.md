@@ -4188,6 +4188,7 @@ literals removed; a table not created earlier in the same migration counts as ex
 | `not-null-default` | `ADD COLUMN … NOT NULL` without a `DEFAULT` on an existing table (error) |
 | `notx-mixed` | `CONCURRENTLY` or `VACUUM` in a transaction, a notx statement sharing a split part (errors); `ALTER TYPE … ADD VALUE` beside other statements |
 | `lock-heavy` | `ALTER COLUMN … TYPE`, `SET NOT NULL`, `ADD CONSTRAINT` that validates or builds an index under the table lock, `VALIDATE` in the migration that added it `NOT VALID` |
+| `table-rewrite` | `ADD COLUMN` on an existing table that fills every row under the table lock: a `serial` or identity column, a `GENERATED … STORED` column, or a volatile `DEFAULT` such as `gen_random_uuid()` |
 
 Add rules with `migrate.LintRule{Name: "tenant-rls", Check: func(m migrate.Migration) []migrate.Finding { … }}`,
 and skip one for a file with `--keel:lint_ignore`.
