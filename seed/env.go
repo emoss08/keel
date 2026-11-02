@@ -68,7 +68,7 @@ func MarkEnvironment(ctx context.Context, db *keel.DB, env Env, force bool) erro
 
 // Environment returns the environment recorded on the database, or "" when none is.
 func Environment(ctx context.Context, db *keel.DB) (Env, error) {
-	st, err := loadState(ctx, db.Pool())
+	st, err := loadState(ctx, keel.Pool(db))
 	if err != nil {
 		return "", err
 	}

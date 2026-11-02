@@ -325,6 +325,6 @@ func result(t testing.TB, r seed.Report, name string) seed.Result {
 func scalar[T any](t testing.TB, d *keel.DB, sql string, args ...any) T {
 	t.Helper()
 	var v T
-	ok(t, d.Pool().QueryRow(context.Background(), sql, args...).Scan(&v))
+	ok(t, keel.Pool(d).QueryRow(context.Background(), sql, args...).Scan(&v))
 	return v
 }

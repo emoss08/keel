@@ -74,7 +74,7 @@ func TestComplexityGuard(t *testing.T) {
 func holdSlot(t *testing.T, w *world, slot int32) (release func()) {
 	t.Helper()
 	ctx := context.Background()
-	conn, err := db(t).Pool().Acquire(ctx)
+	conn, err := keel.Pool(db(t)).Acquire(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}

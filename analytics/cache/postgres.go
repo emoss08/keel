@@ -28,7 +28,7 @@ const cleanupTimeout = 30 * time.Second
 var identifier = regexp.MustCompile(`^[a-z_][a-z0-9_]{0,62}$`)
 
 // Querier is the part of a pgx pool the Postgres store uses; *pgxpool.Pool satisfies it, and a
-// keel application passes db.Pool().
+// keel application passes keel.Pool(db).
 type Querier interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row

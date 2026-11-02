@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/emoss08/keel"
 	"github.com/emoss08/keel/internal/testdump"
 	"github.com/emoss08/keel/migrate"
 )
@@ -295,7 +296,7 @@ func TestSampleApplicationCommand(t *testing.T) {
 				return err
 			}
 			var n int
-			if err := db.Pool().QueryRow(ctx, "SELECT count(*) FROM tenants").Scan(&n); err != nil {
+			if err := keel.Pool(db).QueryRow(ctx, "SELECT count(*) FROM tenants").Scan(&n); err != nil {
 				return err
 			}
 			_, err = fmt.Fprintf(env.Stdout, "%d tenants\n", n)

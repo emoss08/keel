@@ -182,7 +182,7 @@ func TestRefreshAndPendingCommands(t *testing.T) {
 		t.Fatalf("pending after the refresh: %q", plain.String())
 	}
 	var n int64
-	ok(t, d.Pool().QueryRow(context.Background(), "SELECT sum(row_count) FROM cli_shipments_by_status WHERE organization_id = $1",
+	ok(t, keel.Pool(d).QueryRow(context.Background(), "SELECT sum(row_count) FROM cli_shipments_by_status WHERE organization_id = $1",
 		string(ctx.Value(tenantKey{}).([2]ids.ID)[0])).Scan(&n))
 	if n != 3 {
 		t.Fatalf("the rollup counts %d shipments, want 3", n)

@@ -469,7 +469,7 @@ func TestCacheRecoversFromListenerLoss(t *testing.T) {
 	eq(t, b.CacheStats().Hits, int64(1))
 
 	lost := b.CacheStats().Errors
-	_, err := a.Pool().Exec(context.Background(), `SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+	_, err := keel.Pool(a).Exec(context.Background(), `SELECT pg_terminate_backend(pid) FROM pg_stat_activity
 		WHERE datname = current_database() AND pid <> pg_backend_pid() AND query = 'LISTEN keel_data_versions'`)
 	ok(t, err)
 	waitFor(t, "the listener loss", func() bool { return b.CacheStats().Errors > lost })

@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/emoss08/keel"
 	"github.com/emoss08/keel/analytics"
 	"github.com/emoss08/keel/analytics/ir"
 	"github.com/emoss08/keel/schema"
@@ -184,7 +185,7 @@ func trenovaCatalog(t *testing.T) *analytics.Catalog {
 	t.Helper()
 	tables, ddl := trenovaTables()
 	var err error
-	trenovaOnce.Do(func() { _, err = db(t).Pool().Exec(context.Background(), ddl) })
+	trenovaOnce.Do(func() { _, err = keel.Pool(db(t)).Exec(context.Background(), ddl) })
 	if err != nil {
 		t.Fatal(err)
 	}

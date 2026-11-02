@@ -355,7 +355,7 @@ func TestSlowConnectionWaitsNameTheirTenant(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	held, err := db.pool.Acquire(ctx)
+	held, err := Pool(db).Acquire(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -157,10 +157,10 @@ func (a *applier) apply(ctx context.Context, seeds []*Seed) (Report, error) {
 	if a.opts.DryRun {
 		return a.dryRun(ctx, gr)
 	}
-	if a.db.Pool().Config().MaxConns < 2 {
+	if keel.Pool(a.db).Config().MaxConns < 2 {
 		return Report{}, errors.New("seed: the pool needs at least 2 connections: one holds the seed lock")
 	}
-	l, err := lock(ctx, a.db.Pool(), a.emit)
+	l, err := lock(ctx, keel.Pool(a.db), a.emit)
 	if err != nil {
 		return Report{}, err
 	}
@@ -210,7 +210,7 @@ func (a *applier) plan(gr *graph, st *state) (Plan, error) {
 }
 
 func (a *applier) dryRun(ctx context.Context, gr *graph) (Report, error) {
-	st, err := loadState(ctx, a.db.Pool())
+	st, err := loadState(ctx, keel.Pool(a.db))
 	if err != nil {
 		return Report{}, err
 	}

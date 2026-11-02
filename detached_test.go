@@ -178,7 +178,7 @@ func TestDetachedInsideAJoinedTransaction(t *testing.T) {
 	d := db(t)
 	ctx := newTenant()
 	c := fleetdb.Customers
-	pooled, err := d.Pool().Acquire(context.Background())
+	pooled, err := keel.Pool(d).Acquire(context.Background())
 	ok(t, err)
 	defer pooled.Release()
 	conn := pooled.Conn()

@@ -34,7 +34,7 @@ func singleConnDB(t *testing.T, edit func(cfg *keel.Config)) *keel.DB {
 func idle(t *testing.T, d *keel.DB) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
-	for d.Pool().Stat().AcquiredConns() != 0 {
+	for keel.Pool(d).Stat().AcquiredConns() != 0 {
 		if time.Now().After(deadline) {
 			t.Fatal("a connection is still checked out")
 		}
@@ -76,7 +76,7 @@ func TestReadEndsWithoutWaitingAndKeepsItsConnection(t *testing.T) {
 	}
 	idle(t, d)
 	eq(t, d.ReadCommitFailures(), int64(0))
-	eq(t, d.Pool().Stat().NewConnsCount(), int64(1))
+	eq(t, keel.Pool(d).Stat().NewConnsCount(), int64(1))
 	eq(t, must(c.Query().Count(ctx, d))(t), int64(1))
 }
 
@@ -96,7 +96,7 @@ func TestAwaitReadCommitAndSerializableReadsWait(t *testing.T) {
 				_, err := fleetdb.Customers.Query().Count(ctx, d)
 				return err
 			}, tc.opts...))
-			eq(t, d.Pool().Stat().AcquiredConns(), int32(0))
+			eq(t, keel.Pool(d).Stat().AcquiredConns(), int32(0))
 		})
 	}
 }

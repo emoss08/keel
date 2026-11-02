@@ -177,7 +177,7 @@ SELECT id, 'widget for ' || name, 'NY' FROM tenants`)
 
 func sampleTenants(ctx context.Context, db *keel.DB) iter.Seq2[seed.Tenant, error] {
 	return func(yield func(seed.Tenant, error) bool) {
-		rows, err := db.Pool().Query(ctx, "SELECT id, name FROM tenants ORDER BY id")
+		rows, err := keel.Pool(db).Query(ctx, "SELECT id, name FROM tenants ORDER BY id")
 		if err != nil {
 			yield(seed.Tenant{}, err)
 			return

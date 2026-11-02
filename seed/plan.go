@@ -111,7 +111,7 @@ func (g *Registry) Plan(ctx context.Context, db *keel.DB, opts Options) (Plan, e
 	if err != nil {
 		return Plan{}, err
 	}
-	st, err := loadState(ctx, db.Pool())
+	st, err := loadState(ctx, keel.Pool(db))
 	if err != nil {
 		return Plan{}, err
 	}

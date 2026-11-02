@@ -20,7 +20,7 @@ func TestTransactRunsSeedsInTheApplicationsTransaction(t *testing.T) {
 	o := opts(nil)
 	o.Transact = func(ctx context.Context, fn func(ctx context.Context) error) error {
 		transactions++
-		pooled, err := d.Pool().Acquire(ctx)
+		pooled, err := keel.Pool(d).Acquire(ctx)
 		if err != nil {
 			return err
 		}

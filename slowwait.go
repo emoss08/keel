@@ -5,8 +5,6 @@ import (
 	"runtime"
 	"strconv"
 	"time"
-
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // SlowWaitConfig reports work that waits longer than After for a tenant slot
@@ -126,7 +124,7 @@ func frames(pcs []uintptr) []string {
 }
 
 // acquire takes a connection from pool, waiting at most Config.MaxWait when it is set.
-func (db *DB) acquire(ctx context.Context, pool *pgxpool.Pool, tenant waitTenant) (*pgxpool.Conn, error) {
+func (db *DB) acquire(ctx context.Context, pool connPool, tenant waitTenant) (poolConn, error) {
 	if db.cfg.MaxWait <= 0 {
 		return db.acquireReported(ctx, pool, tenant)
 	}
@@ -141,10 +139,10 @@ func (db *DB) acquire(ctx context.Context, pool *pgxpool.Pool, tenant waitTenant
 
 // acquireReported takes a connection from pool, reporting a wait that crosses SlowWaitConfig.After
 // with the caller's stack, the waiting work's tenant and the pool's state.
-func (db *DB) acquireReported(ctx context.Context, pool *pgxpool.Pool, tenant waitTenant) (*pgxpool.Conn, error) {
+func (db *DB) acquireReported(ctx context.Context, pool connPool, tenant waitTenant) (poolConn, error) {
 	sw := db.slow
 	if sw == nil {
-		return pool.Acquire(ctx)
+		return acquireConn(ctx, pool)
 	}
 	pcs := callers()
 	start := time.Now()
@@ -163,7 +161,7 @@ func (db *DB) acquireReported(ctx context.Context, pool *pgxpool.Pool, tenant wa
 			},
 		})
 	})
-	conn, err := pool.Acquire(ctx)
+	conn, err := acquireConn(ctx, pool)
 	timer.Stop()
 	return conn, err
 }

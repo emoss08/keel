@@ -175,8 +175,13 @@ cfg.StatementCacheCapacity = 1024
 db, err := keel.Open(ctx, cfg)
 ```
 
-`db.Pool()` returns the underlying `*pgxpool.Pool` for work keel does not cover (`LISTEN`, `COPY`
-of foreign data). Statements sent through it bypass scope checks, interceptors and hooks.
+`keel.Pool(db)` returns the underlying `*pgxpool.Pool` for work keel does not cover (`LISTEN`,
+`COPY` of foreign data). Statements sent through it bypass scope checks, interceptors and hooks.
+`db.Stat()` returns the primary pool's `*pgxpool.Stat` for metrics. `Pool` is a function, not a
+method, and `DB` holds its pools behind an interface: `*pgxpool.Pool` holds puddle's generic pool,
+and Go compiles every method of an instantiated generic type again in each package that can see
+it, so a `DB` that exposed the pool made every package holding a `*keel.DB` compile about 90 of
+puddle's functions (roughly 24 KB and 0.1 s each). Only a package that calls `keel.Pool` pays now.
 
 ### Statement preparation
 
@@ -467,7 +472,7 @@ How versions move:
   `""`, so a change to a shared table, or one recorded for every tenant, moves every tenant's
   version. Each pair is bumped at most `Interval` after its commit: cache entries may outlive a
   change by that long.
-- `keel.Exec`, statements sent through `db.Pool()` and triggers are invisible: call
+- `keel.Exec`, statements sent through `keel.Pool(db)` and triggers are invisible: call
   `keel.MarkChanged(ctx, db, tables...)` next to them. Under a tenant scope it records the tenant,
   else `""`.
 - A version can move without a change (a write that matched no row, a statement that failed after
@@ -5485,7 +5490,7 @@ type Store interface {
 | Store | Where values live | Notes |
 |---|---|---|
 | `cache.NewMemory(cache.MemoryOptions{MaxBytes: 256 << 20})` | the process | [otter](https://github.com/maypok86/otter): entries expire at their TTL and a full store evicts the entries least likely to be read again (W-TinyLFU); `Get` returns a shared slice: do not modify it; `Close` stops its expiry goroutine |
-| `cache.NewPostgres(db.Pool(), cache.PostgresOptions{})` | `keel_analytics_cache`, an `UNLOGGED` table every process shares | created on first use under an advisory lock; expiry follows the database's clock; expired rows are deleted in batches of `CleanupBatch` in the background, at most every `CleanupEvery` per process, with `SKIP LOCKED`; `Cleanup` runs it on demand |
+| `cache.NewPostgres(keel.Pool(db), cache.PostgresOptions{})` | `keel_analytics_cache`, an `UNLOGGED` table every process shares | created on first use under an advisory lock; expiry follows the database's clock; expired rows are deleted in batches of `CleanupBatch` in the background, at most every `CleanupEvery` per process, with `SKIP LOCKED`; `Cleanup` runs it on demand |
 | `cache.NewRedis(client, cache.RedisOptions{})` | Redis, Valkey, Dragonfly, … | keel has no Redis dependency: `client` is three methods (`Get`, `Set`, `Del`) the application implements over its own client; the `RedisClient` comment shows go-redis |
 
 A value larger than the store takes (a shard's share of `MaxBytes`, or `MaxValueBytes`, 4 MiB by

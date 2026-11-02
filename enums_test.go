@@ -109,7 +109,7 @@ func TestEnumsRegisterInOneQuery(t *testing.T) {
 	const conns = 5
 	start := time.Now()
 	for range conns {
-		conn, err := db.pool.Acquire(ctx)
+		conn, err := Pool(db).Acquire(ctx)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -62,13 +62,13 @@ func (f *fakeRouter) Route(_ context.Context, q analytics.RollupQuery) (*analyti
 func TestRollupAnswersWhatItCovers(t *testing.T) {
 	w := seedWorld(t)
 	d := db(t)
-	_, err := d.Pool().Exec(context.Background(), `CREATE TABLE IF NOT EXISTS test_shipments_daily (
+	_, err := keel.Pool(d).Exec(context.Background(), `CREATE TABLE IF NOT EXISTS test_shipments_daily (
 		organization_id text, business_unit_id text, day bigint, customer_id text, status text,
 		total_sum numeric, n bigint, PRIMARY KEY (organization_id, business_unit_id, day, customer_id, status))`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = d.Pool().Exec(context.Background(), `INSERT INTO test_shipments_daily SELECT organization_id, business_unit_id, created_at / 86400 * 86400,
+	_, err = keel.Pool(d).Exec(context.Background(), `INSERT INTO test_shipments_daily SELECT organization_id, business_unit_id, created_at / 86400 * 86400,
 		customer_id, status::text, sum(total), count(*) FROM shipments WHERE organization_id = $1
 		GROUP BY 1, 2, 3, 4, 5`, w.org)
 	if err != nil {

@@ -188,7 +188,7 @@ func TestTenantConcurrencySlotSurvivesAPanic(t *testing.T) {
 	n, err := c.Query().Count(ctx, d)
 	ok(t, err)
 	eq(t, n, int64(1))
-	eq(t, d.Pool().Stat().AcquiredConns(), int32(0))
+	eq(t, keel.Pool(d).Stat().AcquiredConns(), int32(0))
 }
 
 func TestSlowWaitsReportATenantSlotWaitWithWhoHoldsTheSlot(t *testing.T) {

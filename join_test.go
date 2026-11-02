@@ -29,7 +29,7 @@ func TestJoinTxRunsInsideAForeignTransaction(t *testing.T) {
 	})
 	ctx := newTenant()
 	tn := ctx.Value(tenantKey{}).(tenant)
-	pooled, err := d.Pool().Acquire(context.Background())
+	pooled, err := keel.Pool(d).Acquire(context.Background())
 	ok(t, err)
 	defer pooled.Release()
 	conn := pooled.Conn()

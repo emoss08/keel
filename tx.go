@@ -9,7 +9,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type txKey struct{}
@@ -19,7 +18,7 @@ type txKey struct{}
 type txState struct {
 	db        *DB
 	conn      pgConn
-	pooled    *pgxpool.Conn
+	pooled    poolConn
 	joined    bool
 	readOnly  bool
 	implicit  bool
@@ -591,7 +590,7 @@ const drainTimeout = 30 * time.Second
 // goroutines. A connection already closed (a statement whose context ended) is released at once.
 // The reply is read under a context of its own, so the end of the caller's context
 // (a request that returned) does not cancel it.
-func (db *DB) endUnawaited(conn *pgxpool.Conn, sql string) {
+func (db *DB) endUnawaited(conn poolConn, sql string) {
 	if conn.Conn().IsClosed() {
 		conn.Release()
 		return
@@ -603,7 +602,7 @@ func (db *DB) endUnawaited(conn *pgxpool.Conn, sql string) {
 }
 
 // drain reads the reply of an unawaited COMMIT or ROLLBACK and lets conn go.
-func (db *DB) drain(conn *pgxpool.Conn, reply *pgconn.MultiResultReader, cancel context.CancelFunc) {
+func (db *DB) drain(conn poolConn, reply *pgconn.MultiResultReader, cancel context.CancelFunc) {
 	defer db.drains.Done()
 	err := reply.Close()
 	cancel()

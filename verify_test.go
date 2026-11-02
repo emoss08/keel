@@ -48,7 +48,7 @@ func TestVerifyReportsDrift(t *testing.T) {
 	_, _ = rand.Read(raw)
 	p := "vt_" + hex.EncodeToString(raw) + "_"
 	ctx := context.Background()
-	_, err := d.Pool().Exec(ctx, fmt.Sprintf(`
+	_, err := keel.Pool(d).Exec(ctx, fmt.Sprintf(`
 CREATE DOMAIN %[1]sword AS text NOT NULL;
 CREATE TABLE %[1]sx (
     id text NOT NULL,
@@ -70,7 +70,7 @@ CREATE TABLE %[1]sz (id text PRIMARY KEY);
 CREATE VIEW %[1]sv AS SELECT id, note FROM %[1]sx;`, p))
 	ok(t, err)
 	t.Cleanup(func() {
-		_, _ = d.Pool().Exec(context.Background(), fmt.Sprintf(`DROP VIEW %[1]sv; DROP TABLE %[1]sx, %[1]sy, %[1]sxy, %[1]sz;
+		_, _ = keel.Pool(d).Exec(context.Background(), fmt.Sprintf(`DROP VIEW %[1]sv; DROP TABLE %[1]sx, %[1]sy, %[1]sxy, %[1]sz;
 			DROP DOMAIN %[1]sword`, p))
 	})
 	y := verifyTable(p+"y", "Y", []schema.Column{

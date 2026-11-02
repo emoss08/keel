@@ -62,7 +62,7 @@ func internalConn(t *testing.T, setup string, loadTypes ...string) *pgxpool.Conn
 	if err != nil {
 		t.Fatal(err)
 	}
-	c, err := db.pool.Acquire(ctx)
+	c, err := Pool(db).Acquire(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}

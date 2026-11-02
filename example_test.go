@@ -1169,7 +1169,7 @@ func ExampleQueryRows() {
 func ExampleJoinTx() {
 	ctx, db := requestContext(), appDB
 
-	conn, err := db.Pool().Acquire(ctx)
+	conn, err := keel.Pool(db).Acquire(ctx)
 	if err != nil {
 		log.Fatal(err)
 	}

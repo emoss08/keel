@@ -393,7 +393,7 @@ func TestPanicInsideATransactionReleasesItsConnection(t *testing.T) {
 				}, keel.Detached())
 			})
 		}()
-		eq(t, d.Pool().Stat().AcquiredConns(), int32(0))
+		eq(t, keel.Pool(d).Stat().AcquiredConns(), int32(0))
 	}
 	n := must(c.Where(c.Code.In("PANIC", "PANIC2")).Count(ctx, d))(t)
 	eq(t, n, int64(0))

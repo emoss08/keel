@@ -175,7 +175,7 @@ type Statement struct {
 
 // DB is a pool of connections and the configuration keel applies to them.
 type DB struct {
-	pool     *pgxpool.Pool
+	pool     connPool
 	cfg      Config
 	hooks    hooks
 	icpt     interceptors
@@ -362,10 +362,6 @@ func (db *DB) TenantWaits() int64 {
 // ReadCommitFailures returns how many connections keel closed since Open because the reply to a
 // read-only COMMIT or ROLLBACK it did not wait for failed.
 func (db *DB) ReadCommitFailures() int64 { return db.drainFailures.Load() }
-
-// Pool returns the underlying pgx pool, for work keel does not cover (LISTEN, COPY of foreign
-// data). Statements sent through it bypass scope checks and hooks.
-func (db *DB) Pool() *pgxpool.Pool { return db.pool }
 
 // Ping checks that the database is reachable.
 func (db *DB) Ping(ctx context.Context) error { return db.pool.Ping(ctx) }

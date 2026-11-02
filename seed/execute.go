@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/emoss08/keel"
 	"github.com/sourcegraph/conc/pool"
 )
 
@@ -175,7 +176,7 @@ func (a *applier) pendingTenants(ctx, sys context.Context, j *job) ([]Tenant, er
 	done := map[string]bool{}
 	if j.item.Reason != Forced {
 		var err error
-		if done, err = doneTenants(ctx, a.db.Pool(), j.prep); err != nil {
+		if done, err = doneTenants(ctx, keel.Pool(a.db), j.prep); err != nil {
 			return nil, err
 		}
 	}

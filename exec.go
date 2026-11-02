@@ -7,7 +7,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // pgConn is a connection keel sends statements through: a connection of its own pools, or one
@@ -42,7 +41,7 @@ type runner struct {
 	sc     *scopeState
 	tx     *txState
 	own    bool
-	conn   *pgxpool.Conn
+	conn   poolConn
 	rep    *replica
 	hold   slotHold
 	cache  *cacheRun

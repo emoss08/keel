@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // Exec runs one SQL statement that keel does not render, such as DDL or a write to a bookkeeping
@@ -147,7 +146,7 @@ func ExecAll(ctx context.Context, db *DB, sql string, args ...any) (int64, error
 }
 
 // execOn runs a statement on a pool, the primary's when rep is nil, for its observers.
-func (db *DB) execOn(ctx context.Context, pool *pgxpool.Pool, rep *replica, sql string, args []any) (int64, error) {
+func (db *DB) execOn(ctx context.Context, pool connPool, rep *replica, sql string, args []any) (int64, error) {
 	s := &stmt{sql: sql, args: args, op: "exec"}
 	events, qctx := db.startEvents(ctx, rep, false, []*stmt{s})
 	start := time.Now()

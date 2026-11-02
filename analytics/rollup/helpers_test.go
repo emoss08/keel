@@ -235,7 +235,7 @@ func (f *fixture) rollupRows() []string {
 // rows runs sql with the fixture's tenant and returns its single text column, sorted.
 func (f *fixture) rows(sql string) []string {
 	f.t.Helper()
-	rs, err := f.db.Pool().Query(context.Background(), sql, string(f.tn.org), string(f.tn.bu))
+	rs, err := keel.Pool(f.db).Query(context.Background(), sql, string(f.tn.org), string(f.tn.bu))
 	ok(f.t, err)
 	defer rs.Close()
 	var out []string

@@ -71,13 +71,13 @@ func seedBig(b testing.TB) context.Context {
 	bigOnce.Do(func() {
 		bigCtx = newTenant()
 		tn := tenantOf(bigCtx)
-		_, bigError = d.Pool().Exec(context.Background(), `
+		_, bigError = keel.Pool(d).Exec(context.Background(), `
 			INSERT INTO customers (id, organization_id, business_unit_id, name, code, created_at, updated_at)
 			SELECT 'cus_' || i, $1, $2, 'Customer ' || i, 'C' || i, 0, 0 FROM generate_series(1, 50) i`, tn.org, tn.bu)
 		if bigError != nil {
 			return
 		}
-		_, bigError = d.Pool().Exec(context.Background(), `
+		_, bigError = keel.Pool(d).Exec(context.Background(), `
 			INSERT INTO shipments (id, organization_id, business_unit_id, customer_id, pro_number, status, priority,
 				weight, total, hazmat, created_at, updated_at)
 			SELECT 'shp_' || i, $1, $2, 'cus_' || (i % 50 + 1), 'P' || i,
@@ -87,14 +87,14 @@ func seedBig(b testing.TB) context.Context {
 		if bigError != nil {
 			return
 		}
-		_, bigError = d.Pool().Exec(context.Background(), `
+		_, bigError = keel.Pool(d).Exec(context.Background(), `
 			INSERT INTO moves (id, organization_id, business_unit_id, shipment_id, sequence, status, loaded, created_at)
 			SELECT 'mov_' || i || '_' || k, $1, $2, 'shp_' || i, k, 'Assigned', k = 1, 0
 			FROM generate_series(1, 100000) i, generate_series(1, 2) k`, tn.org, tn.bu)
 		if bigError != nil {
 			return
 		}
-		_, bigError = d.Pool().Exec(context.Background(), "ANALYZE shipments; ANALYZE moves; ANALYZE customers")
+		_, bigError = keel.Pool(d).Exec(context.Background(), "ANALYZE shipments; ANALYZE moves; ANALYZE customers")
 	})
 	if bigError != nil {
 		b.Fatal(bigError)
@@ -144,7 +144,7 @@ func BenchmarkPreview(b *testing.B) {
 	b.Run("pgx", func(b *testing.B) {
 		b.ReportAllocs()
 		for b.Loop() {
-			rows, err := db(b).Pool().Query(context.Background(), handWritten, tn.org, tn.bu)
+			rows, err := keel.Pool(db(b)).Query(context.Background(), handWritten, tn.org, tn.bu)
 			if err != nil {
 				b.Fatal(err)
 			}

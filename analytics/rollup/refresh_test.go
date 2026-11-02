@@ -20,7 +20,7 @@ import (
 func (f *fixture) pendingFor(name string) int {
 	f.t.Helper()
 	var n int
-	ok(f.t, f.db.Pool().QueryRow(context.Background(),
+	ok(f.t, keel.Pool(f.db).QueryRow(context.Background(),
 		"SELECT count(*) FROM keel_rollup_dirty WHERE rollup = $1 AND tenant_key = $2",
 		name, keel.TenantKeyOf(f.tn.org, f.tn.bu)).Scan(&n))
 	return n
@@ -83,7 +83,7 @@ func TestNullGrainAndWholeTenantRebuild(t *testing.T) {
 	f.shipment(0, 0, fleet.StatusNew, 100, nil)
 	f.shipment(3, 1, fleet.StatusNew, 200, nil)
 	refreshAll(t, d)
-	_, err := d.Pool().Exec(context.Background(), "DELETE FROM shipments_daily WHERE organization_id = $1", string(f.tn.org))
+	_, err := keel.Pool(d).Exec(context.Background(), "DELETE FROM shipments_daily WHERE organization_id = $1", string(f.tn.org))
 	ok(t, err)
 	rep, err := rollup.Rebuild(context.Background(), d, rollup.RefreshOptions{}, daily, f.tn.org, f.tn.bu)
 	ok(t, err)
@@ -95,7 +95,7 @@ func TestNullGrainAndWholeTenantRebuild(t *testing.T) {
 		t.Fatal("a rebuild with a partial tenant was accepted")
 	}
 
-	_, err = d.Pool().Exec(context.Background(), "DELETE FROM shipments_daily WHERE organization_id = $1", string(f.tn.org))
+	_, err = keel.Pool(d).Exec(context.Background(), "DELETE FROM shipments_daily WHERE organization_id = $1", string(f.tn.org))
 	ok(t, err)
 	marked, err := rollup.MarkAll(context.Background(), d, daily)
 	ok(t, err)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/emoss08/keel"
 	"github.com/emoss08/keel/analytics/rollup"
 	"github.com/emoss08/keel/internal/testmodels/fleet"
 	"github.com/emoss08/keel/internal/testmodels/fleet/fleetdb"
@@ -18,9 +19,9 @@ func BenchmarkCreate(b *testing.B) {
 	for _, mode := range []string{"triggers", "no triggers"} {
 		b.Run(mode, func(b *testing.B) {
 			if mode == "no triggers" {
-				_, err := d.Pool().Exec(context.Background(), "ALTER TABLE shipments DISABLE TRIGGER USER")
+				_, err := keel.Pool(d).Exec(context.Background(), "ALTER TABLE shipments DISABLE TRIGGER USER")
 				ok(b, err)
-				b.Cleanup(func() { _, _ = d.Pool().Exec(context.Background(), "ALTER TABLE shipments ENABLE TRIGGER USER") })
+				b.Cleanup(func() { _, _ = keel.Pool(d).Exec(context.Background(), "ALTER TABLE shipments ENABLE TRIGGER USER") })
 			}
 			b.ReportAllocs()
 			for b.Loop() {

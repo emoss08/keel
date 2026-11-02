@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/emoss08/keel"
 	"github.com/emoss08/keel/keelcli/factsport"
 )
 
@@ -24,7 +25,7 @@ func (x Facts) Connection(ctx context.Context) (factsport.Connection, error) {
 	if err != nil {
 		return factsport.Connection{}, err
 	}
-	pool := db.Pool()
+	pool := keel.Pool(db)
 	cfg := pool.Config().ConnConfig
 	out := factsport.Connection{
 		DSN: pool.Config().ConnString(), Database: cfg.Database, Host: cfg.Host, Port: int(cfg.Port), User: cfg.User,
@@ -49,7 +50,7 @@ func (x Facts) Settings(ctx context.Context, names ...string) ([]factsport.Setti
 	if err != nil {
 		return nil, err
 	}
-	rows, err := db.Pool().Query(ctx, `SELECT name, setting FROM pg_settings
+	rows, err := keel.Pool(db).Query(ctx, `SELECT name, setting FROM pg_settings
 WHERE cardinality($1::text[]) = 0 OR name = ANY ($1::text[]) ORDER BY name`, append([]string{}, names...))
 	if err != nil {
 		return nil, fmt.Errorf("keelcli: read settings: %w", err)
@@ -70,7 +71,7 @@ func (x Facts) Extensions(ctx context.Context) ([]factsport.Extension, error) {
 	if err != nil {
 		return nil, err
 	}
-	rows, err := db.Pool().Query(ctx, "SELECT extname, extversion FROM pg_extension ORDER BY extname")
+	rows, err := keel.Pool(db).Query(ctx, "SELECT extname, extversion FROM pg_extension ORDER BY extname")
 	if err != nil {
 		return nil, fmt.Errorf("keelcli: read extensions: %w", err)
 	}
@@ -127,7 +128,7 @@ func (x Facts) Activity(ctx context.Context, longer time.Duration) (factsport.Ac
 	if err != nil {
 		return factsport.Activity{}, err
 	}
-	rows, err := db.Pool().Query(ctx, activitySQL)
+	rows, err := keel.Pool(db).Query(ctx, activitySQL)
 	if err != nil {
 		return factsport.Activity{}, fmt.Errorf("keelcli: read activity: %w", err)
 	}

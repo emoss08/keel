@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/emoss08/keel"
 )
 
 // world is a tenant's report data: customers, locations, shipments with moves and stops, at
@@ -106,7 +108,7 @@ func seedRows(t testing.TB, rows []shipmentRow) *world {
 			}
 		}
 	}
-	if _, err := d.Pool().Exec(context.Background(), strings.Join(stmts, ";\n")); err != nil {
+	if _, err := keel.Pool(d).Exec(context.Background(), strings.Join(stmts, ";\n")); err != nil {
 		t.Fatal(err)
 	}
 	return w

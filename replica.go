@@ -231,7 +231,7 @@ type walSample struct {
 
 // replica is one replica pool with its last check and routing counters.
 type replica struct {
-	pool   *pgxpool.Pool
+	pool   connPool
 	name   string
 	weight int64
 

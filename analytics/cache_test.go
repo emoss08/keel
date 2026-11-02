@@ -235,7 +235,7 @@ func TestConcurrentPreviewsComputeOnceWithThePostgresStore(t *testing.T) {
 	cfg.Observers = []keel.Observer{g}
 	d := must[*keel.DB](t)(keel.Open(context.Background(), cfg))
 	defer d.Close()
-	store := must[*cache.Postgres](t)(cache.NewPostgres(d.Pool(), cache.PostgresOptions{}))
+	store := must[*cache.Postgres](t)(cache.NewPostgres(keel.Pool(d), cache.PostgresOptions{}))
 	defer store.Close()
 	r := must[*analytics.Runner](t)(analytics.NewRunner(d, catalog(t), analytics.RunnerOptions{Cache: store}))
 	req := analytics.Request{Definition: def(t, manyMeasures), Key: "preview:user"}

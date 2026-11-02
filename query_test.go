@@ -84,7 +84,7 @@ func seed(t testing.TB, shipments int) *world {
 			}
 		}
 	}
-	_, err := d.Pool().Exec(context.Background(),
+	_, err := keel.Pool(d).Exec(context.Background(),
 		`INSERT INTO shipment_tags (shipment_id, tag_id, organization_id, business_unit_id)
 		 SELECT s.id, t.id, s.organization_id, s.business_unit_id FROM shipments s CROSS JOIN tags t
 		 WHERE s.organization_id = $1 AND t.organization_id = $1 AND s.pro_number IN ('PRO-0000', 'PRO-0001')

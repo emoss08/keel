@@ -74,7 +74,7 @@ func (g *Registry) Status(ctx context.Context, db *keel.DB) ([]Status, error) {
 	if err != nil {
 		return nil, err
 	}
-	st, err := loadState(ctx, db.Pool())
+	st, err := loadState(ctx, keel.Pool(db))
 	if err != nil {
 		return nil, err
 	}
@@ -146,7 +146,7 @@ func (g *Registry) Prune(ctx context.Context, db *keel.DB) ([]string, error) {
 		if err := createTables(ctx, db); err != nil {
 			return err
 		}
-		st, err := loadState(ctx, db.Pool())
+		st, err := loadState(ctx, keel.Pool(db))
 		if err != nil {
 			return err
 		}

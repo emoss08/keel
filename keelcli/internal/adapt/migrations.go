@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/emoss08/keel"
 	"github.com/emoss08/keel/keelcli/migrateport"
 	"github.com/emoss08/keel/migrate"
 	"github.com/emoss08/keel/seed"
@@ -94,7 +95,7 @@ func (x *Migrations) read(ctx context.Context, fn func(m *migrate.Migrator) erro
 	if err != nil {
 		return err
 	}
-	conn, err := db.Pool().Acquire(ctx)
+	conn, err := keel.Pool(db).Acquire(ctx)
 	if err != nil {
 		return fmt.Errorf("keelcli: connect: %w", err)
 	}
