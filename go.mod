@@ -4,6 +4,9 @@ go 1.26.0
 
 toolchain go1.26.10
 
+// v0.6.0 was tagged at the v0.5.0 commit and lacks the pool change; use v0.6.1.
+retract v0.6.0
+
 retract (
 	v0.4.2 // Tagged on v0.3.0's commit by mistake; use v0.4.3.
 	v0.4.1 // Tagged on v0.3.0's commit by mistake; use v0.4.3.
