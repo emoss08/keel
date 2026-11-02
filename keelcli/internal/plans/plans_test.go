@@ -125,6 +125,24 @@ func TestRelations(t *testing.T) {
 	}
 }
 
+func TestSortInput_LimitsBoundTheSort(t *testing.T) {
+	sorts := fixture(t, "union_limited").SortsUnderLimit()
+	if len(sorts) != 1 {
+		t.Fatalf("sorts %+v", sorts)
+	}
+	rels, rows := sorts[0].SortInput()
+	if len(rels) != 0 || rows != 2000 {
+		t.Fatalf("sort input of a union of limited arms: %v %v", rels, rows)
+	}
+	tuples := map[Relation]float64{
+		{"public", "invoices"}:                 18000,
+		{"public", "factoring_invoice_states"}: 18000,
+	}
+	if fs := Check(fixture(t, "union_limited"), Rules{SeqScanRows: 10000, SortLimit: true}, tuples); len(fs) != 0 {
+		t.Fatalf("findings %+v", fs)
+	}
+}
+
 func TestCheck(t *testing.T) {
 	tuples := map[Relation]float64{
 		{"public", "big"}:      20000,

@@ -1,0 +1,82 @@
+[
+  {
+    "Plan": {
+      "Node Type": "Limit",
+      "Startup Cost": 1200.0,
+      "Total Cost": 1210.0,
+      "Plan Rows": 1000,
+      "Plans": [
+        {
+          "Node Type": "Unique",
+          "Parent Relationship": "Outer",
+          "Startup Cost": 1200.0,
+          "Total Cost": 1230.0,
+          "Plan Rows": 2000,
+          "Plans": [
+            {
+              "Node Type": "Sort",
+              "Parent Relationship": "Outer",
+              "Startup Cost": 1200.0,
+              "Total Cost": 1205.0,
+              "Plan Rows": 2000,
+              "Sort Key": [
+                "i.id"
+              ],
+              "Plans": [
+                {
+                  "Node Type": "Append",
+                  "Parent Relationship": "Outer",
+                  "Startup Cost": 0.42,
+                  "Total Cost": 1100.0,
+                  "Plan Rows": 2000,
+                  "Plans": [
+                    {
+                      "Node Type": "Limit",
+                      "Parent Relationship": "Member",
+                      "Startup Cost": 0.42,
+                      "Total Cost": 500.0,
+                      "Plan Rows": 1000,
+                      "Plans": [
+                        {
+                          "Node Type": "Index Scan",
+                          "Parent Relationship": "Outer",
+                          "Index Name": "invoices_pkey",
+                          "Relation Name": "invoices",
+                          "Schema": "public",
+                          "Alias": "i",
+                          "Startup Cost": 0.42,
+                          "Total Cost": 9000.0,
+                          "Plan Rows": 18000
+                        }
+                      ]
+                    },
+                    {
+                      "Node Type": "Limit",
+                      "Parent Relationship": "Member",
+                      "Startup Cost": 0.42,
+                      "Total Cost": 500.0,
+                      "Plan Rows": 1000,
+                      "Plans": [
+                        {
+                          "Node Type": "Index Only Scan",
+                          "Parent Relationship": "Outer",
+                          "Index Name": "idx_factoring_invoice_states_open",
+                          "Relation Name": "factoring_invoice_states",
+                          "Schema": "public",
+                          "Alias": "s",
+                          "Startup Cost": 0.42,
+                          "Total Cost": 9000.0,
+                          "Plan Rows": 18000
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+]

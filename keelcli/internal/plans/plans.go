@@ -31,9 +31,10 @@ type Rules struct {
 	MaxCost float64
 	// SortLimit flags a Sort under a Limit, a page sorted in full because no index gives its order,
 	// when the largest relation the sort reads has more rows than SeqScanRows: a sort of a small
-	// reference table is a correct plan. A sort of an aggregate's output, or of a deduplicated set
-	// operation's, is judged by the rows that node returns, not the relations it reads: no index
-	// orders an aggregate or a union, and ranking a few grouped or unioned rows is a correct plan.
+	// reference table is a correct plan. A sort of an aggregate's output, of a deduplicated set
+	// operation's, or of limited branches (a UNION of capped arms), is judged by the rows those nodes
+	// return, not the relations they read: no index orders an aggregate or a union, and ranking a few
+	// grouped, unioned or capped rows is a correct plan.
 	SortLimit bool
 }
 
@@ -186,20 +187,21 @@ func (n Node) Relations() []Relation {
 	return out
 }
 
-// aggregates are the nodes whose output is rows they compute from their input (a grouping, or the
-// deduplication of a UNION, INTERSECT or EXCEPT), so a sort above one orders those rows and not the
-// relations below it.
-var aggregates = []string{"Aggregate", "Group", "Unique", "SetOp"}
+// bounds are the nodes whose output a sort above one reads instead of the relations below it: an
+// aggregate's rows are computed from its input (a grouping, or the deduplication of a UNION,
+// INTERSECT or EXCEPT), and a Limit returns at most its count however large the relation it reads.
+var bounds = []string{"Aggregate", "Group", "Unique", "SetOp", "Limit"}
 
-// SortInput returns the relations a sort at n reads, in plan order, each once, stopping at an
-// aggregate, and the most rows any aggregate it stopped at returns.
+// SortInput returns the relations a sort at n reads, in plan order, each once, stopping at a bound,
+// and the rows the bounds it stopped at return together. Bounds on separate branches (the arms of
+// an Append) each feed the sort, so their rows add up.
 func (n Node) SortInput() ([]Relation, float64) {
 	var rels []Relation
-	var aggRows float64
+	var boundRows float64
 	var visit func(Node)
 	visit = func(x Node) {
-		if slices.Contains(aggregates, x.Type) {
-			aggRows = max(aggRows, x.PlanRows)
+		if slices.Contains(bounds, x.Type) {
+			boundRows += x.PlanRows
 			return
 		}
 		if x.Relation != "" {
@@ -214,7 +216,7 @@ func (n Node) SortInput() ([]Relation, float64) {
 	for _, c := range n.Plans {
 		visit(c)
 	}
-	return rels, aggRows
+	return rels, boundRows
 }
 
 // largest returns the relation of rels with the most rows in tuples and its count, never
@@ -248,10 +250,10 @@ func Check(root Node, rules Rules, tuples map[Relation]float64) []Finding {
 	}
 	if rules.SortLimit {
 		for _, s := range root.SortsUnderLimit() {
-			rels, aggRows := s.SortInput()
+			rels, boundRows := s.SortInput()
 			rel, rows := largest(rels, tuples)
-			if aggRows > rows {
-				rel, rows = Relation{}, aggRows
+			if boundRows > rows {
+				rel, rows = Relation{}, boundRows
 			}
 			if rows <= rules.SeqScanRows {
 				continue
@@ -263,8 +265,8 @@ func Check(root Node, rules Rules, tuples map[Relation]float64) []Finding {
 			switch {
 			case rel.Name != "":
 				detail += fmt.Sprintf(" over %s (about %s rows)", rel, formatCount(rows))
-			case aggRows > 0:
-				detail += fmt.Sprintf(" over grouped or deduplicated rows (about %s rows)", formatCount(rows))
+			case boundRows > 0:
+				detail += fmt.Sprintf(" over grouped, deduplicated or limited rows (about %s rows)", formatCount(rows))
 			}
 			out = append(out, Finding{Kind: SortUnderLimit, Relation: rel.String(), Rows: rows, SortKey: s.SortKey,
 				Detail: detail + sortedInFull})
