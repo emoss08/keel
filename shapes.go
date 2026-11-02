@@ -12,14 +12,17 @@ import (
 )
 
 // Shape is one distinct statement text keel sent: the text (which never contains values), its
-// operation and table as QueryEvent reports them, and the number of parameters it binds.
-// RecordShapes writes shapes as JSON lines, {"sql": "...", "op": "...", "table": "...", "args": n},
-// and keel plans reads them back to explain every one.
+// operation and table as QueryEvent reports them, the number of parameters it binds, and whether
+// it is planned for its values on every execution (Query.CustomPlan), so no generic plan of it
+// ever runs. RecordShapes writes shapes as JSON lines,
+// {"sql": "...", "op": "...", "table": "...", "args": n, "customPlan": true}, and keel plans reads
+// them back to explain every one.
 type Shape struct {
-	SQL   string `json:"sql"`
-	Op    string `json:"op"`
-	Table string `json:"table"`
-	Args  int    `json:"args"`
+	SQL        string `json:"sql"`
+	Op         string `json:"op"`
+	Table      string `json:"table"`
+	Args       int    `json:"args"`
+	CustomPlan bool   `json:"customPlan,omitempty"`
 }
 
 // RecordShapes returns an observer that writes each distinct statement text it sees to w once, as a
@@ -52,10 +55,11 @@ func RecordShapesFile(path string) (Observer, func() error, error) {
 }
 
 // ReadShapes reads the JSON lines RecordShapes wrote and returns each distinct statement text
-// once, in the order first seen, so a file several processes appended to reads as one set.
+// once, in the order first seen, so a file several processes appended to reads as one set. A text
+// sent both ways is a generic-planned shape: a prepared statement can settle on its generic plan.
 func ReadShapes(r io.Reader) ([]Shape, error) {
 	dec := json.NewDecoder(r)
-	seen := map[string]bool{}
+	seen := map[string]int{}
 	var out []Shape
 	for n := 1; ; n++ {
 		var s Shape
@@ -69,27 +73,35 @@ func ReadShapes(r io.Reader) ([]Shape, error) {
 		if strings.TrimSpace(s.SQL) == "" {
 			return nil, errf("read shapes: shape %d has no sql", n)
 		}
-		if seen[s.SQL] {
+		if i, dup := seen[s.SQL]; dup {
+			out[i].CustomPlan = out[i].CustomPlan && s.CustomPlan
 			continue
 		}
-		seen[s.SQL] = true
+		seen[s.SQL] = len(out)
 		out = append(out, s)
 	}
 }
 
 // shapeRecorder is the observer RecordShapes returns. seen holds every statement text it has
-// looked at, plannable or not, so each text is classified and written once.
+// looked at, plannable or not, each with how it was planned, so each pair is classified and written
+// once.
 type shapeRecorder struct {
 	mu   sync.RWMutex
-	seen map[string]struct{}
+	seen map[shapeKey]struct{}
 	w    io.Writer
 	buf  bytes.Buffer
 	err  error
 }
 
+// shapeKey is a statement text and whether it is planned per execution.
+type shapeKey struct {
+	sql    string
+	custom bool
+}
+
 // newShapeRecorder returns a recorder writing to w.
 func newShapeRecorder(w io.Writer) *shapeRecorder {
-	return &shapeRecorder{seen: map[string]struct{}{}, w: w}
+	return &shapeRecorder{seen: map[shapeKey]struct{}{}, w: w}
 }
 
 // BeforeQuery records the statement's shape the first time its text is seen.
@@ -103,25 +115,26 @@ func (r *shapeRecorder) AfterQuery(context.Context, *QueryEvent) {}
 
 // record writes e's shape unless its text was seen before or EXPLAIN cannot plan it.
 func (r *shapeRecorder) record(e *QueryEvent) {
+	key := shapeKey{sql: e.SQL, custom: e.CustomPlan}
 	r.mu.RLock()
-	_, ok := r.seen[e.SQL]
+	_, ok := r.seen[key]
 	r.mu.RUnlock()
 	if ok {
 		return
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if _, ok := r.seen[e.SQL]; ok {
+	if _, ok := r.seen[key]; ok {
 		return
 	}
-	r.seen[e.SQL] = struct{}{}
+	r.seen[key] = struct{}{}
 	if e.Op == "lock" || !plannable(e.SQL) {
 		return
 	}
 	r.buf.Reset()
 	enc := json.NewEncoder(&r.buf)
 	enc.SetEscapeHTML(false)
-	if err := enc.Encode(Shape{SQL: e.SQL, Op: e.Op, Table: e.Table, Args: e.Args}); err != nil {
+	if err := enc.Encode(Shape{SQL: e.SQL, Op: e.Op, Table: e.Table, Args: e.Args, CustomPlan: e.CustomPlan}); err != nil {
 		r.fail(err)
 		return
 	}

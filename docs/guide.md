@@ -4816,7 +4816,13 @@ keelcli: plans found 2 findings
   that each end in a `LIMIT`) is judged by the rows the `Aggregate`, `Group`, `Unique`, `SetOp`
   or `Limit` returns, summed over the arms of an `Append`, not the relations it reads: no index
   orders an aggregate or a union, and ranking a few grouped, unioned or capped rows is a correct
-  plan. An `Incremental Sort` passes.
+  plan. The index lookups on the inner side of a nested loop whose outer side is bounded count as
+  the outer rows times their rows per loop, not as the relation they read: a page of capped ids
+  joined to its rows and to-one relations by primary key sorts only the page. An `Incremental
+  Sort` passes.
+- A shape recorded from a `CustomPlan` query (`Shape.CustomPlan`) is explained but not checked:
+  it is planned for its values on every execution, so its generic plan never runs. The summary
+  counts those shapes. A statement text sent both ways is checked.
 - A shape EXPLAIN cannot plan (a temporary table, a parameter whose type Postgres cannot infer) is
   listed with its error and does not fail the run. Any finding exits 3, keelcli's "a check found
   problems"; `-json` writes one document with `shapes`, `findings`, `unplanned` and a report per

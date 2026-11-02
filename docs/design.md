@@ -1032,7 +1032,10 @@ before it ships, from the statements the application really sends:
   sort reads has more than `-seq-scan-rows` rows, reading no further down than an `Aggregate`,
   `Group`, `Unique`, `SetOp` or `Limit`, whose returned rows count instead, summed over the
   branches of an `Append` (an `Incremental Sort`, a sort feeding an aggregate, a sort of a few
-  grouped, unioned or capped rows, or a sort of a small reference table is not one). A shape EXPLAIN cannot plan is reported with its error
+  grouped, unioned or capped rows, or a sort of a small reference table is not one); index lookups
+  on the inner side of a nested loop under a bounded outer side count as the outer rows times their
+  rows per loop. Shapes recorded from `CustomPlan` queries are explained but not checked, since
+  their generic plan never runs. A shape EXPLAIN cannot plan is reported with its error
   and does not fail the run; any finding exits 3, keelcli's "a check found problems".
   PostgreSQL 16 or later is required.
 

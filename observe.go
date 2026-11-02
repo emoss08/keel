@@ -6,22 +6,24 @@ import (
 )
 
 // QueryEvent describes one statement. SQL never contains values; Args is the number of bound
-// parameters, and Values holds them only when Config.ObserveArgs is set. Replica names the replica
-// the statement ran on (ReplicaStats.Name), and is empty for the primary. Tx reports that the
-// statement ran in an explicit transaction (Write, Read or Tx), not an implicit one. Err is the
-// error the terminal returns: a constraint violation is already a *ConstraintError.
+// parameters, and Values holds them only when Config.ObserveArgs is set. CustomPlan reports that
+// the statement is planned for its values on every execution (Query.CustomPlan). Replica names
+// the replica the statement ran on (ReplicaStats.Name), and is empty for the primary. Tx reports
+// that the statement ran in an explicit transaction (Write, Read or Tx), not an implicit one. Err
+// is the error the terminal returns: a constraint violation is already a *ConstraintError.
 type QueryEvent struct {
-	Op       string
-	Table    string
-	SQL      string
-	Args     int
-	Values   []any
-	Replica  string
-	Tx       bool
-	Start    time.Time
-	Duration time.Duration
-	Rows     int64
-	Err      error
+	Op         string
+	Table      string
+	SQL        string
+	Args       int
+	CustomPlan bool
+	Values     []any
+	Replica    string
+	Tx         bool
+	Start      time.Time
+	Duration   time.Duration
+	Rows       int64
+	Err        error
 }
 
 // Observer sees every statement keel sends: queries, relation loads, writes, COPY, savepoints and
@@ -62,7 +64,10 @@ func (db *DB) startEvents(ctx context.Context, rep *replica, tx bool, stmts []*s
 	}
 	events := make([]observed, len(stmts))
 	for i, s := range stmts {
-		e := &QueryEvent{Op: s.op, Table: s.table, SQL: s.sql, Args: len(s.args), Replica: server, Tx: tx, Start: now}
+		e := &QueryEvent{
+			Op: s.op, Table: s.table, SQL: s.sql, Args: len(s.args), CustomPlan: s.customPlan,
+			Replica: server, Tx: tx, Start: now,
+		}
 		if db.cfg.ObserveArgs {
 			e.Values = s.args
 		}

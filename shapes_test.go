@@ -53,6 +53,30 @@ func TestRecordShapesWritesEachPlannableTextOnce(t *testing.T) {
 	eq(t, shapes[3].Op, "insert")
 }
 
+func TestRecordShapesKeepsCustomPlans(t *testing.T) {
+	var buf bytes.Buffer
+	obs := keel.RecordShapes(&buf)
+	for _, e := range []keel.QueryEvent{
+		{Op: "select", Table: "t", SQL: "SELECT a FROM t WHERE b BETWEEN $1 AND $2", Args: 2, CustomPlan: true},
+		{Op: "select", Table: "t", SQL: "SELECT a FROM t WHERE b BETWEEN $1 AND $2", Args: 2, CustomPlan: true},
+		{Op: "select", Table: "t", SQL: "SELECT a FROM t WHERE c = $1", Args: 1, CustomPlan: true},
+		{Op: "select", Table: "t", SQL: "SELECT a FROM t WHERE b BETWEEN $1 AND $2", Args: 2},
+	} {
+		observe(obs, e)
+	}
+	want := `{"sql":"SELECT a FROM t WHERE b BETWEEN $1 AND $2","op":"select","table":"t","args":2,"customPlan":true}
+{"sql":"SELECT a FROM t WHERE c = $1","op":"select","table":"t","args":1,"customPlan":true}
+{"sql":"SELECT a FROM t WHERE b BETWEEN $1 AND $2","op":"select","table":"t","args":2}
+`
+	if buf.String() != want {
+		t.Fatalf("recorded:\n%s\nwant:\n%s", buf.String(), want)
+	}
+	shapes := must(keel.ReadShapes(bytes.NewReader(buf.Bytes())))(t)
+	eq(t, len(shapes), 2)
+	eq(t, shapes[0].CustomPlan, false)
+	eq(t, shapes[1].CustomPlan, true)
+}
+
 func TestRecordShapesConcurrent(t *testing.T) {
 	var buf bytes.Buffer
 	obs := keel.RecordShapes(&buf)

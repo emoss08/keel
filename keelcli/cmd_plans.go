@@ -12,12 +12,14 @@ import (
 	"github.com/emoss08/keel/keelcli/internal/render"
 )
 
-// plansDoc is plans' JSON document: the shapes explained, the findings and the shapes EXPLAIN
-// could not plan, and every shape's report.
+// plansDoc is plans' JSON document: the shapes explained, the findings, the shapes EXPLAIN
+// could not plan and the custom-planned shapes it explained without checking, and every shape's
+// report.
 type plansDoc struct {
 	Shapes    int            `json:"shapes"`
 	Findings  int            `json:"findings"`
 	Unplanned int            `json:"unplanned"`
+	Custom    int            `json:"customPlanned"`
 	Reports   []plans.Report `json:"reports"`
 }
 
@@ -58,8 +60,11 @@ func setupPlans(fs *flag.FlagSet) runner {
 		}
 		for _, r := range reports {
 			doc.Findings += len(r.Findings)
-			if !r.Planned() {
+			switch {
+			case !r.Planned():
 				doc.Unplanned++
+			case r.CustomPlan:
+				doc.Custom++
 			}
 		}
 		if err := s.emit(doc, func(p render.Painter, _ int) string { return plansText(p, doc) }); err != nil {
@@ -120,6 +125,10 @@ func plansText(p render.Painter, doc plansDoc) string {
 	}
 	if doc.Unplanned > 0 {
 		fmt.Fprintf(&b, "; %s", p.Paint(render.Warn, render.Plural(doc.Unplanned, "shape", "shapes")+" could not be planned"))
+	}
+	if doc.Custom > 0 {
+		fmt.Fprintf(&b, "; %s", p.Paint(render.Muted, render.Plural(doc.Custom, "shape", "shapes")+
+			" planned per execution, not checked"))
 	}
 	b.WriteString(".\n")
 	return b.String()

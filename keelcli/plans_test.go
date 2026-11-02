@@ -19,7 +19,7 @@ func writeShapes(t *testing.T, shapes ...keel.Shape) string {
 		t.Fatal(err)
 	}
 	for _, s := range shapes {
-		e := keel.QueryEvent{SQL: s.SQL, Op: s.Op, Table: s.Table, Args: s.Args}
+		e := keel.QueryEvent{SQL: s.SQL, Op: s.Op, Table: s.Table, Args: s.Args, CustomPlan: s.CustomPlan}
 		obs.AfterQuery(obs.BeforeQuery(t.Context(), &e), &e)
 	}
 	if err := closeFn(); err != nil {
@@ -78,6 +78,12 @@ func TestPlansCommand(t *testing.T) {
 		expect(t, ExitOK, "No findings: 5 shapes planned; 1 shape could not be planned.")
 	s.run(t, "plans", "-plain", "-seq-scan-rows", "50000", "-max-cost", "0.01", "-shapes", clean).
 		expect(t, ExitProblems, "cost total cost ", " over 0.01")
+
+	customPage := page
+	customPage.CustomPlan = true
+	custom := writeShapes(t, byID, customPage)
+	s.run(t, "plans", "-plain", "-sort-limit", "-shapes", custom).
+		expect(t, ExitOK, "No findings: 2 shapes planned; 1 shape planned per execution, not checked.")
 
 	var doc struct {
 		Shapes, Findings, Unplanned int

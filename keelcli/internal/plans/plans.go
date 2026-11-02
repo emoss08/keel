@@ -61,7 +61,9 @@ type Finding struct {
 }
 
 // Report is one shape's result: the plan's total cost and row estimate and its findings, or the
-// error EXPLAIN returned when it could not plan the shape.
+// error EXPLAIN returned when it could not plan the shape. A custom-planned shape (Shape.CustomPlan)
+// is explained but not checked: it is planned for its values on every execution, so its generic
+// plan never runs.
 type Report struct {
 	keel.Shape
 	Cost     float64   `json:"cost"`
@@ -192,31 +194,66 @@ func (n Node) Relations() []Relation {
 // INTERSECT or EXCEPT), and a Limit returns at most its count however large the relation it reads.
 var bounds = []string{"Aggregate", "Group", "Unique", "SetOp", "Limit"}
 
-// SortInput returns the relations a sort at n reads, in plan order, each once, stopping at a bound,
-// and the rows the bounds it stopped at return together. Bounds on separate branches (the arms of
-// an Append) each feed the sort, so their rows add up.
+// SortInput returns the relations a sort at n reads, in plan order, each once, and the rows the
+// bounds it stopped at return together. It stops at a bound; bounds on separate branches (the arms
+// of an Append) each feed the sort, so their rows add up. The inner side of a Nested Loop whose
+// outer side is bounded, when it is an index lookup (an Index Scan or Index Only Scan, under a
+// Memoize or not), runs once per outer row, so it counts as the outer rows times its rows per loop,
+// not as the relation it reads.
 func (n Node) SortInput() ([]Relation, float64) {
 	var rels []Relation
-	var boundRows float64
-	var visit func(Node)
-	visit = func(x Node) {
-		if slices.Contains(bounds, x.Type) {
-			boundRows += x.PlanRows
-			return
-		}
-		if x.Relation != "" {
-			if r := (Relation{Schema: x.Schema, Name: x.Relation}); !slices.Contains(rels, r) {
-				rels = append(rels, r)
-			}
-		}
-		for _, c := range x.Plans {
-			visit(c)
-		}
-	}
+	var rows float64
 	for _, c := range n.Plans {
-		visit(c)
+		r, b := c.sortInput()
+		rels = appendNew(rels, r...)
+		rows += b
 	}
-	return rels, boundRows
+	return rels, rows
+}
+
+// sortInput returns the relations x reads that no bound covers, and the rows the bounds it reaches
+// return.
+func (x Node) sortInput() ([]Relation, float64) {
+	if slices.Contains(bounds, x.Type) {
+		return nil, x.PlanRows
+	}
+	if x.Type == "Nested Loop" && len(x.Plans) == 2 {
+		outerRels, outerRows := x.Plans[0].sortInput()
+		if inner, ok := indexLookup(x.Plans[1]); ok && len(outerRels) == 0 && outerRows > 0 {
+			return nil, outerRows * max(inner.PlanRows, 1)
+		}
+		innerRels, innerRows := x.Plans[1].sortInput()
+		return appendNew(outerRels, innerRels...), outerRows + innerRows
+	}
+	var rels []Relation
+	if x.Relation != "" {
+		rels = append(rels, Relation{Schema: x.Schema, Name: x.Relation})
+	}
+	var rows float64
+	for _, c := range x.Plans {
+		r, b := c.sortInput()
+		rels = appendNew(rels, r...)
+		rows += b
+	}
+	return rels, rows
+}
+
+// indexLookup returns the index scan n is, through a Memoize, and whether it is one.
+func indexLookup(n Node) (Node, bool) {
+	if n.Type == "Memoize" && len(n.Plans) == 1 {
+		n = n.Plans[0]
+	}
+	return n, n.Type == "Index Scan" || n.Type == "Index Only Scan"
+}
+
+// appendNew appends each relation of add not already in rels.
+func appendNew(rels []Relation, add ...Relation) []Relation {
+	for _, r := range add {
+		if !slices.Contains(rels, r) {
+			rels = append(rels, r)
+		}
+	}
+	return rels
 }
 
 // largest returns the relation of rels with the most rows in tuples and its count, never
@@ -432,7 +469,7 @@ func Run(ctx context.Context, conn *pgx.Conn, shapes []keel.Shape, rules Rules) 
 		return nil, err
 	}
 	for i, root := range roots {
-		if root != nil {
+		if root != nil && !reports[i].CustomPlan {
 			reports[i].Findings = append(reports[i].Findings, Check(*root, rules, tuples)...)
 		}
 	}

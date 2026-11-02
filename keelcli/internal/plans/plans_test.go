@@ -143,6 +143,32 @@ func TestSortInput_LimitsBoundTheSort(t *testing.T) {
 	}
 }
 
+func TestSortInput_ABoundedOuterBoundsItsIndexLookups(t *testing.T) {
+	tuples := map[Relation]float64{{"public", "billing_queue_items"}: 19000, {"public", "shipments"}: 20000}
+	rules := Rules{SeqScanRows: 10000, SortLimit: true}
+
+	sorts := fixture(t, "nested_lookup").SortsUnderLimit()
+	if len(sorts) != 1 {
+		t.Fatalf("sorts %+v", sorts)
+	}
+	if rels, rows := sorts[0].SortInput(); len(rels) != 0 || rows != 1001 {
+		t.Fatalf("sort input of bounded lookups: %v %v", rels, rows)
+	}
+	if fs := Check(fixture(t, "nested_lookup"), rules, tuples); len(fs) != 0 {
+		t.Fatalf("findings %+v", fs)
+	}
+
+	unbounded := fixture(t, "nested_lookup_unbounded")
+	if rels, _ := unbounded.SortsUnderLimit()[0].SortInput(); !slices.Equal(rels,
+		[]Relation{{"public", "billing_queue_items"}, {"public", "shipments"}}) {
+		t.Fatalf("sort input of lookups under a scan: %v", rels)
+	}
+	if fs := Check(unbounded, rules, tuples); len(fs) != 2 || fs[0].Kind != SeqScan ||
+		fs[1].Kind != SortUnderLimit || fs[1].Relation != "public.shipments" {
+		t.Fatalf("findings %+v", fs)
+	}
+}
+
 func TestCheck(t *testing.T) {
 	tuples := map[Relation]float64{
 		{"public", "big"}:      20000,
