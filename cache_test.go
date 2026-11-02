@@ -60,7 +60,7 @@ func TestCacheHitSendsNothingAndDecodesFreshRows(t *testing.T) {
 	w := seed(t, 8)
 	s := fleetdb.Shipments
 	m := s.Moves()
-	query := func() *keel.Query[*fleet.Shipment] {
+	query := func() keel.Query[*fleet.Shipment] {
 		return s.Where(s.ProNumber.In("PRO-0000", "PRO-0001")).
 			Load(s.Customer(), m.Order(m.Sequence.Asc()), m.Stops(), s.Tags()).
 			Order(s.ProNumber.Asc()).

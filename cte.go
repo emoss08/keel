@@ -79,7 +79,7 @@ func (c *CTETable) Col(name string) AnyCol {
 func (c *CTETable) TableRef() *Ref { return c.ref }
 
 // Query starts a query over the CTE's rows. Pick what to read and run it with Into.
-func (c *CTETable) Query() *Query[*Row] { return &Query[*Row]{q: query{ref: c.ref}} }
+func (c *CTETable) Query() Query[*Row] { return RowsOf(c.ref) }
 
 // Row is the row type of a query over a CTE or a compound query; read such queries with Into.
 type Row struct{}
@@ -110,13 +110,10 @@ func (c *CTETable) writeDefinition(r *render) {
 }
 
 // With declares CTEs the query uses.
-func (q *Query[T]) With(ctes ...*CTETable) *Query[T] {
+func (q *QueryCore) With(ctes ...*CTETable) *QueryCore {
 	q.q.ctes = append(q.q.ctes, ctes...)
 	return q
 }
-
-// With starts a query that declares CTEs.
-func (h Handle[T]) With(ctes ...*CTETable) *Query[T] { return h.Query().With(ctes...) }
 
 func writeWith(r *render, ctes []*CTETable) {
 	if len(ctes) == 0 {

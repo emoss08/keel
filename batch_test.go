@@ -21,14 +21,14 @@ func TestBatchItemsMatchTerminals(t *testing.T) {
 	d := db(t)
 	w := seed(t, 12)
 	s, c := fleetdb.Shipments, fleetdb.Customers
-	list := func() *keel.Query[*fleet.Shipment] {
+	list := func() keel.Query[*fleet.Shipment] {
 		return s.Where(s.Status.In(fleet.StatusNew, fleet.StatusAssigned)).Order(s.ProNumber.Asc()).Limit(4)
 	}
-	hazmat := func() *keel.Query[*fleet.Shipment] { return s.Where(s.Hazmat.IsTrue()).Order(s.ProNumber.Asc()) }
-	byStatus := func() *keel.Query[*fleet.Shipment] {
+	hazmat := func() keel.Query[*fleet.Shipment] { return s.Where(s.Hazmat.IsTrue()).Order(s.ProNumber.Asc()) }
+	byStatus := func() keel.Query[*fleet.Shipment] {
 		return s.Group(s.Status).Pick(s.Status, keel.Count()).Order(s.Status.Asc())
 	}
-	paged := func() *keel.Query[*fleet.Shipment] { return s.Order(s.ProNumber.Asc()) }
+	paged := func() keel.Query[*fleet.Shipment] { return s.Order(s.ProNumber.Asc()) }
 
 	var (
 		rows, all        []*fleet.Shipment

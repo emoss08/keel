@@ -19,14 +19,9 @@ type compute struct {
 // driver when rows decode. The query can filter and order by col too: keel writes e in its place.
 //
 //	s.Compute(s.Rank, s.SearchVector.Rank(q)).Where(s.SearchVector.Match(q)).Order(s.Rank.Desc())
-func (q *Query[T]) Compute(col Column, e Expr) *Query[T] {
+func (q *QueryCore) Compute(col Column, e Expr) *QueryCore {
 	q.q.computes = append(q.q.computes, newCompute(q.q.ref, col.column(), e, q.q.computes))
 	return q
-}
-
-// Compute starts a query that fills the computed field col with e.
-func (h Handle[T]) Compute(col Column, e Expr) *Query[T] {
-	return h.Query().Compute(col, e)
 }
 
 // newCompute checks that c is a computed field of ref's table, not computed yet, and that e fits
@@ -239,7 +234,7 @@ func (e scalarExpr) kind() (schema.Kind, bool) {
 }
 
 // picked returns the expressions the query picks.
-func (q *Query[T]) picked() []Expr { return q.q.exprs }
+func (q *QueryCore) picked() []Expr { return q.q.exprs }
 
 // scopedCompute is a computed field of a statement: the reference whose rows it fills, the field,
 // the expression written wherever the statement uses the field, and whether that expression is

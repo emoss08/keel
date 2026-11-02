@@ -25,9 +25,11 @@ that is wrong in the same change. [guide.md](guide.md) shows how to use keel;
 - **Bounded by default.** `List` needs a limit, keyset pagination is built in, and bulk inserts
   send one array per column through `unnest`, in chunks that share one statement text and one round
   trip.
-- **Cheap to compile.** Generated code is static data plus small non-generic functions. Generic
-  types appear only where a typed result needs them (`Query[T]`, `Handle[T]`) and are reachable only
-  from data-access packages.
+- **Cheap to compile.** Generated code is static data plus small non-generic types and functions.
+  No exported keel type that is instantiated per model has methods: `Query[T]` and `Handle[T]` are
+  generic interfaces, `Page[T]` is plain data, and the engine (`QueryCore`, `TableBase`) is not
+  generic, so its methods compile once in keel and the typed wrappers once per generated package
+  (see Compile cost).
 
 Non-goals: other databases, schema migrations generated from models (migrations are SQL files),
 soft delete, an identity map or a session cache.
@@ -36,7 +38,7 @@ soft delete, an identity map or a session cache.
 
 | Package | Role |
 |---|---|
-| `keel` | the public API: `DB`, transactions, scope, `Handle[T]`, `Query[T]`, expressions, columns, writes, hooks, errors, dynamic queries (`DynQuery`, `DynResult`) |
+| `keel` | the public API: `DB`, transactions, scope, `QueryCore` and `TableBase` (the engine generated code embeds), the `Query[T]` and `Handle[T]` interfaces, expressions, columns, writes, hooks, errors, dynamic queries (`DynQuery`, `DynResult`) |
 | `keel/schema` | runtime table metadata, written as static literals by the generator: storage facts, labels, docs, enum values, report facts; the `keel` tag parser |
 | `keel/gen`, `cmd/keel` | the generator: loads packages with `go/packages`, finds models, writes one `<pkg>db` package per model package |
 | `keel/migrate` | the SQL-file migration runner |
@@ -245,9 +247,19 @@ func (s *Shipment) AfterLoad(ctx context.Context) error    // every loaded row, 
 - the `schema.Table` as a static literal: columns, flags, relations, precomputed column sets, and
   accessor functions (`New`, `Ptr` for scanning, `Value` for binding, `Attach` for relations) plus
   hook trampolines;
-- a handle type `ShipmentsTable` embedding `keel.Handle[*shipment.Shipment]`, with one field per
-  column, one method per relation, `As`, and a typed `Get` by primary key when the key, besides its
-  tenant columns, is one non-pointer column;
+- a handle type `ShipmentsTable` embedding `keel.TableBase`, with one field per column, one method
+  per relation, `As`, a typed `Get` by primary key when the key, besides its tenant columns, is one
+  non-pointer column, one query starter per starter of `keel.Handle[T]` (returning
+  `keel.Query[*shipment.Shipment]`) and one typed write per write of it, each calling the generic
+  function of the same name (`keel.Create(ctx, db, &t.TableBase, row)`);
+- a query type `ShipmentsQuery` embedding `keel.QueryCore` by value, with one method per builder of
+  `keel.Query[T]` that calls the `QueryCore` builder and returns the query, `Clone`, and one method
+  per row terminal calling the generic function (`keel.List[*shipment.Shipment](ctx, db,
+  &q.QueryCore)`); `QueryCore`'s untyped terminals (`Count`, `Exists`, `Update`, `ToSQL`, …) and its
+  unexported methods (`loadSpec`, `writeSubquery`, `writeProjection`) are promoted, so the type is
+  a `keel.Loader`, a subquery and a `keel.Projection`;
+- compile-time assertions that the table type implements `keel.Handle[*shipment.Shipment]` and the
+  query type `keel.Query[*shipment.Shipment]`;
 - a package variable `Shipments` built statically, `BuildShipments`, which relation and alias
   methods use, and `ShipmentsSchema`, which returns the table;
 - a column type per named Go type (`StatusCol`), so `Status.In(...)` accepts only
@@ -267,6 +279,35 @@ Packages that take columns in declarations (rollups, for one) read a handle with
 table's own handle or alias, and false for anything else, including a column reached through a
 relation, which belongs to a related row. `db.TenantColumns()` returns `Config.TenantColumns`, the
 order of the values in a tenant and in a tenant key, so such packages never ask for it again.
+
+### Compile cost
+
+Go compiles every method of an instantiated generic type in every package that reads that
+instantiation from export data (the compiler cannot know whether the type arguments were seen
+before). When `Handle[T]` (39 methods) and `Query[T]` (52) were generic structs, every package that
+could see a table, which relation methods make nearly every package, recompiled about 92 wrapper
+methods per table: in Trenova that was 56% of all compile CPU, and one 728-line repository compiled
+18,814 functions, 18,660 of them keel wrappers for 197 tables. A generic interface has no method
+bodies, so instantiating it costs nothing, and the methods of a non-generic type compile once in
+their own package; a prototype (60 tables of 31 methods) measured an importer at 1,892 functions
+with generic structs and 1 with interfaces.
+
+The rule that follows: no exported keel type instantiated per model has methods.
+
+- `QueryCore` holds the engine. Its builders return `*QueryCore`; its untyped terminals and every
+  unexported method a query needs (`loadSpec`, `writeSubquery`, `writeProjection`, `pickCount`,
+  `picked`, `any`) live on it, and `queryCore()` lets keel reach it from any `Query[T]`.
+  `NewQueryCore(ref)` starts one.
+- `TableBase` holds a table's `Ref` and its T-free methods; keel reaches a `Handle[T]`'s table
+  through `TableRef()`.
+- Everything that involves `T` is a generic function, instantiated only where it is called and
+  shared by every pointer type: the row terminals (`One`, `First`, `List`, `All`,
+  `UpdateReturning`, `PageOf`, `Each`), the typed writes (`Create`, `CreateMany`, `Save`,
+  `SaveExcept`, `DeleteRow`, `Upsert`, `CreateOrSkip`, `Copy`), the batch items, `CursorAt` and
+  hook registration. Each checks `mustBeRowPointer[T]` before it touches a row.
+- `Page[T]` is data; `Mutation[T]` keeps its one method, since only hooks name it.
+- `CTETable.Query` returns a `Query[*Row]` written by hand in keel (`rowQuery`), the same shape
+  `keel gen` writes per model.
 
 ## Queries
 
@@ -303,7 +344,7 @@ Builders are mutable and chainable; `Clone` copies one. `ToSQL` renders the main
 | `First` | the first row by the query's order, `ErrNotFound` when none |
 | `List` | rows; returns `ErrUnbounded` without `Limit` |
 | `All` | every row; for sets known to be small |
-| `Page` | a keyset page with an opaque cursor, a cursor per row (`CursorAt`) and an optional total in the same round trip: exact up to its limit (`TotalExact`), and above it the limit or, with `Estimate()`, the planner's estimate |
+| `Page` | a keyset page with an opaque cursor, a cursor per row (`keel.CursorAt(page, i)`) and an optional total in the same round trip: exact up to its limit (`TotalExact`), and above it the limit or, with `Estimate()`, the planner's estimate |
 | `Count`, `CountUpTo`, `Exists` | scalars |
 | `CountEstimate(ctx, db, exactUpTo)` | a `keel.RowCount{N, Exact}`: exact up to `exactUpTo` (`SELECT count(*) FROM (SELECT 1 … LIMIT exactUpTo+1)`), above it the top plan node's row estimate from `EXPLAIN (FORMAT JSON)` of the same rows, sent in the same round trip with the same text and bound arguments |
 | `Each` | keyset batches at constant memory |
@@ -428,8 +469,8 @@ the read's extra columns make sure it is selected). Any other term, a to-one rel
 path is checked to cross no to-many relation, and the render joins it as every read does) or an
 expression, is selected as a hidden value after the rows' columns (`selectOpts.tail`); the scan plan
 decodes those values per row (`selectPlan.tailScan`) through pgx into cursor values, refusing types
-a cursor cannot hold, and keeps them beside the rows. Such terms count as nullable. `CursorAt(i)`
-encodes row `i`'s values on demand, so a page costs no encoding for rows nobody asks about, and
+a cursor cannot hold, and keeps them beside the rows. Such terms count as nullable.
+`keel.CursorAt(page, i)` encodes row `i`'s values on demand, so a page costs no encoding for rows nobody asks about, and
 `Next` is the cursor of the last kept row. The keyset predicate is a row comparison when every term
 sorts one way and none can be NULL, an `OR` chain that places NULLs as `NULLS FIRST`/`LAST` (or
 Postgres's default) does otherwise, with expressions in parentheses. A dynamic page keeps its order

@@ -48,7 +48,7 @@ const (
 	defaultMaxEntryBytes = 1 << 20
 )
 
-// CacheOption configures Query.Cache.
+// CacheOption configures QueryCore.Cache.
 type CacheOption func(*cacheSpec)
 
 // cacheSpec is what a query asks of the result cache.
@@ -86,7 +86,7 @@ func AlsoReads(tables ...string) CacheOption {
 // begun is served from the cache, and a hit leaves it unbegun: its snapshot is taken by its first
 // statement that reads the database.
 // Without Config.Cache it does nothing.
-func (q *Query[T]) Cache(opts ...CacheOption) *Query[T] {
+func (q *QueryCore) Cache(opts ...CacheOption) *QueryCore {
 	spec := cacheSpec{on: true, ttl: defaultCacheTTL}
 	for _, o := range opts {
 		o(&spec)
@@ -94,9 +94,6 @@ func (q *Query[T]) Cache(opts ...CacheOption) *Query[T] {
 	q.q.cache = spec
 	return q
 }
-
-// Cache starts a query served from the result cache; see Query.Cache.
-func (h Handle[T]) Cache(opts ...CacheOption) *Query[T] { return h.Query().Cache(opts...) }
 
 // cacheTTL returns how long the query's result may be cached: zero when it does not ask, -1 when
 // it asks but cannot be (a Lock). The tables named with AlsoReads join ctx's read set.

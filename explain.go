@@ -47,7 +47,7 @@ type Plan struct {
 
 // Explain returns the plan of the query's main statement, rendered as ToSQL renders it under
 // ctx's scope, with its parameters bound so the plan is the one Postgres chooses for these values.
-func (q *Query[T]) Explain(ctx context.Context, db *DB, opts ExplainOptions) (*Plan, error) {
+func (q *QueryCore) Explain(ctx context.Context, db *DB, opts ExplainOptions) (*Plan, error) {
 	sql, args, err := q.ToSQL(ctx, db)
 	if err != nil {
 		return nil, err
@@ -57,7 +57,7 @@ func (q *Query[T]) Explain(ctx context.Context, db *DB, opts ExplainOptions) (*P
 	return db.explain(ctx, sql, args, opts)
 }
 
-// Explain returns the plan of the dynamic query's statement, as Query.Explain does: an analytics
+// Explain returns the plan of the dynamic query's statement, as QueryCore.Explain does: an analytics
 // guard compares TotalCost and Rows with its limits before running a report.
 func (q *DynQuery) Explain(ctx context.Context, db *DB, opts ExplainOptions) (*Plan, error) {
 	sql, args, err := q.ToSQL(ctx, db)

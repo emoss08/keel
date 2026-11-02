@@ -42,7 +42,8 @@ func (p PageRequest) Total(limit int64) PageRequest { p.total = limit; return p 
 // trip. A list showing "about 1.2M" pays for counting at most limit+1 rows. It needs Total.
 func (p PageRequest) Estimate() PageRequest { p.estimate = true; return p }
 
-// Page is one keyset page.
+// Page is one keyset page. It has no methods, so instantiating it per model costs nothing; read a
+// row's cursor with CursorAt.
 type Page[T any] struct {
 	Items []T
 	// Next is the cursor of the following page, empty on the last page.
@@ -58,12 +59,12 @@ type Page[T any] struct {
 	keys *pageKeys
 }
 
-// CursorAt returns the cursor that resumes the query after Items[i]: After(p.CursorAt(i), n)
+// CursorAt returns the cursor that resumes the query after p.Items[i]: After(keel.CursorAt(p, i), n)
 // reads the n rows that follow it. It is the cursor format Next uses (Next is the cursor of the
 // last item when a page follows), computed from the row's order values without a statement, for
 // APIs that give every row a cursor, such as a GraphQL connection's edges. It panics when i is out
 // of range, as indexing Items does, and returns "" on a Page that Page did not read.
-func (p Page[T]) CursorAt(i int) string {
+func CursorAt[T any](p Page[T], i int) string {
 	row := p.Items[i]
 	if p.keys == nil {
 		return ""
@@ -71,13 +72,14 @@ func (p Page[T]) CursorAt(i int) string {
 	return p.keys.cursor(toPtr(row), i)
 }
 
-// Page returns the page of rows after the request's cursor. The query's order may name columns of
-// its table, columns of to-one relations (belongs, one and pick paths, joined as any read joins
-// them) and expressions; keel adds the primary key when the order does not name it, so every row
-// has a unique position.
-func (q *Query[T]) Page(ctx context.Context, db *DB, p PageRequest) (Page[T], error) {
+// PageOf returns the page of rows of q, decoded as T, after the request's cursor. The query's
+// order may name columns of its table, columns of to-one relations (belongs, one and pick paths,
+// joined as any read joins them) and expressions; keel adds the primary key when the order does not
+// name it, so every row has a unique position. Generated query types call it for their Page method.
+func PageOf[T any](ctx context.Context, db *DB, q *QueryCore, p PageRequest) (Page[T], error) {
+	mustBeRowPointer[T]()
 	var out Page[T]
-	err := Batch(ctx, db, PageInto(q, p, &out))
+	err := Batch(ctx, db, pageItem(&q.q, p, &out))
 	return out, err
 }
 
@@ -172,14 +174,14 @@ type RowCount struct {
 // and the bound values. The query's own Limit and Offset do not apply, as for CountUpTo. An
 // estimate is as good as the table's statistics: it can be well off on a table whose
 // statistics are stale, but it is never less than exactUpTo+1. exactUpTo must not be negative.
-func (q *Query[T]) CountEstimate(ctx context.Context, db *DB, exactUpTo int64) (RowCount, error) {
+func (q *QueryCore) CountEstimate(ctx context.Context, db *DB, exactUpTo int64) (RowCount, error) {
 	var c RowCount
-	err := Batch(ctx, db, CountEstimateInto(q, exactUpTo, &c))
+	err := Batch(ctx, db, estimateItem(&q.q, exactUpTo, &c))
 	return c, err
 }
 
 // CountEstimate returns the number of rows the dynamic query returns, counted exactly up to
-// exactUpTo, and the planner's estimate when it returns more, as Query.CountEstimate does: the
+// exactUpTo, and the planner's estimate when it returns more, as QueryCore.CountEstimate does: the
 // count wraps the query (SELECT count(*) FROM (SELECT 1 FROM (query) d LIMIT exactUpTo+1) c), so
 // a Limit on the query bounds both the count and the estimate, and EXPLAIN (FORMAT JSON) of the
 // query rides in the same round trip.

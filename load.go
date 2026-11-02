@@ -395,8 +395,8 @@ func firstTarget(parent *schema.Table, rel *schema.Relation) *schema.Table {
 }
 
 // LoadStrategy is how a read loads its to-many relations, many-to-many relations and the picks it
-// does not join: Config.LoadStrategy sets the default and Query.LoadStrategy chooses for one query
-// and the loads below it.
+// does not join: Config.LoadStrategy sets the default and QueryCore.LoadStrategy chooses for one
+// query and the loads below it.
 type LoadStrategy uint8
 
 const (
@@ -417,13 +417,10 @@ const (
 // LoadStrategy chooses how the query's relations load, overriding Config.LoadStrategy for the
 // query and every load below it; a load can choose again for its own subtree:
 // Load(m.LoadStrategy(keel.LoadPerLevel)).
-func (q *Query[T]) LoadStrategy(s LoadStrategy) *Query[T] {
+func (q *QueryCore) LoadStrategy(s LoadStrategy) *QueryCore {
 	q.q.loadStrategy = s
 	return q
 }
-
-// LoadStrategy starts a query that loads its relations with s, as Query.LoadStrategy does.
-func (h Handle[T]) LoadStrategy(s LoadStrategy) *Query[T] { return h.Query().LoadStrategy(s) }
 
 // strategy is the LoadStrategy of node n's statement: its own query's or the nearest one above
 // it that chose one, else Config.LoadStrategy.

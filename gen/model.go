@@ -51,6 +51,7 @@ type model struct {
 // column is one stored field.
 type column struct {
 	field    string
+	member   string
 	pos      token.Pos
 	tag      schema.FieldTag
 	typ      types.Type
@@ -98,6 +99,7 @@ func (p *pkgModels) hasWide() bool {
 type relation struct {
 	named  *types.Named
 	field  string
+	member string
 	pos    token.Pos
 	tag    schema.FieldTag
 	target *model

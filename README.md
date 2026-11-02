@@ -226,8 +226,9 @@ go run github.com/emoss08/keel/cmd/keel gen ./internal/...
 
 For each package with models, this writes a package next to it (`fleet` → `fleet/fleetdb`) with a
 handle per table (`fleetdb.Shipments`), a typed field per column (`fleetdb.Shipments.Status`), a
-method per relation (`fleetdb.Shipments.Customer()`) and `Get` by primary key. Run it with `-check`
-in CI.
+method per relation (`fleetdb.Shipments.Customer()`), `Get` by primary key, and a query type per
+table. Queries are values of the interface `keel.Query[*fleet.Shipment]`. Run it with `-check` in
+CI.
 
 ### 3. Open a database
 
@@ -593,6 +594,20 @@ on 2026-10-26; fastest in bold):
 
 [docs/benchmarks.md](docs/benchmarks.md) has the same table with the database on the same host,
 how each library is written, allocations, the raw output and how to rerun everything.
+
+### Build time
+
+`keel.Query[T]` and `keel.Handle[T]` are generic interfaces, not generic structs, and the query
+engine (`keel.QueryCore`) is not generic. The reason is a rule of the Go compiler: a package that
+uses a generic type with methods from another package compiles every one of those methods again.
+With one handle and one query type per table, and relation methods that let almost every package
+see almost every table, that made an application recompile keel's methods for every table in
+nearly every package: in Trenova (197 tables) it was 56% of all compile time, and one 728-line
+package compiled 18,814 functions, 18,660 of them copies of keel's methods. An interface has no
+method bodies, so using it costs nothing; keel's engine compiles once in keel, and the typed
+wrappers `keel gen` writes compile once in the generated package. A 60-table prototype went from
+1,892 functions compiled in an importing package to 1. See
+[Why queries are interfaces](docs/guide.md#why-queries-are-interfaces).
 
 ## Status
 

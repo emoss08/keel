@@ -928,6 +928,21 @@ func ExampleQuery_Page() {
 	}
 }
 
+func ExampleCursorAt() {
+	ctx, db := requestContext(), appDB
+	s := fleetdb.Shipments
+	after, first := "", 20
+
+	page, err := s.Order(s.CreatedAt.Desc()).Page(ctx, db, keel.After(after, first))
+	if err != nil {
+		log.Fatal(err)
+	}
+	for i, sh := range page.Items {
+		fmt.Println(sh.ProNumber, keel.CursorAt(page, i))
+	}
+	fmt.Println("has next page:", page.Next != "")
+}
+
 func ExampleQuery_Each() {
 	ctx, db := withSystem(context.Background(), "nightly hazmat audit"), appDB
 	s := fleetdb.Shipments

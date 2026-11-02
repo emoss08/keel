@@ -34,97 +34,132 @@ func Batch(ctx context.Context, db *DB, items ...BatchItem) error {
 }
 
 // ListInto reads the query's rows into dst, as List does. The query must have a Limit.
-func ListInto[T any](q *Query[T], dst *[]T) BatchItem {
+func ListInto[T any](q Query[T], dst *[]T) BatchItem {
 	if dst == nil {
 		return noDestination("ListInto")
 	}
-	return BatchItem{prepare: func(ctx context.Context, run *runner) (*read, error) {
-		if q.q.limit <= 0 {
-			return nil, ErrUnbounded
-		}
-		return fetchInto(ctx, run, &q.q, fetchOpts{}, anyRows, func(rows []T) { *dst = rows })
-	}}
+	mustBeRowPointer[T]()
+	return listItem(&q.queryCore().q, dst)
 }
 
 // AllInto reads every matching row into dst, as All does.
-func AllInto[T any](q *Query[T], dst *[]T) BatchItem {
+func AllInto[T any](q Query[T], dst *[]T) BatchItem {
 	if dst == nil {
 		return noDestination("AllInto")
 	}
-	return BatchItem{prepare: func(ctx context.Context, run *runner) (*read, error) {
-		return fetchInto(ctx, run, &q.q, fetchOpts{}, anyRows, func(rows []T) { *dst = rows })
-	}}
+	mustBeRowPointer[T]()
+	return allItem(&q.queryCore().q, dst)
 }
 
 // OneInto reads the only matching row into dst, as One does: the batch fails with ErrNotFound
 // when none matches and ErrNotSingular when more do.
-func OneInto[T any](q *Query[T], dst *T) BatchItem {
+func OneInto[T any](q Query[T], dst *T) BatchItem {
 	if dst == nil {
 		return noDestination("OneInto")
 	}
-	return BatchItem{prepare: func(ctx context.Context, run *runner) (*read, error) {
-		return fetchInto(ctx, run, &q.q, fetchOpts{limit: 2, sizeHint: 1}, oneRow,
-			func(rows []T) { *dst = rows[0] })
-	}}
+	mustBeRowPointer[T]()
+	return oneItem(&q.queryCore().q, dst)
 }
 
 // FirstInto reads the first row in the query's order into dst, as First does: the batch fails
 // with ErrNotFound when no row matches.
-func FirstInto[T any](q *Query[T], dst *T) BatchItem {
+func FirstInto[T any](q Query[T], dst *T) BatchItem {
 	if dst == nil {
 		return noDestination("FirstInto")
 	}
-	return BatchItem{prepare: func(ctx context.Context, run *runner) (*read, error) {
-		return fetchInto(ctx, run, &q.q, fetchOpts{limit: 1, sizeHint: 1}, firstRow,
-			func(rows []T) { *dst = rows[0] })
-	}}
+	mustBeRowPointer[T]()
+	return firstItem(&q.queryCore().q, dst)
 }
 
 // PageInto reads one keyset page into dst, as Page does; a requested total (and its estimate) is
 // counted in the same round trip.
-func PageInto[T any](q *Query[T], p PageRequest, dst *Page[T]) BatchItem {
+func PageInto[T any](q Query[T], p PageRequest, dst *Page[T]) BatchItem {
 	if dst == nil {
 		return noDestination("PageInto")
 	}
-	return BatchItem{prepare: func(ctx context.Context, run *runner) (*read, error) {
-		return pageRead(ctx, run, &q.q, p, dst)
-	}}
+	mustBeRowPointer[T]()
+	return pageItem(&q.queryCore().q, p, dst)
 }
 
 // CountInto stores the number of matching rows in dst, as Count does.
-func CountInto[T any](q *Query[T], dst *int64) BatchItem {
+func CountInto[T any](q Query[T], dst *int64) BatchItem {
 	if dst == nil {
 		return noDestination("CountInto")
 	}
-	return countItem(&q.q, 0, func(n int64) { *dst = n })
+	return countItem(&q.queryCore().q, 0, func(n int64) { *dst = n })
 }
 
 // CountUpToInto stores the number of matching rows, counted up to limit, in dst, as CountUpTo
 // does.
-func CountUpToInto[T any](q *Query[T], limit int64, dst *int64) BatchItem {
+func CountUpToInto[T any](q Query[T], limit int64, dst *int64) BatchItem {
 	if dst == nil {
 		return noDestination("CountUpToInto")
 	}
-	return countItem(&q.q, limit, func(n int64) { *dst = n })
+	return countItem(&q.queryCore().q, limit, func(n int64) { *dst = n })
 }
 
 // CountEstimateInto stores the number of matching rows, counted exactly up to exactUpTo and
 // estimated by the planner above it, in dst, as CountEstimate does. Its count and EXPLAIN join
 // the batch's round trip.
-func CountEstimateInto[T any](q *Query[T], exactUpTo int64, dst *RowCount) BatchItem {
+func CountEstimateInto[T any](q Query[T], exactUpTo int64, dst *RowCount) BatchItem {
 	if dst == nil {
 		return noDestination("CountEstimateInto")
 	}
+	return estimateItem(&q.queryCore().q, exactUpTo, dst)
+}
+
+// listItem reads q's rows into dst; q must have a Limit.
+func listItem[T any](q *query, dst *[]T) BatchItem {
+	return BatchItem{prepare: func(ctx context.Context, run *runner) (*read, error) {
+		if q.limit <= 0 {
+			return nil, ErrUnbounded
+		}
+		return fetchInto(ctx, run, q, fetchOpts{}, anyRows, func(rows []T) { *dst = rows })
+	}}
+}
+
+// allItem reads every row q matches into dst.
+func allItem[T any](q *query, dst *[]T) BatchItem {
+	return BatchItem{prepare: func(ctx context.Context, run *runner) (*read, error) {
+		return fetchInto(ctx, run, q, fetchOpts{}, anyRows, func(rows []T) { *dst = rows })
+	}}
+}
+
+// oneItem reads the only row q matches into dst.
+func oneItem[T any](q *query, dst *T) BatchItem {
+	return BatchItem{prepare: func(ctx context.Context, run *runner) (*read, error) {
+		return fetchInto(ctx, run, q, fetchOpts{limit: 2, sizeHint: 1}, oneRow,
+			func(rows []T) { *dst = rows[0] })
+	}}
+}
+
+// firstItem reads the first row in q's order into dst.
+func firstItem[T any](q *query, dst *T) BatchItem {
+	return BatchItem{prepare: func(ctx context.Context, run *runner) (*read, error) {
+		return fetchInto(ctx, run, q, fetchOpts{limit: 1, sizeHint: 1}, firstRow,
+			func(rows []T) { *dst = rows[0] })
+	}}
+}
+
+// pageItem reads one keyset page of q into dst.
+func pageItem[T any](q *query, p PageRequest, dst *Page[T]) BatchItem {
+	return BatchItem{prepare: func(ctx context.Context, run *runner) (*read, error) {
+		return pageRead(ctx, run, q, p, dst)
+	}}
+}
+
+// estimateItem stores q's estimated count, exact up to exactUpTo, in dst.
+func estimateItem(q *query, exactUpTo int64, dst *RowCount) BatchItem {
 	return BatchItem{prepare: func(ctx context.Context, run *runner) (*read, error) {
 		e, err := newEstimate(exactUpTo)
 		if err != nil {
 			return nil, err
 		}
-		stmts, err := q.q.estimateStmts(ctx, run, e)
+		stmts, err := q.estimateStmts(ctx, run, e)
 		if err != nil {
 			return nil, err
 		}
-		return &read{stmts: stmts, timeout: q.q.timeout, cache: q.q.cacheTTL(ctx), finish: func() { *dst = e.count() }}, nil
+		return &read{stmts: stmts, timeout: q.timeout, cache: q.cacheTTL(ctx), finish: func() { *dst = e.count() }}, nil
 	}}
 }
 
@@ -151,11 +186,11 @@ func DynCountEstimateInto(q *DynQuery, exactUpTo int64, dst *RowCount) BatchItem
 }
 
 // ExistsInto stores whether any row matches in dst, as Exists does.
-func ExistsInto[T any](q *Query[T], dst *bool) BatchItem {
+func ExistsInto[T any](q Query[T], dst *bool) BatchItem {
 	if dst == nil {
 		return noDestination("ExistsInto")
 	}
-	return countItem(&q.q, 1, func(n int64) { *dst = n > 0 })
+	return countItem(&q.queryCore().q, 1, func(n int64) { *dst = n > 0 })
 }
 
 // IntoSlice decodes the rows of a projection into dst, as Into does.

@@ -12,7 +12,7 @@ import (
 )
 
 // Projection is a statement whose output columns fill a struct: a query that picks expressions,
-// or a Compound. *Query[T] and Compound implement it.
+// or a Compound. Every Query[T], QueryCore and Compound implement it.
 type Projection interface {
 	writeProjection(r *render) projectionInfo
 }
@@ -25,7 +25,7 @@ type projectionInfo struct {
 	customPlan bool
 }
 
-func (q *Query[T]) writeProjection(r *render) projectionInfo {
+func (q *QueryCore) writeProjection(r *render) projectionInfo {
 	q.q.renderSelect(r, newRoot(&q.q), selectOpts{exact: true})
 	return projectionInfo{table: q.q.ref.Table.Name, exprs: len(q.q.exprs), limit: q.q.limit,
 		timeout: q.q.timeout, customPlan: q.q.customPlan}
@@ -42,7 +42,7 @@ func (c Compound) writeProjection(r *render) projectionInfo {
 	return projectionInfo{table: "compound", exprs: n}
 }
 
-func (q *Query[T]) pickCount() int { return len(q.q.exprs) }
+func (q *QueryCore) pickCount() int { return len(q.q.exprs) }
 
 // Into runs a projection and decodes each row into R: the picked expressions fill R's exported
 // fields in order. R may also be a single scalar type when one expression is picked.

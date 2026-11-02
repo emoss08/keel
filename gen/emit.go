@@ -362,25 +362,25 @@ func (e *emitter) emitPackage(p *pkgModels) ([]byte, error) {
 		w("var %s = %s.Ref{Table: &%s}\n\n", refVar, keel, tblVar)
 
 		w("// %s is the table of %s.\n", handle, model)
-		w("type %s struct {\n\t%s.Handle[*%s]\n", handle, keel, model)
+		w("type %s struct {\n\t%s.TableBase\n", handle, keel)
 		for _, c := range m.columns {
-			w("\t%s %s\n", c.field, e.colType(im, c))
+			w("\t%s %s\n", c.member, e.colType(im, c))
 		}
 		w("}\n\n")
 
 		w("// %s references the %s table.\n", m.plural, m.table)
-		w("var %s = &%s{\n\tHandle: %s.Handle[*%s]{Ref: &%s},\n", m.plural, handle, keel, model, refVar)
+		w("var %s = &%s{\n\tTableBase: %s.TableBase{Ref: &%s},\n", m.plural, handle, keel, refVar)
 		for _, c := range m.columns {
-			w("\t%s: %s,\n", c.field, e.colLit(im, c, "&"+refVar))
+			w("\t%s: %s,\n", c.member, e.colLit(im, c, "&"+refVar))
 		}
 		w("}\n\n")
 
-		w("// %s builds the handle of %s for ref. Generated relation and alias methods call it.\n",
+		w("// %s builds the table of %s for ref. Generated relation and alias methods call it.\n",
 			build, m.table)
-		w("func %s(r *%s.Ref) *%s {\n\treturn &%s{\n\t\tHandle: %s.Handle[*%s]{Ref: r},\n", build, keel,
-			handle, handle, keel, model)
+		w("func %s(r *%s.Ref) *%s {\n\treturn &%s{\n\t\tTableBase: %s.TableBase{Ref: r},\n", build, keel,
+			handle, handle, keel)
 		for _, c := range m.columns {
-			w("\t\t%s: %s,\n", c.field, e.colLit(im, c, "r"))
+			w("\t\t%s: %s,\n", c.member, e.colLit(im, c, "r"))
 		}
 		w("\t}\n}\n\n")
 
@@ -400,18 +400,21 @@ func (e *emitter) emitPackage(p *pkgModels) ([]byte, error) {
 				th = a + "." + th
 				tb = a + "." + tb
 			}
-			w("// %s is the %s relation.\n", r.field, relName(r.kind))
-			w("func (t *%s) %s() *%s { return %s.Path(t.Ref, %d, %s) }\n\n", handle, r.field, th, keel, ri, tb)
+			w("// %s is the %s relation.\n", r.member, relName(r.kind))
+			w("func (t *%s) %s() *%s { return %s.Path(t.Ref, %d, %s) }\n\n", handle, r.member, th, keel, ri, tb)
 		}
 
-		if pk, err := m.singleKey(); err == nil && !pk.ptr {
+		ctxPkg := im.add("context", "context")
+		if pk, ok := m.getKey(); ok {
 			pt := types.TypeString(pk.typ, q)
-			ctxPkg := im.add("context", "context")
 			w("// Get returns the %s row with the given key, or keel.ErrNotFound.\n", m.table)
 			w("func (t *%s) Get(ctx %s.Context, db *%s.DB, %s %s) (*%s, error) {\n", handle, ctxPkg, keel,
 				"key", pt, model)
-			w("\treturn t.Where(t.%s.Eq(key)).One(ctx, db)\n}\n\n", pk.field)
+			w("\treturn t.Where(t.%s.Eq(key)).One(ctx, db)\n}\n\n", pk.member)
 		}
+
+		emitTyped(w, typedNames{keel: keel, context: ctxPkg, time: im.add("time", "time"), model: model,
+			row: "*" + model, table: handle, query: m.plural + "Query"})
 
 		w("func new%s() %s.Pointer { return %s.Pointer(new(%s)) }\n\n", m.name, unsafePkg, unsafePkg, model)
 		w("func newN%s(n int) %s.Pointer { return %s.Pointer(%s.SliceData(make([]%s, n))) }\n\n",
@@ -450,7 +453,6 @@ func (e *emitter) emitPackage(p *pkgModels) ([]byte, error) {
 			if !m.hooks[h] {
 				continue
 			}
-			ctxPkg := im.add("context", "context")
 			w("func %s%s(ctx %s.Context, p %s.Pointer) error { return (*%s)(p).%s(ctx) }\n\n",
 				lowerFirst(h), m.name, ctxPkg, unsafePkg, model, h)
 		}

@@ -214,7 +214,7 @@ func TestSlowWaitsReportACacheFillWait(t *testing.T) {
 func TestFuncPackage(t *testing.T) {
 	cases := map[string]string{
 		"github.com/emoss08/keel.(*runner).batch":                 "github.com/emoss08/keel",
-		"github.com/emoss08/keel.(*Query[...]).List":              "github.com/emoss08/keel",
+		"github.com/emoss08/keel.List[...]":                       "github.com/emoss08/keel",
 		"github.com/emoss08/keel/internal/fleet/fleetdb.(*T).Get": "github.com/emoss08/keel/internal/fleet/fleetdb",
 		"example.com/app/store.(*Repo).List.func1":                "example.com/app/store",
 		"main.main": "main",

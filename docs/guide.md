@@ -1023,7 +1023,8 @@ it holds:
 
 | Declaration | What it is |
 |---|---|
-| `type ShipmentsTable struct` | the handle type: embeds `keel.Handle[*fleet.Shipment]` and has one field per column (`ID`, `ProNumber`, `Status`, …) |
+| `type ShipmentsTable struct` | the handle type: embeds `keel.TableBase` and has one field per column (`ID`, `ProNumber`, `Status`, …); its methods start queries (`Query`, `Where`, `Load`, …, returning `keel.Query[*fleet.Shipment]`) and write rows (`Create`, `Save`, `Upsert`, …), so it implements `keel.Handle[*fleet.Shipment]` |
+| `type ShipmentsQuery struct` | the query type: embeds `keel.QueryCore`, keel's non-generic query engine, and adds the builders that return `keel.Query[*fleet.Shipment]` and the terminals that return rows (`One`, `List`, `Page`, …), so it implements `keel.Query[*fleet.Shipment]` |
 | `var Shipments` | the base handle, built statically; queries and writes start here |
 | `func (t *ShipmentsTable) Customer() *CustomersTable` | one method per relation, returning the handle of the related table on that path |
 | `func (t *ShipmentsTable) As(alias string) *ShipmentsTable` | a second reference to the table for self-joins and correlated subqueries |
@@ -1031,11 +1032,38 @@ it holds:
 | `func BuildShipments(*keel.Ref) *ShipmentsTable` | builds a handle for a reference; relation and alias methods call it |
 | `func ShipmentsSchema() *schema.Table` | the table metadata, written as a static literal with field accessors, hook trampolines, labels, docs, enum values and report facts |
 
-keel's generic types (`Handle`, `Query`, `Page`, `Mutation`, `ListInto` and the other batch items)
-take the model's pointer type: `keel.Query[*fleet.Shipment]`, whose terminals return
-`*fleet.Shipment` and `[]*fleet.Shipment`. Every pointer type shares one shape, so a package that
-can see a hundred handles compiles keel's generic methods once instead of a hundred times; a struct
-type argument panics on first use.
+keel's generic types and functions (`Handle`, `Query`, `Page`, `Mutation`, `ListInto` and the
+other batch items, `CursorAt`) take the model's pointer type: `keel.Query[*fleet.Shipment]`, whose
+terminals return `*fleet.Shipment` and `[]*fleet.Shipment`. `keel.Handle[T]` and `keel.Query[T]`
+are interfaces and `keel.Page[T]` has no methods, so naming them for a model compiles nothing; the
+generated table and query types carry the typed methods, compiled once in the generated package
+(see [Why queries are interfaces](#why-queries-are-interfaces)). A struct type argument panics on
+first use.
+
+Variables and parameters that hold a query are of the interface type, `keel.Query[*fleet.Shipment]`,
+not a pointer:
+
+```go
+func openShipments(s *fleetdb.ShipmentsTable, customer ids.ID) keel.Query[*fleet.Shipment] {
+    return s.Where(s.CustomerID.Eq(customer), s.Status.Ne(fleet.StatusDelivered))
+}
+```
+
+Code that needs a query or a table without knowing its model takes what keel's own functions
+take: a `keel.Projection` for `keel.Into`, `interface{ TableRef() *keel.Ref }` for `Join` and
+`db.Intercept`, a `keel.Loader` for `Load`.
+
+Code that holds a table's columns but cannot import its generated package (a port of columns
+handed across a module boundary) queries dynamic rows with `keel.RowsOf(col.Ref)` and names the
+table as a join target with `keel.TableBase{Ref: col.Ref}`. A model keel gen does not cover, such
+as a test model with a hand-built schema, gets a typed query from `keel.QueryOf[*Model](ref)`;
+every package that calls `QueryOf` compiles that query's methods for its model, so generated tables
+remain the way to query application models.
+
+A column or relation named like a member the generated table already has (`Order`, `Group`,
+`Query`, `Copy`, `Get`, …) keeps its Go field in the model and gets a suffixed member on the table:
+`OrderCol` for a column, `OrderRel()` for a relation. Every table therefore implements the whole
+`keel.Handle` interface, and no model field hides a table method.
 
 The handle name is the model name in the plural: `Shipment` → `Shipments`, `Address` →
 `Addresses`, `Company` → `Companies`. Named column types declared in a model package get their
@@ -1047,8 +1075,8 @@ Values many columns share are declared once per file: `enumStatus`, an array of
 `schema.EnumValue` that every `Status` column slices, and one `schema.ReportInfo` per distinct set
 of report facts (`reportDimEpoch`, `reportMeasureDecimalMoney`), named by its content.
 
-Only data-access packages should import generated packages. The generic types they mention
-(`keel.Handle[T]`, `keel.Query[T]`) then stay out of the rest of the build.
+Only data-access packages should import generated packages: the table and query types, and every
+column wrapper, then stay out of the rest of the build.
 
 ## Reading
 
@@ -1676,7 +1704,7 @@ rows, err := keel.Into[labelRow](ctx, db, s.LeftJoinLateral(lbl).Pick(s.ProNumbe
 
 `keel.CTE(name, columns, body)` declares `WITH name (columns) AS (body)`. Declare it on the query
 with `With`, then join it, filter on its columns with `Col(name)` (an `AnyCol`), or read it through
-`Query()`, which returns a `*keel.Query[*keel.Row]` to read with `keel.Into`. A query over the CTE
+`Query()`, which returns a `keel.Query[*keel.Row]` to read with `keel.Into`. A query over the CTE
 declares it too.
 
 ```go
@@ -2284,18 +2312,20 @@ page, err := s.
 | `Next` | the cursor of the following page; empty on the last page |
 | `Total` | the number of matching rows when the request asked for it: exact up to its limit; past it the limit ("10,000+"), or with `Estimate()` the planner's estimate, at least the limit plus one ("about 1.2M") |
 | `TotalExact` | `Total` is the exact number of matching rows; false when no total was asked for or more rows matched than the limit |
-| `CursorAt(i)` | the cursor that resumes after `Items[i]`: a GraphQL connection's edge cursor |
 
-`CursorAt(i)` encodes row `i`'s order values in the format of `Next` (which is the cursor of the
-last item when a page follows), without a statement: `After(page.CursorAt(i), n)` reads the `n`
-rows after that row. A connection gives every edge its cursor and takes `endCursor` from the last
-one, so a client can resume after any row it saw:
+`keel.CursorAt(page, i)` returns the cursor that resumes after `page.Items[i]`, a GraphQL
+connection's edge cursor. It encodes row `i`'s order values in the format of `Next` (which is the
+cursor of the last item when a page follows), without a statement: `After(keel.CursorAt(page, i),
+n)` reads the `n` rows after that row. It is a function rather than a method because `Page[T]`
+has no methods (see [Why queries are interfaces](#why-queries-are-interfaces)). A connection
+gives every edge its cursor and takes `endCursor` from the last one, so a client can resume after
+any row it saw:
 
 ```go
 page, err := s.Order(s.CreatedAt.Desc()).Page(ctx, db, keel.After(after, first))
 edges := make([]Edge, len(page.Items))
 for i, sh := range page.Items {
-    edges[i] = Edge{Node: sh, Cursor: page.CursorAt(i)}
+    edges[i] = Edge{Node: sh, Cursor: keel.CursorAt(page, i)}
 }
 info := PageInfo{HasNextPage: page.Next != ""}
 if n := len(edges); n > 0 {
@@ -3564,8 +3594,9 @@ keel.OnWrite(db, fleetdb.Customers, keel.Committed, func(ctx context.Context, m 
 })
 ```
 
-`OnCreate`, `OnUpdate` and `OnDelete` register for one operation, `OnWrite` for all three. A hook
-receives a `*keel.Mutation[T]`:
+`OnCreate`, `OnUpdate` and `OnDelete` register for one operation, `OnWrite` for all three. They
+take the table as a `keel.Handle[T]`, which every generated table implements. A hook receives a
+`*keel.Mutation[T]`:
 
 | Field or method | Meaning |
 |---|---|
@@ -4557,6 +4588,32 @@ statement, and enum values and tenant strings are shared instead of allocated pe
 whose Go type is an enum (`Column.Enum`) matches each value's bytes against the generated constants
 and stores the constant's string, whether the column is a Postgres enum or text; a value that is no
 constant decodes as any string does, and a nullable enum field allocates only its pointer.
+
+### Why queries are interfaces
+
+`keel.Query[T]` and `keel.Handle[T]` are generic interfaces, `keel.Page[T]` has no methods, and the
+query engine is `keel.QueryCore`, a plain struct. This keeps an application's build fast. It does
+not change what runs: the SQL, the errors and the allocations are the same.
+
+The reason is a rule of the Go compiler. When a package uses a generic type with methods that
+another package declared, such as a `keel.Query[*fleet.Shipment]` it reads through a generated
+package, the compiler cannot be sure the instantiation was compiled before, so it compiles every
+method of the type again, in that package. An application has one instantiation per table and
+almost every package can see most tables through relation methods, so every such package compiled
+every method of every table's handle and query. In Trenova, with 197 tables, that was 56% of all
+compile time: one repository package of 728 lines compiled 18,814 functions, 18,660 of them copies
+of keel's handle and query methods.
+
+A generic interface has no method bodies, so using one for a new type argument compiles nothing.
+The methods of a type that is not generic are compiled once, in the package that declares it. So
+keel keeps the engine in `QueryCore`, compiled once in keel; `keel gen` writes a small table type
+and query type per model whose methods only call into it, compiled once in the generated package;
+and every other package sees interfaces. In a prototype with 60 tables of 31 methods each, a
+package that imports them compiled 1,892 functions with generic structs and 1 with interfaces.
+
+Generic functions (`keel.List[T]`, `keel.Create[T]`, `keel.ListInto[T]`, `keel.CursorAt[T]`) are
+compiled only where they are called, and every pointer type shares one compiled copy, so they cost
+nothing elsewhere.
 
 ## Testing
 

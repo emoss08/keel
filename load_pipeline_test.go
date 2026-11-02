@@ -220,7 +220,7 @@ func shipmentTree(rows []*fleet.Shipment) string {
 // compareStrategies reads build's query pipelined and per level and fails unless both load the
 // same tree and the pipelined read takes trips round trips.
 func compareStrategies(t *testing.T, ctx context.Context, d *keel.DB, rec *recorder, trips int,
-	build func() *keel.Query[*fleet.Shipment],
+	build func() keel.Query[*fleet.Shipment],
 ) []*fleet.Shipment {
 	t.Helper()
 	rec.reset()
@@ -241,7 +241,7 @@ func TestPipelinedLoadsMatchPerLevel(t *testing.T) {
 	s := fleetdb.Shipments
 	m := s.Moves()
 
-	rows := compareStrategies(t, w.ctx, d, rec, 1, func() *keel.Query[*fleet.Shipment] {
+	rows := compareStrategies(t, w.ctx, d, rec, 1, func() keel.Query[*fleet.Shipment] {
 		return s.Load(s.Customer(), s.BillTo(), m.Order(m.Sequence.Desc()).Load(m.FirstStop()),
 			m.Stops().Location(), s.Tags(), s.OriginStop()).Order(s.ProNumber.Asc())
 	})
@@ -254,22 +254,22 @@ func TestPipelinedLoadsMatchPerLevel(t *testing.T) {
 	eq(t, rows[0].OriginStop != nil, true)
 	eq(t, len(rows[7].Moves), 0)
 
-	limited := compareStrategies(t, w.ctx, d, rec, 1, func() *keel.Query[*fleet.Shipment] {
+	limited := compareStrategies(t, w.ctx, d, rec, 1, func() keel.Query[*fleet.Shipment] {
 		return s.Load(m.Stops()).Order(s.Status.Asc(), s.ProNumber.Asc()).Limit(5)
 	})
 	eq(t, len(limited), 5)
 
-	compareStrategies(t, w.ctx, d, rec, 1, func() *keel.Query[*fleet.Shipment] {
+	compareStrategies(t, w.ctx, d, rec, 1, func() keel.Query[*fleet.Shipment] {
 		return s.Where(s.Hazmat.IsFalse()).
 			Load(m.Where(m.Loaded.IsTrue()).Order(m.Sequence.Desc()).Limit(1).Load(m.Stops())).
 			Order(s.ProNumber.Desc()).Offset(1).Limit(4)
 	})
 
-	compareStrategies(t, w.ctx, d, rec, 2, func() *keel.Query[*fleet.Shipment] {
+	compareStrategies(t, w.ctx, d, rec, 2, func() keel.Query[*fleet.Shipment] {
 		return s.Load(m.Where(m.Sequence.Eq(0)).Limit(1).Load(m.Stops().Location())).Order(s.ProNumber.Asc())
 	})
 
-	compareStrategies(t, w.ctx, d, rec, 2, func() *keel.Query[*fleet.Shipment] {
+	compareStrategies(t, w.ctx, d, rec, 2, func() keel.Query[*fleet.Shipment] {
 		return s.Where(s.ProNumber.In("PRO-0000", "PRO-0001")).Load(m.Stops()).Limit(3)
 	})
 }
@@ -361,7 +361,7 @@ func TestPipelinedLoadsUnderASystemScope(t *testing.T) {
 	m := s.Moves()
 	sys := systemCtx("report")
 	orgA, orgB := a.shipments[0].OrganizationID, b.shipments[0].OrganizationID
-	rows := compareStrategies(t, sys, d, rec, 1, func() *keel.Query[*fleet.Shipment] {
+	rows := compareStrategies(t, sys, d, rec, 1, func() keel.Query[*fleet.Shipment] {
 		return s.AllTenants().
 			Where(keel.Or(s.OrganizationID.Eq(orgA), s.OrganizationID.Eq(orgB))).
 			Load(s.Customer(), m.Order(m.Sequence.Asc()).Load(m.FirstStop()), m.Stops().Location(), s.Tags(),

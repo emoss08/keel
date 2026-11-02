@@ -16,50 +16,58 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-// Create inserts row. The autoid column, the tenant columns and the autocreate and autoupdate
-// columns are filled first; readonly columns are read back.
-func (h Handle[T]) Create(ctx context.Context, db *DB, row T) error {
-	mustBeRowPointer[T]()
-	return db.insert(ctx, h.Ref.Table, []unsafe.Pointer{toPtr(row)})
-}
-
-// CreateMany inserts rows with as few statements as Postgres's parameter limit allows, all sent
-// in one round trip.
-func (h Handle[T]) CreateMany(ctx context.Context, db *DB, rows []T) error {
-	mustBeRowPointer[T]()
-	if len(rows) == 0 {
-		return nil
-	}
+// rowPtrs returns the addresses rows hold.
+func rowPtrs[T any](rows []T) []unsafe.Pointer {
 	ps := make([]unsafe.Pointer, len(rows))
 	for i, r := range rows {
 		ps[i] = toPtr(r)
 	}
-	return db.insert(ctx, h.Ref.Table, ps)
+	return ps
 }
 
-// Save updates row by its primary key. With a version column it compares the stored version,
-// increments it and returns a *ConflictError (matching ErrConflict) when another writer got
-// there first. cols narrows the columns written; the autoupdate column is always written.
+// Create inserts row, of T, the model's pointer type, into t's table. The autoid column, the
+// tenant columns and the autocreate and autoupdate columns are filled first; readonly columns are
+// read back. Generated table types call it for their Create method.
+func Create[T any](ctx context.Context, db *DB, t *TableBase, row T) error {
+	mustBeRowPointer[T]()
+	return db.insert(ctx, t.Ref.Table, []unsafe.Pointer{toPtr(row)})
+}
+
+// CreateMany inserts rows into t's table with as few statements as Postgres's parameter limit
+// allows, all sent in one round trip. Generated table types call it for their CreateMany method.
+func CreateMany[T any](ctx context.Context, db *DB, t *TableBase, rows []T) error {
+	mustBeRowPointer[T]()
+	if len(rows) == 0 {
+		return nil
+	}
+	return db.insert(ctx, t.Ref.Table, rowPtrs(rows))
+}
+
+// Save updates row in t's table by its primary key. With a version column it compares the stored
+// version, increments it and returns a *ConflictError (matching ErrConflict) when another writer
+// got there first. cols narrows the columns written; the autoupdate column is always written.
 // Interceptors' predicates join the primary key in the WHERE clause: a row they exclude is not
 // written, and Save reports it as ErrConflict on a table with a version column, else ErrNotFound.
-func (h Handle[T]) Save(ctx context.Context, db *DB, row T, cols ...Column) error {
+// Generated table types call it for their Save method.
+func Save[T any](ctx context.Context, db *DB, t *TableBase, row T, cols ...Column) error {
 	mustBeRowPointer[T]()
-	return db.save(ctx, h.Ref, toPtr(row), cols, false)
+	return db.save(ctx, t.Ref, toPtr(row), cols, false)
 }
 
 // SaveExcept is Save writing every updatable column except cols: the columns a caller must never
 // overwrite from a row it read (secrets, columns another process maintains). The autoupdate column
-// is always written.
-func (h Handle[T]) SaveExcept(ctx context.Context, db *DB, row T, cols ...Column) error {
+// is always written. Generated table types call it for their SaveExcept method.
+func SaveExcept[T any](ctx context.Context, db *DB, t *TableBase, row T, cols ...Column) error {
 	mustBeRowPointer[T]()
-	return db.save(ctx, h.Ref, toPtr(row), cols, true)
+	return db.save(ctx, t.Ref, toPtr(row), cols, true)
 }
 
-// DeleteRow deletes row by its primary key. Interceptors' predicates join the primary key in the
-// WHERE clause. It returns ErrNotFound when no row was deleted, including a row they exclude.
-func (h Handle[T]) DeleteRow(ctx context.Context, db *DB, row T) error {
+// DeleteRow deletes row from t's table by its primary key. Interceptors' predicates join the
+// primary key in the WHERE clause. It returns ErrNotFound when no row was deleted, including a row
+// they exclude. Generated table types call it for their DeleteRow method.
+func DeleteRow[T any](ctx context.Context, db *DB, t *TableBase, row T) error {
 	mustBeRowPointer[T]()
-	return db.deleteRow(ctx, h.Ref, toPtr(row))
+	return db.deleteRow(ctx, t.Ref, toPtr(row))
 }
 
 // Conflict is the ON CONFLICT clause of an upsert. Its methods return a changed copy.
@@ -312,37 +320,31 @@ func (c *Conflict) assignment(ci int32) *Assignment {
 	return nil
 }
 
-// Upsert inserts rows, updating the existing row on conflict. It reports, per row, whether it
-// was inserted (true) or updated (false). Rows that conflict get the stored version and readonly
-// columns back. Inserted rows run the create hooks and updated rows the update hooks; outside a
-// transaction the upsert runs in an implicit one when the table has AfterWrite hooks for either,
-// so a failing hook rolls every row back.
-func (h Handle[T]) Upsert(ctx context.Context, db *DB, rows []T, c Conflict) ([]bool, error) {
+// Upsert inserts rows into t's table, updating the existing row on conflict. It reports, per
+// row, whether it was inserted (true) or updated (false). Rows that conflict get the stored
+// version and readonly columns back. Inserted rows run the create hooks and updated rows the
+// update hooks; outside a transaction the upsert runs in an implicit one when the table has
+// AfterWrite hooks for either, so a failing hook rolls every row back. Generated table types call
+// it for their Upsert method.
+func Upsert[T any](ctx context.Context, db *DB, t *TableBase, rows []T, c Conflict) ([]bool, error) {
 	mustBeRowPointer[T]()
 	if len(rows) == 0 {
 		return nil, nil
 	}
-	ps := make([]unsafe.Pointer, len(rows))
-	for i, r := range rows {
-		ps[i] = toPtr(r)
-	}
-	return db.upsert(ctx, h.Ref, ps, c)
+	return db.upsert(ctx, t.Ref, rowPtrs(rows), c)
 }
 
-// CreateOrSkip inserts rows, skipping those that conflict on targets (columns or index
-// expressions, as OnConflict takes them), and returns how many were inserted. Without targets it
-// skips rows that violate any unique constraint (ON CONFLICT DO NOTHING). Inserted rows run the
-// create hooks; skipped rows run none.
-func (h Handle[T]) CreateOrSkip(ctx context.Context, db *DB, rows []T, targets ...Expr) (int64, error) {
+// CreateOrSkip inserts rows into t's table, skipping those that conflict on targets (columns or
+// index expressions, as OnConflict takes them), and returns how many were inserted. Without
+// targets it skips rows that violate any unique constraint (ON CONFLICT DO NOTHING). Inserted rows
+// run the create hooks; skipped rows run none. Generated table types call it for their
+// CreateOrSkip method.
+func CreateOrSkip[T any](ctx context.Context, db *DB, t *TableBase, rows []T, targets ...Expr) (int64, error) {
 	mustBeRowPointer[T]()
 	if len(rows) == 0 {
 		return 0, nil
 	}
-	ps := make([]unsafe.Pointer, len(rows))
-	for i, r := range rows {
-		ps[i] = toPtr(r)
-	}
-	ins, err := db.upsert(ctx, h.Ref, ps, OnConflict(targets...).DoNothing())
+	ins, err := db.upsert(ctx, t.Ref, rowPtrs(rows), OnConflict(targets...).DoNothing())
 	var n int64
 	for _, b := range ins {
 		if b {
@@ -355,18 +357,18 @@ func (h Handle[T]) CreateOrSkip(ctx context.Context, db *DB, rows []T, targets .
 // InsertFrom inserts the rows of src into cols: INSERT INTO t (cols) SELECT …. src must pick one
 // expression per column, in order. Under a tenant scope the tenant columns are filled from the
 // scope and must not be listed.
-func (h Handle[T]) InsertFrom(ctx context.Context, db *DB, src subquery,
+func (t TableBase) InsertFrom(ctx context.Context, db *DB, src subquery,
 	cols ...Column,
 ) (int64, error) {
-	return db.insertFrom(ctx, h.Ref, src, cols, nil, nil)
+	return db.insertFrom(ctx, t.Ref, src, cols, nil, nil)
 }
 
 // InsertFromSQL renders the statement InsertFrom sends, without running it.
-func (h Handle[T]) InsertFromSQL(ctx context.Context, db *DB, src subquery,
+func (t TableBase) InsertFromSQL(ctx context.Context, db *DB, src subquery,
 	cols ...Column,
 ) (string, []any, error) {
 	var out renderedSQL
-	_, err := db.insertFrom(ctx, h.Ref, src, cols, nil, &out)
+	_, err := db.insertFrom(ctx, t.Ref, src, cols, nil, &out)
 	return out.sql, out.args, err
 }
 
@@ -376,18 +378,18 @@ func (h Handle[T]) InsertFromSQL(ctx context.Context, db *DB, src subquery,
 // autoupdate column of an updated row is stamped with the statement's time unless Set assigns it,
 // and the version column is incremented. It returns the number of rows inserted or updated; hooks
 // do not run, as for InsertFrom.
-func (h Handle[T]) UpsertFrom(ctx context.Context, db *DB, src subquery, c Conflict,
+func (t TableBase) UpsertFrom(ctx context.Context, db *DB, src subquery, c Conflict,
 	cols ...Column,
 ) (int64, error) {
-	return db.insertFrom(ctx, h.Ref, src, cols, &c, nil)
+	return db.insertFrom(ctx, t.Ref, src, cols, &c, nil)
 }
 
 // UpsertFromSQL renders the statement UpsertFrom sends, without running it.
-func (h Handle[T]) UpsertFromSQL(ctx context.Context, db *DB, src subquery, c Conflict,
+func (t TableBase) UpsertFromSQL(ctx context.Context, db *DB, src subquery, c Conflict,
 	cols ...Column,
 ) (string, []any, error) {
 	var out renderedSQL
-	_, err := db.insertFrom(ctx, h.Ref, src, cols, &c, &out)
+	_, err := db.insertFrom(ctx, t.Ref, src, cols, &c, &out)
 	return out.sql, out.args, err
 }
 

@@ -615,11 +615,42 @@ func TestAllTenantsReachesLoadsAndAny(t *testing.T) {
 	}
 }
 
-func TestAHandleOfAStructTypePanics(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil || !strings.Contains(fmt.Sprint(r), "must be the model's pointer type") {
-			t.Fatalf("recovered %v", r)
-		}
-	}()
-	keel.Handle[fleet.Shipment]{Ref: fleetdb.Shipments.Ref}.Query()
+func TestAStructTypeArgumentPanics(t *testing.T) {
+	ctx := context.Background()
+	core := keel.NewQueryCore(fleetdb.Shipments.Ref)
+	cases := map[string]func(){
+		"row terminal": func() { _, _ = keel.All[fleet.Shipment](ctx, nil, &core) },
+		"page":         func() { _, _ = keel.PageOf[fleet.Shipment](ctx, nil, &core, keel.After("", 1)) },
+		"write":        func() { _ = keel.Create(ctx, nil, &fleetdb.Shipments.TableBase, fleet.Shipment{}) },
+	}
+	for name, call := range cases {
+		t.Run(name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r == nil || !strings.Contains(fmt.Sprint(r), "must be the model's pointer type") {
+					t.Fatalf("recovered %v", r)
+				}
+			}()
+			call()
+		})
+	}
+}
+
+func TestQueryOfRendersAsTheGeneratedQuery(t *testing.T) {
+	d := db(t)
+	ctx := tenantCtx("org_queryof", "bu_queryof")
+	s := fleetdb.Shipments
+	build := func(q keel.Query[*fleet.Shipment]) keel.Query[*fleet.Shipment] {
+		return q.Where(s.ProNumber.Eq("PRO-1")).Order(s.ProNumber.Asc()).Limit(5)
+	}
+	wantSQL, wantArgs, err := build(s.Query()).ToSQL(ctx, d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotSQL, gotArgs, err := build(keel.QueryOf[*fleet.Shipment](s.TableRef())).ToSQL(ctx, d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotSQL != wantSQL || len(gotArgs) != len(wantArgs) {
+		t.Fatalf("QueryOf rendered %q %v, the generated query %q %v", gotSQL, gotArgs, wantSQL, wantArgs)
+	}
 }

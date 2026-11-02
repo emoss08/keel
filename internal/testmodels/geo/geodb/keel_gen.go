@@ -4,6 +4,7 @@ package geodb
 
 import (
 	"context"
+	"time"
 	"unsafe"
 
 	"github.com/emoss08/keel"
@@ -54,7 +55,7 @@ var placesRef = keel.Ref{Table: &placesTable}
 
 // PlacesTable is the table of geo.Place.
 type PlacesTable struct {
-	keel.Handle[*geo.Place]
+	keel.TableBase
 	ID             keelkinds.IdsIDCol
 	OrganizationID keelkinds.IdsIDCol
 	BusinessUnitID keelkinds.IdsIDCol
@@ -66,7 +67,7 @@ type PlacesTable struct {
 
 // Places references the places table.
 var Places = &PlacesTable{
-	Handle:         keel.Handle[*geo.Place]{Ref: &placesRef},
+	TableBase:      keel.TableBase{Ref: &placesRef},
 	ID:             keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: &placesRef, Index: 0}}},
 	OrganizationID: keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: &placesRef, Index: 1}}},
 	BusinessUnitID: keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: &placesRef, Index: 2}}},
@@ -76,10 +77,10 @@ var Places = &PlacesTable{
 	Distance:       keel.Float64Col{Col: keel.Col{Ref: &placesRef, Index: 6}},
 }
 
-// BuildPlaces builds the handle of places for ref. Generated relation and alias methods call it.
+// BuildPlaces builds the table of places for ref. Generated relation and alias methods call it.
 func BuildPlaces(r *keel.Ref) *PlacesTable {
 	return &PlacesTable{
-		Handle:         keel.Handle[*geo.Place]{Ref: r},
+		TableBase:      keel.TableBase{Ref: r},
 		ID:             keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: r, Index: 0}}},
 		OrganizationID: keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: r, Index: 1}}},
 		BusinessUnitID: keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: r, Index: 2}}},
@@ -99,6 +100,365 @@ func (t *PlacesTable) As(alias string) *PlacesTable { return keel.Alias(t.Ref, a
 // Get returns the places row with the given key, or keel.ErrNotFound.
 func (t *PlacesTable) Get(ctx context.Context, db *keel.DB, key ids.ID) (*geo.Place, error) {
 	return t.Where(t.ID.Eq(key)).One(ctx, db)
+}
+
+// PlacesQuery is a query over geo.Place.
+type PlacesQuery struct{ keel.QueryCore }
+
+var _ keel.Handle[*geo.Place] = (*PlacesTable)(nil)
+
+var _ keel.Query[*geo.Place] = (*PlacesQuery)(nil)
+
+// Query starts a query over the table.
+func (t *PlacesTable) Query() keel.Query[*geo.Place] {
+	return &PlacesQuery{QueryCore: keel.NewQueryCore(t.Ref)}
+}
+
+// Where starts a query; see PlacesQuery.Where.
+func (t *PlacesTable) Where(ps ...keel.Pred) keel.Query[*geo.Place] {
+	return t.Query().Where(ps...)
+}
+
+// Pick starts a query; see PlacesQuery.Pick.
+func (t *PlacesTable) Pick(es ...keel.Expr) keel.Query[*geo.Place] {
+	return t.Query().Pick(es...)
+}
+
+// Load starts a query; see PlacesQuery.Load.
+func (t *PlacesTable) Load(ls ...keel.Loader) keel.Query[*geo.Place] {
+	return t.Query().Load(ls...)
+}
+
+// Omit starts a query; see PlacesQuery.Omit.
+func (t *PlacesTable) Omit(cols ...keel.Column) keel.Query[*geo.Place] {
+	return t.Query().Omit(cols...)
+}
+
+// Order starts a query; see PlacesQuery.Order.
+func (t *PlacesTable) Order(os ...keel.Order) keel.Query[*geo.Place] {
+	return t.Query().Order(os...)
+}
+
+// Limit starts a query; see PlacesQuery.Limit.
+func (t *PlacesTable) Limit(n int) keel.Query[*geo.Place] {
+	return t.Query().Limit(n)
+}
+
+// Group starts a query; see PlacesQuery.Group.
+func (t *PlacesTable) Group(es ...keel.Expr) keel.Query[*geo.Place] {
+	return t.Query().Group(es...)
+}
+
+// GroupingSets starts a query; see PlacesQuery.GroupingSets.
+func (t *PlacesTable) GroupingSets(sets ...[]keel.Expr) keel.Query[*geo.Place] {
+	return t.Query().GroupingSets(sets...)
+}
+
+// Rollup starts a query; see PlacesQuery.Rollup.
+func (t *PlacesTable) Rollup(es ...keel.Expr) keel.Query[*geo.Place] {
+	return t.Query().Rollup(es...)
+}
+
+// Cube starts a query; see PlacesQuery.Cube.
+func (t *PlacesTable) Cube(es ...keel.Expr) keel.Query[*geo.Place] {
+	return t.Query().Cube(es...)
+}
+
+// AllTenants starts a query; see PlacesQuery.AllTenants.
+func (t *PlacesTable) AllTenants() keel.Query[*geo.Place] {
+	return t.Query().AllTenants()
+}
+
+// Join starts a query; see PlacesQuery.Join.
+func (t *PlacesTable) Join(other interface{ TableRef() *keel.Ref }, on ...keel.Pred) keel.Query[*geo.Place] {
+	return t.Query().Join(other, on...)
+}
+
+// LeftJoin starts a query; see PlacesQuery.LeftJoin.
+func (t *PlacesTable) LeftJoin(other interface{ TableRef() *keel.Ref }, on ...keel.Pred) keel.Query[*geo.Place] {
+	return t.Query().LeftJoin(other, on...)
+}
+
+// LeftJoinLateral starts a query; see PlacesQuery.LeftJoinLateral.
+func (t *PlacesTable) LeftJoinLateral(sub keel.LateralSource) keel.Query[*geo.Place] {
+	return t.Query().LeftJoinLateral(sub)
+}
+
+// JoinLateral starts a query; see PlacesQuery.JoinLateral.
+func (t *PlacesTable) JoinLateral(sub keel.LateralSource) keel.Query[*geo.Place] {
+	return t.Query().JoinLateral(sub)
+}
+
+// Lock starts a query; see PlacesQuery.Lock.
+func (t *PlacesTable) Lock(strength keel.LockStrength, wait ...keel.LockWait) keel.Query[*geo.Place] {
+	return t.Query().Lock(strength, wait...)
+}
+
+// DistinctOn starts a query; see PlacesQuery.DistinctOn.
+func (t *PlacesTable) DistinctOn(es ...keel.Expr) keel.Query[*geo.Place] {
+	return t.Query().DistinctOn(es...)
+}
+
+// Cache starts a query; see PlacesQuery.Cache.
+func (t *PlacesTable) Cache(opts ...keel.CacheOption) keel.Query[*geo.Place] {
+	return t.Query().Cache(opts...)
+}
+
+// LoadStrategy starts a query; see PlacesQuery.LoadStrategy.
+func (t *PlacesTable) LoadStrategy(s keel.LoadStrategy) keel.Query[*geo.Place] {
+	return t.Query().LoadStrategy(s)
+}
+
+// With starts a query; see PlacesQuery.With.
+func (t *PlacesTable) With(ctes ...*keel.CTETable) keel.Query[*geo.Place] {
+	return t.Query().With(ctes...)
+}
+
+// Compute starts a query; see PlacesQuery.Compute.
+func (t *PlacesTable) Compute(col keel.Column, e keel.Expr) keel.Query[*geo.Place] {
+	return t.Query().Compute(col, e)
+}
+
+// Create inserts row.
+func (t *PlacesTable) Create(ctx context.Context, db *keel.DB, row *geo.Place) error {
+	return keel.Create(ctx, db, &t.TableBase, row)
+}
+
+// CreateMany inserts rows with as few statements as Postgres's parameter limit allows.
+func (t *PlacesTable) CreateMany(ctx context.Context, db *keel.DB, rows []*geo.Place) error {
+	return keel.CreateMany(ctx, db, &t.TableBase, rows)
+}
+
+// Save updates row by its primary key.
+func (t *PlacesTable) Save(ctx context.Context, db *keel.DB, row *geo.Place, cols ...keel.Column) error {
+	return keel.Save(ctx, db, &t.TableBase, row, cols...)
+}
+
+// SaveExcept is Save writing every updatable column except cols.
+func (t *PlacesTable) SaveExcept(ctx context.Context, db *keel.DB, row *geo.Place, cols ...keel.Column) error {
+	return keel.SaveExcept(ctx, db, &t.TableBase, row, cols...)
+}
+
+// DeleteRow deletes row by its primary key.
+func (t *PlacesTable) DeleteRow(ctx context.Context, db *keel.DB, row *geo.Place) error {
+	return keel.DeleteRow(ctx, db, &t.TableBase, row)
+}
+
+// Upsert inserts rows, updating the existing row on conflict.
+func (t *PlacesTable) Upsert(ctx context.Context, db *keel.DB, rows []*geo.Place, c keel.Conflict) ([]bool, error) {
+	return keel.Upsert(ctx, db, &t.TableBase, rows, c)
+}
+
+// CreateOrSkip inserts rows, skipping those that conflict on targets.
+func (t *PlacesTable) CreateOrSkip(ctx context.Context, db *keel.DB, rows []*geo.Place, targets ...keel.Expr) (int64, error) {
+	return keel.CreateOrSkip(ctx, db, &t.TableBase, rows, targets...)
+}
+
+// Copy inserts rows through Postgres's binary COPY protocol.
+func (t *PlacesTable) Copy(ctx context.Context, db *keel.DB, rows []*geo.Place) (int64, error) {
+	return keel.Copy(ctx, db, &t.TableBase, rows)
+}
+
+// Where adds predicates, joined by AND. Nil predicates are skipped.
+func (q *PlacesQuery) Where(ps ...keel.Pred) keel.Query[*geo.Place] {
+	q.QueryCore.Where(ps...)
+	return q
+}
+
+// Pick selects only es.
+func (q *PlacesQuery) Pick(es ...keel.Expr) keel.Query[*geo.Place] {
+	q.QueryCore.Pick(es...)
+	return q
+}
+
+// Omit leaves cols out of the columns the query reads.
+func (q *PlacesQuery) Omit(cols ...keel.Column) keel.Query[*geo.Place] {
+	q.QueryCore.Omit(cols...)
+	return q
+}
+
+// Load loads relations into the rows.
+func (q *PlacesQuery) Load(ls ...keel.Loader) keel.Query[*geo.Place] {
+	q.QueryCore.Load(ls...)
+	return q
+}
+
+// Order sets the sort order.
+func (q *PlacesQuery) Order(os ...keel.Order) keel.Query[*geo.Place] {
+	q.QueryCore.Order(os...)
+	return q
+}
+
+// Distinct returns each distinct row once: SELECT DISTINCT.
+func (q *PlacesQuery) Distinct() keel.Query[*geo.Place] {
+	q.QueryCore.Distinct()
+	return q
+}
+
+// Group adds GROUP BY expressions.
+func (q *PlacesQuery) Group(es ...keel.Expr) keel.Query[*geo.Place] {
+	q.QueryCore.Group(es...)
+	return q
+}
+
+// GroupingSets groups by each of sets in turn: GROUP BY GROUPING SETS.
+func (q *PlacesQuery) GroupingSets(sets ...[]keel.Expr) keel.Query[*geo.Place] {
+	q.QueryCore.GroupingSets(sets...)
+	return q
+}
+
+// Rollup groups by es and by each prefix of es down to the grand total.
+func (q *PlacesQuery) Rollup(es ...keel.Expr) keel.Query[*geo.Place] {
+	q.QueryCore.Rollup(es...)
+	return q
+}
+
+// Cube groups by every subset of es.
+func (q *PlacesQuery) Cube(es ...keel.Expr) keel.Query[*geo.Place] {
+	q.QueryCore.Cube(es...)
+	return q
+}
+
+// Window declares a named window (WINDOW name AS (…)).
+func (q *PlacesQuery) Window(name string, w keel.Window) keel.Query[*geo.Place] {
+	q.QueryCore.Window(name, w)
+	return q
+}
+
+// Having adds HAVING predicates.
+func (q *PlacesQuery) Having(ps ...keel.Pred) keel.Query[*geo.Place] {
+	q.QueryCore.Having(ps...)
+	return q
+}
+
+// Limit caps the number of rows.
+func (q *PlacesQuery) Limit(n int) keel.Query[*geo.Place] {
+	q.QueryCore.Limit(n)
+	return q
+}
+
+// Offset skips n rows.
+func (q *PlacesQuery) Offset(n int) keel.Query[*geo.Place] {
+	q.QueryCore.Offset(n)
+	return q
+}
+
+// DistinctOn keeps the first row of each group of es (DISTINCT ON).
+func (q *PlacesQuery) DistinctOn(es ...keel.Expr) keel.Query[*geo.Place] {
+	q.QueryCore.DistinctOn(es...)
+	return q
+}
+
+// AllTenants lets the query cross tenants. It needs a system scope.
+func (q *PlacesQuery) AllTenants() keel.Query[*geo.Place] {
+	q.QueryCore.AllTenants()
+	return q
+}
+
+// CustomPlan plans the query for its parameter values on every execution.
+func (q *PlacesQuery) CustomPlan() keel.Query[*geo.Place] {
+	q.QueryCore.CustomPlan()
+	return q
+}
+
+// Timeout bounds the query's execution.
+func (q *PlacesQuery) Timeout(d time.Duration) keel.Query[*geo.Place] {
+	q.QueryCore.Timeout(d)
+	return q
+}
+
+// Lock locks the table's selected rows.
+func (q *PlacesQuery) Lock(strength keel.LockStrength, wait ...keel.LockWait) keel.Query[*geo.Place] {
+	q.QueryCore.Lock(strength, wait...)
+	return q
+}
+
+// Join adds an INNER JOIN of another table on the given predicates.
+func (q *PlacesQuery) Join(other interface{ TableRef() *keel.Ref }, on ...keel.Pred) keel.Query[*geo.Place] {
+	q.QueryCore.Join(other, on...)
+	return q
+}
+
+// LeftJoin adds a LEFT JOIN of another table on the given predicates.
+func (q *PlacesQuery) LeftJoin(other interface{ TableRef() *keel.Ref }, on ...keel.Pred) keel.Query[*geo.Place] {
+	q.QueryCore.LeftJoin(other, on...)
+	return q
+}
+
+// LeftJoinLateral adds LEFT JOIN LATERAL (sub) ON TRUE.
+func (q *PlacesQuery) LeftJoinLateral(sub keel.LateralSource) keel.Query[*geo.Place] {
+	q.QueryCore.LeftJoinLateral(sub)
+	return q
+}
+
+// JoinLateral adds CROSS JOIN LATERAL (sub).
+func (q *PlacesQuery) JoinLateral(sub keel.LateralSource) keel.Query[*geo.Place] {
+	q.QueryCore.JoinLateral(sub)
+	return q
+}
+
+// Cache serves the query's reads from the result cache.
+func (q *PlacesQuery) Cache(opts ...keel.CacheOption) keel.Query[*geo.Place] {
+	q.QueryCore.Cache(opts...)
+	return q
+}
+
+// With declares CTEs the query uses.
+func (q *PlacesQuery) With(ctes ...*keel.CTETable) keel.Query[*geo.Place] {
+	q.QueryCore.With(ctes...)
+	return q
+}
+
+// Compute selects e into the computed field col of the rows.
+func (q *PlacesQuery) Compute(col keel.Column, e keel.Expr) keel.Query[*geo.Place] {
+	q.QueryCore.Compute(col, e)
+	return q
+}
+
+// LoadStrategy chooses how the query's relations load.
+func (q *PlacesQuery) LoadStrategy(s keel.LoadStrategy) keel.Query[*geo.Place] {
+	q.QueryCore.LoadStrategy(s)
+	return q
+}
+
+// Clone returns an independent copy of the query.
+func (q *PlacesQuery) Clone() keel.Query[*geo.Place] {
+	return &PlacesQuery{QueryCore: *q.QueryCore.Clone()}
+}
+
+// One returns the only matching row, or keel.ErrNotFound or keel.ErrNotSingular.
+func (q *PlacesQuery) One(ctx context.Context, db *keel.DB) (*geo.Place, error) {
+	return keel.One[*geo.Place](ctx, db, &q.QueryCore)
+}
+
+// First returns the first row in the query's order, or keel.ErrNotFound.
+func (q *PlacesQuery) First(ctx context.Context, db *keel.DB) (*geo.Place, error) {
+	return keel.First[*geo.Place](ctx, db, &q.QueryCore)
+}
+
+// List returns the matching rows. The query must have a Limit.
+func (q *PlacesQuery) List(ctx context.Context, db *keel.DB) ([]*geo.Place, error) {
+	return keel.List[*geo.Place](ctx, db, &q.QueryCore)
+}
+
+// All returns every matching row. Use it only for sets known to be small.
+func (q *PlacesQuery) All(ctx context.Context, db *keel.DB) ([]*geo.Place, error) {
+	return keel.All[*geo.Place](ctx, db, &q.QueryCore)
+}
+
+// UpdateReturning sets columns on every matching row and returns the updated rows.
+func (q *PlacesQuery) UpdateReturning(ctx context.Context, db *keel.DB, sets ...keel.Assignment) ([]*geo.Place, error) {
+	return keel.UpdateReturning[*geo.Place](ctx, db, &q.QueryCore, sets...)
+}
+
+// Page returns the page of rows after the request's cursor.
+func (q *PlacesQuery) Page(ctx context.Context, db *keel.DB, p keel.PageRequest) (keel.Page[*geo.Place], error) {
+	return keel.PageOf[*geo.Place](ctx, db, &q.QueryCore, p)
+}
+
+// Each runs the query page by page and calls fn with each batch of at most size rows.
+func (q *PlacesQuery) Each(ctx context.Context, db *keel.DB, size int, fn func(ctx context.Context, batch []*geo.Place) error) error {
+	return keel.Each[*geo.Place](ctx, db, &q.QueryCore, size, fn)
 }
 
 func newPlace() unsafe.Pointer { return unsafe.Pointer(new(geo.Place)) }
@@ -192,7 +552,7 @@ var zonesRef = keel.Ref{Table: &zonesTable}
 
 // ZonesTable is the table of geo.Zone.
 type ZonesTable struct {
-	keel.Handle[*geo.Zone]
+	keel.TableBase
 	ID             keelkinds.IdsIDCol
 	OrganizationID keelkinds.IdsIDCol
 	BusinessUnitID keelkinds.IdsIDCol
@@ -203,7 +563,7 @@ type ZonesTable struct {
 
 // Zones references the zones table.
 var Zones = &ZonesTable{
-	Handle:         keel.Handle[*geo.Zone]{Ref: &zonesRef},
+	TableBase:      keel.TableBase{Ref: &zonesRef},
 	ID:             keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: &zonesRef, Index: 0}}},
 	OrganizationID: keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: &zonesRef, Index: 1}}},
 	BusinessUnitID: keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: &zonesRef, Index: 2}}},
@@ -212,10 +572,10 @@ var Zones = &ZonesTable{
 	Area:           postgis.GeometryCol{AnyCol: keel.AnyCol{Col: keel.Col{Ref: &zonesRef, Index: 5}}},
 }
 
-// BuildZones builds the handle of zones for ref. Generated relation and alias methods call it.
+// BuildZones builds the table of zones for ref. Generated relation and alias methods call it.
 func BuildZones(r *keel.Ref) *ZonesTable {
 	return &ZonesTable{
-		Handle:         keel.Handle[*geo.Zone]{Ref: r},
+		TableBase:      keel.TableBase{Ref: r},
 		ID:             keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: r, Index: 0}}},
 		OrganizationID: keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: r, Index: 1}}},
 		BusinessUnitID: keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: r, Index: 2}}},
@@ -234,6 +594,365 @@ func (t *ZonesTable) As(alias string) *ZonesTable { return keel.Alias(t.Ref, ali
 // Get returns the zones row with the given key, or keel.ErrNotFound.
 func (t *ZonesTable) Get(ctx context.Context, db *keel.DB, key ids.ID) (*geo.Zone, error) {
 	return t.Where(t.ID.Eq(key)).One(ctx, db)
+}
+
+// ZonesQuery is a query over geo.Zone.
+type ZonesQuery struct{ keel.QueryCore }
+
+var _ keel.Handle[*geo.Zone] = (*ZonesTable)(nil)
+
+var _ keel.Query[*geo.Zone] = (*ZonesQuery)(nil)
+
+// Query starts a query over the table.
+func (t *ZonesTable) Query() keel.Query[*geo.Zone] {
+	return &ZonesQuery{QueryCore: keel.NewQueryCore(t.Ref)}
+}
+
+// Where starts a query; see ZonesQuery.Where.
+func (t *ZonesTable) Where(ps ...keel.Pred) keel.Query[*geo.Zone] {
+	return t.Query().Where(ps...)
+}
+
+// Pick starts a query; see ZonesQuery.Pick.
+func (t *ZonesTable) Pick(es ...keel.Expr) keel.Query[*geo.Zone] {
+	return t.Query().Pick(es...)
+}
+
+// Load starts a query; see ZonesQuery.Load.
+func (t *ZonesTable) Load(ls ...keel.Loader) keel.Query[*geo.Zone] {
+	return t.Query().Load(ls...)
+}
+
+// Omit starts a query; see ZonesQuery.Omit.
+func (t *ZonesTable) Omit(cols ...keel.Column) keel.Query[*geo.Zone] {
+	return t.Query().Omit(cols...)
+}
+
+// Order starts a query; see ZonesQuery.Order.
+func (t *ZonesTable) Order(os ...keel.Order) keel.Query[*geo.Zone] {
+	return t.Query().Order(os...)
+}
+
+// Limit starts a query; see ZonesQuery.Limit.
+func (t *ZonesTable) Limit(n int) keel.Query[*geo.Zone] {
+	return t.Query().Limit(n)
+}
+
+// Group starts a query; see ZonesQuery.Group.
+func (t *ZonesTable) Group(es ...keel.Expr) keel.Query[*geo.Zone] {
+	return t.Query().Group(es...)
+}
+
+// GroupingSets starts a query; see ZonesQuery.GroupingSets.
+func (t *ZonesTable) GroupingSets(sets ...[]keel.Expr) keel.Query[*geo.Zone] {
+	return t.Query().GroupingSets(sets...)
+}
+
+// Rollup starts a query; see ZonesQuery.Rollup.
+func (t *ZonesTable) Rollup(es ...keel.Expr) keel.Query[*geo.Zone] {
+	return t.Query().Rollup(es...)
+}
+
+// Cube starts a query; see ZonesQuery.Cube.
+func (t *ZonesTable) Cube(es ...keel.Expr) keel.Query[*geo.Zone] {
+	return t.Query().Cube(es...)
+}
+
+// AllTenants starts a query; see ZonesQuery.AllTenants.
+func (t *ZonesTable) AllTenants() keel.Query[*geo.Zone] {
+	return t.Query().AllTenants()
+}
+
+// Join starts a query; see ZonesQuery.Join.
+func (t *ZonesTable) Join(other interface{ TableRef() *keel.Ref }, on ...keel.Pred) keel.Query[*geo.Zone] {
+	return t.Query().Join(other, on...)
+}
+
+// LeftJoin starts a query; see ZonesQuery.LeftJoin.
+func (t *ZonesTable) LeftJoin(other interface{ TableRef() *keel.Ref }, on ...keel.Pred) keel.Query[*geo.Zone] {
+	return t.Query().LeftJoin(other, on...)
+}
+
+// LeftJoinLateral starts a query; see ZonesQuery.LeftJoinLateral.
+func (t *ZonesTable) LeftJoinLateral(sub keel.LateralSource) keel.Query[*geo.Zone] {
+	return t.Query().LeftJoinLateral(sub)
+}
+
+// JoinLateral starts a query; see ZonesQuery.JoinLateral.
+func (t *ZonesTable) JoinLateral(sub keel.LateralSource) keel.Query[*geo.Zone] {
+	return t.Query().JoinLateral(sub)
+}
+
+// Lock starts a query; see ZonesQuery.Lock.
+func (t *ZonesTable) Lock(strength keel.LockStrength, wait ...keel.LockWait) keel.Query[*geo.Zone] {
+	return t.Query().Lock(strength, wait...)
+}
+
+// DistinctOn starts a query; see ZonesQuery.DistinctOn.
+func (t *ZonesTable) DistinctOn(es ...keel.Expr) keel.Query[*geo.Zone] {
+	return t.Query().DistinctOn(es...)
+}
+
+// Cache starts a query; see ZonesQuery.Cache.
+func (t *ZonesTable) Cache(opts ...keel.CacheOption) keel.Query[*geo.Zone] {
+	return t.Query().Cache(opts...)
+}
+
+// LoadStrategy starts a query; see ZonesQuery.LoadStrategy.
+func (t *ZonesTable) LoadStrategy(s keel.LoadStrategy) keel.Query[*geo.Zone] {
+	return t.Query().LoadStrategy(s)
+}
+
+// With starts a query; see ZonesQuery.With.
+func (t *ZonesTable) With(ctes ...*keel.CTETable) keel.Query[*geo.Zone] {
+	return t.Query().With(ctes...)
+}
+
+// Compute starts a query; see ZonesQuery.Compute.
+func (t *ZonesTable) Compute(col keel.Column, e keel.Expr) keel.Query[*geo.Zone] {
+	return t.Query().Compute(col, e)
+}
+
+// Create inserts row.
+func (t *ZonesTable) Create(ctx context.Context, db *keel.DB, row *geo.Zone) error {
+	return keel.Create(ctx, db, &t.TableBase, row)
+}
+
+// CreateMany inserts rows with as few statements as Postgres's parameter limit allows.
+func (t *ZonesTable) CreateMany(ctx context.Context, db *keel.DB, rows []*geo.Zone) error {
+	return keel.CreateMany(ctx, db, &t.TableBase, rows)
+}
+
+// Save updates row by its primary key.
+func (t *ZonesTable) Save(ctx context.Context, db *keel.DB, row *geo.Zone, cols ...keel.Column) error {
+	return keel.Save(ctx, db, &t.TableBase, row, cols...)
+}
+
+// SaveExcept is Save writing every updatable column except cols.
+func (t *ZonesTable) SaveExcept(ctx context.Context, db *keel.DB, row *geo.Zone, cols ...keel.Column) error {
+	return keel.SaveExcept(ctx, db, &t.TableBase, row, cols...)
+}
+
+// DeleteRow deletes row by its primary key.
+func (t *ZonesTable) DeleteRow(ctx context.Context, db *keel.DB, row *geo.Zone) error {
+	return keel.DeleteRow(ctx, db, &t.TableBase, row)
+}
+
+// Upsert inserts rows, updating the existing row on conflict.
+func (t *ZonesTable) Upsert(ctx context.Context, db *keel.DB, rows []*geo.Zone, c keel.Conflict) ([]bool, error) {
+	return keel.Upsert(ctx, db, &t.TableBase, rows, c)
+}
+
+// CreateOrSkip inserts rows, skipping those that conflict on targets.
+func (t *ZonesTable) CreateOrSkip(ctx context.Context, db *keel.DB, rows []*geo.Zone, targets ...keel.Expr) (int64, error) {
+	return keel.CreateOrSkip(ctx, db, &t.TableBase, rows, targets...)
+}
+
+// Copy inserts rows through Postgres's binary COPY protocol.
+func (t *ZonesTable) Copy(ctx context.Context, db *keel.DB, rows []*geo.Zone) (int64, error) {
+	return keel.Copy(ctx, db, &t.TableBase, rows)
+}
+
+// Where adds predicates, joined by AND. Nil predicates are skipped.
+func (q *ZonesQuery) Where(ps ...keel.Pred) keel.Query[*geo.Zone] {
+	q.QueryCore.Where(ps...)
+	return q
+}
+
+// Pick selects only es.
+func (q *ZonesQuery) Pick(es ...keel.Expr) keel.Query[*geo.Zone] {
+	q.QueryCore.Pick(es...)
+	return q
+}
+
+// Omit leaves cols out of the columns the query reads.
+func (q *ZonesQuery) Omit(cols ...keel.Column) keel.Query[*geo.Zone] {
+	q.QueryCore.Omit(cols...)
+	return q
+}
+
+// Load loads relations into the rows.
+func (q *ZonesQuery) Load(ls ...keel.Loader) keel.Query[*geo.Zone] {
+	q.QueryCore.Load(ls...)
+	return q
+}
+
+// Order sets the sort order.
+func (q *ZonesQuery) Order(os ...keel.Order) keel.Query[*geo.Zone] {
+	q.QueryCore.Order(os...)
+	return q
+}
+
+// Distinct returns each distinct row once: SELECT DISTINCT.
+func (q *ZonesQuery) Distinct() keel.Query[*geo.Zone] {
+	q.QueryCore.Distinct()
+	return q
+}
+
+// Group adds GROUP BY expressions.
+func (q *ZonesQuery) Group(es ...keel.Expr) keel.Query[*geo.Zone] {
+	q.QueryCore.Group(es...)
+	return q
+}
+
+// GroupingSets groups by each of sets in turn: GROUP BY GROUPING SETS.
+func (q *ZonesQuery) GroupingSets(sets ...[]keel.Expr) keel.Query[*geo.Zone] {
+	q.QueryCore.GroupingSets(sets...)
+	return q
+}
+
+// Rollup groups by es and by each prefix of es down to the grand total.
+func (q *ZonesQuery) Rollup(es ...keel.Expr) keel.Query[*geo.Zone] {
+	q.QueryCore.Rollup(es...)
+	return q
+}
+
+// Cube groups by every subset of es.
+func (q *ZonesQuery) Cube(es ...keel.Expr) keel.Query[*geo.Zone] {
+	q.QueryCore.Cube(es...)
+	return q
+}
+
+// Window declares a named window (WINDOW name AS (…)).
+func (q *ZonesQuery) Window(name string, w keel.Window) keel.Query[*geo.Zone] {
+	q.QueryCore.Window(name, w)
+	return q
+}
+
+// Having adds HAVING predicates.
+func (q *ZonesQuery) Having(ps ...keel.Pred) keel.Query[*geo.Zone] {
+	q.QueryCore.Having(ps...)
+	return q
+}
+
+// Limit caps the number of rows.
+func (q *ZonesQuery) Limit(n int) keel.Query[*geo.Zone] {
+	q.QueryCore.Limit(n)
+	return q
+}
+
+// Offset skips n rows.
+func (q *ZonesQuery) Offset(n int) keel.Query[*geo.Zone] {
+	q.QueryCore.Offset(n)
+	return q
+}
+
+// DistinctOn keeps the first row of each group of es (DISTINCT ON).
+func (q *ZonesQuery) DistinctOn(es ...keel.Expr) keel.Query[*geo.Zone] {
+	q.QueryCore.DistinctOn(es...)
+	return q
+}
+
+// AllTenants lets the query cross tenants. It needs a system scope.
+func (q *ZonesQuery) AllTenants() keel.Query[*geo.Zone] {
+	q.QueryCore.AllTenants()
+	return q
+}
+
+// CustomPlan plans the query for its parameter values on every execution.
+func (q *ZonesQuery) CustomPlan() keel.Query[*geo.Zone] {
+	q.QueryCore.CustomPlan()
+	return q
+}
+
+// Timeout bounds the query's execution.
+func (q *ZonesQuery) Timeout(d time.Duration) keel.Query[*geo.Zone] {
+	q.QueryCore.Timeout(d)
+	return q
+}
+
+// Lock locks the table's selected rows.
+func (q *ZonesQuery) Lock(strength keel.LockStrength, wait ...keel.LockWait) keel.Query[*geo.Zone] {
+	q.QueryCore.Lock(strength, wait...)
+	return q
+}
+
+// Join adds an INNER JOIN of another table on the given predicates.
+func (q *ZonesQuery) Join(other interface{ TableRef() *keel.Ref }, on ...keel.Pred) keel.Query[*geo.Zone] {
+	q.QueryCore.Join(other, on...)
+	return q
+}
+
+// LeftJoin adds a LEFT JOIN of another table on the given predicates.
+func (q *ZonesQuery) LeftJoin(other interface{ TableRef() *keel.Ref }, on ...keel.Pred) keel.Query[*geo.Zone] {
+	q.QueryCore.LeftJoin(other, on...)
+	return q
+}
+
+// LeftJoinLateral adds LEFT JOIN LATERAL (sub) ON TRUE.
+func (q *ZonesQuery) LeftJoinLateral(sub keel.LateralSource) keel.Query[*geo.Zone] {
+	q.QueryCore.LeftJoinLateral(sub)
+	return q
+}
+
+// JoinLateral adds CROSS JOIN LATERAL (sub).
+func (q *ZonesQuery) JoinLateral(sub keel.LateralSource) keel.Query[*geo.Zone] {
+	q.QueryCore.JoinLateral(sub)
+	return q
+}
+
+// Cache serves the query's reads from the result cache.
+func (q *ZonesQuery) Cache(opts ...keel.CacheOption) keel.Query[*geo.Zone] {
+	q.QueryCore.Cache(opts...)
+	return q
+}
+
+// With declares CTEs the query uses.
+func (q *ZonesQuery) With(ctes ...*keel.CTETable) keel.Query[*geo.Zone] {
+	q.QueryCore.With(ctes...)
+	return q
+}
+
+// Compute selects e into the computed field col of the rows.
+func (q *ZonesQuery) Compute(col keel.Column, e keel.Expr) keel.Query[*geo.Zone] {
+	q.QueryCore.Compute(col, e)
+	return q
+}
+
+// LoadStrategy chooses how the query's relations load.
+func (q *ZonesQuery) LoadStrategy(s keel.LoadStrategy) keel.Query[*geo.Zone] {
+	q.QueryCore.LoadStrategy(s)
+	return q
+}
+
+// Clone returns an independent copy of the query.
+func (q *ZonesQuery) Clone() keel.Query[*geo.Zone] {
+	return &ZonesQuery{QueryCore: *q.QueryCore.Clone()}
+}
+
+// One returns the only matching row, or keel.ErrNotFound or keel.ErrNotSingular.
+func (q *ZonesQuery) One(ctx context.Context, db *keel.DB) (*geo.Zone, error) {
+	return keel.One[*geo.Zone](ctx, db, &q.QueryCore)
+}
+
+// First returns the first row in the query's order, or keel.ErrNotFound.
+func (q *ZonesQuery) First(ctx context.Context, db *keel.DB) (*geo.Zone, error) {
+	return keel.First[*geo.Zone](ctx, db, &q.QueryCore)
+}
+
+// List returns the matching rows. The query must have a Limit.
+func (q *ZonesQuery) List(ctx context.Context, db *keel.DB) ([]*geo.Zone, error) {
+	return keel.List[*geo.Zone](ctx, db, &q.QueryCore)
+}
+
+// All returns every matching row. Use it only for sets known to be small.
+func (q *ZonesQuery) All(ctx context.Context, db *keel.DB) ([]*geo.Zone, error) {
+	return keel.All[*geo.Zone](ctx, db, &q.QueryCore)
+}
+
+// UpdateReturning sets columns on every matching row and returns the updated rows.
+func (q *ZonesQuery) UpdateReturning(ctx context.Context, db *keel.DB, sets ...keel.Assignment) ([]*geo.Zone, error) {
+	return keel.UpdateReturning[*geo.Zone](ctx, db, &q.QueryCore, sets...)
+}
+
+// Page returns the page of rows after the request's cursor.
+func (q *ZonesQuery) Page(ctx context.Context, db *keel.DB, p keel.PageRequest) (keel.Page[*geo.Zone], error) {
+	return keel.PageOf[*geo.Zone](ctx, db, &q.QueryCore, p)
+}
+
+// Each runs the query page by page and calls fn with each batch of at most size rows.
+func (q *ZonesQuery) Each(ctx context.Context, db *keel.DB, size int, fn func(ctx context.Context, batch []*geo.Zone) error) error {
+	return keel.Each[*geo.Zone](ctx, db, &q.QueryCore, size, fn)
 }
 
 func newZone() unsafe.Pointer { return unsafe.Pointer(new(geo.Zone)) }

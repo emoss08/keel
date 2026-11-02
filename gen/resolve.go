@@ -9,11 +9,14 @@ import (
 	"github.com/emoss08/keel/schema"
 )
 
-// resolve checks every model's columns, links relations to their target models and computes
+// resolve checks every model's columns and field names, links relations to their target models and computes
 // their keys, then resolves pick relations, which walk the others.
 func resolve(src *source, all map[*types.Named]*model, models []*model) error {
 	for _, m := range models {
 		if err := checkColumns(src, m); err != nil {
+			return err
+		}
+		if err := assignMembers(src, m); err != nil {
 			return err
 		}
 	}

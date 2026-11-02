@@ -31,7 +31,7 @@ func TestCountEstimate(t *testing.T) {
 	inexact(t, must(s.Query().CountEstimate(w.ctx, d, 11))(t), 11)
 	inexact(t, must(s.Query().CountEstimate(w.ctx, d, 0))(t), 0)
 
-	hazmat := func() *keel.Query[*fleet.Shipment] { return s.Where(s.Hazmat.IsTrue()) }
+	hazmat := func() keel.Query[*fleet.Shipment] { return s.Where(s.Hazmat.IsTrue()) }
 	want := must(hazmat().Count(w.ctx, d))(t)
 	eq(t, must(hazmat().CountEstimate(w.ctx, d, 100))(t), keel.RowCount{N: want, Exact: true})
 	inexact(t, must(hazmat().CountEstimate(w.ctx, d, want-1))(t), want-1)
@@ -42,7 +42,7 @@ func TestCountEstimate(t *testing.T) {
 	ordered := s.Order(s.ProNumber.Desc()).Limit(3).Offset(2)
 	eq(t, must(ordered.CountEstimate(w.ctx, d, 50))(t), keel.RowCount{N: 12, Exact: true})
 
-	groups := func() *keel.Query[*fleet.Shipment] { return s.Group(s.Status) }
+	groups := func() keel.Query[*fleet.Shipment] { return s.Group(s.Status) }
 	eq(t, must(groups().CountEstimate(w.ctx, d, 10))(t), keel.RowCount{N: 4, Exact: true})
 	inexact(t, must(groups().CountEstimate(w.ctx, d, 2))(t), 2)
 
@@ -117,7 +117,7 @@ func TestPageEstimate(t *testing.T) {
 	d := openDB(t, func(cfg *keel.Config) { cfg.Observers = []keel.Observer{rec} })
 	w := seed(t, 12)
 	s := fleetdb.Shipments
-	paged := func() *keel.Query[*fleet.Shipment] { return s.Order(s.ProNumber.Asc()) }
+	paged := func() keel.Query[*fleet.Shipment] { return s.Order(s.ProNumber.Asc()) }
 
 	plain := must(paged().Page(w.ctx, d, keel.After("", 5)))(t)
 	eq(t, plain.Total, int64(0))
@@ -246,12 +246,12 @@ func TestCountsHonourDistinct(t *testing.T) {
 	w := seed(t, 8)
 	s := fleetdb.Shipments
 
-	byCustomer := func() *keel.Query[*fleet.Shipment] { return s.DistinctOn(s.CustomerID) }
+	byCustomer := func() keel.Query[*fleet.Shipment] { return s.DistinctOn(s.CustomerID) }
 	eq(t, must(byCustomer().Count(w.ctx, d))(t), int64(3))
 	eq(t, must(byCustomer().CountUpTo(w.ctx, d, 2))(t), int64(2))
 	eq(t, must(byCustomer().CountEstimate(w.ctx, d, 10))(t), keel.RowCount{N: 3, Exact: true})
 
-	prefixes := func() *keel.Query[*fleet.Shipment] { return s.Pick(s.ProNumber.Left(7)) }
+	prefixes := func() keel.Query[*fleet.Shipment] { return s.Pick(s.ProNumber.Left(7)) }
 	eq(t, must(prefixes().Count(w.ctx, d))(t), int64(8))
 	eq(t, must(prefixes().Distinct().Count(w.ctx, d))(t), int64(1))
 	eq(t, must(prefixes().Distinct().CountUpTo(w.ctx, d, 5))(t), int64(1))

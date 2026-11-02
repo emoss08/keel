@@ -174,15 +174,7 @@ func (th *tableHooks) run(ctx context.Context, op Op, phase Phase, m *mutation) 
 	return nil
 }
 
-// tabler is implemented by Handle, so hook registration takes any generated table.
-type tabler[T any] interface {
-	TableRef() *Ref
-	handle() Handle[T]
-}
-
-func (h Handle[T]) handle() Handle[T] { return h }
-
-func register[T any](db *DB, t tabler[T], ops []Op, phase Phase,
+func register[T any](db *DB, h Handle[T], ops []Op, phase Phase,
 	fn func(ctx context.Context, m *Mutation[T]) error, opts []HookOption,
 ) {
 	mustBeRowPointer[T]()
@@ -198,35 +190,36 @@ func register[T any](db *DB, t tabler[T], ops []Op, phase Phase,
 			Op: m.op, Row: fromPtr[T](m.row), Old: fromPtr[T](m.old), changed: m.changed,
 		})
 	}
-	db.hooks.add(t.TableRef().Table, e)
+	db.hooks.add(h.TableRef().Table, e)
 }
 
-// OnCreate registers a hook for creates of T's table.
-func OnCreate[T any](db *DB, t tabler[T], phase Phase,
+// OnCreate registers a hook for creates of h's table. h is a generated table, such as
+// fleetdb.Shipments.
+func OnCreate[T any](db *DB, h Handle[T], phase Phase,
 	fn func(ctx context.Context, m *Mutation[T]) error, opts ...HookOption,
 ) {
-	register(db, t, []Op{OpCreate}, phase, fn, opts)
+	register(db, h, []Op{OpCreate}, phase, fn, opts)
 }
 
-// OnUpdate registers a hook for updates of T's table: Save, Upsert conflicts and bulk updates.
-func OnUpdate[T any](db *DB, t tabler[T], phase Phase,
+// OnUpdate registers a hook for updates of h's table: Save, Upsert conflicts and bulk updates.
+func OnUpdate[T any](db *DB, h Handle[T], phase Phase,
 	fn func(ctx context.Context, m *Mutation[T]) error, opts ...HookOption,
 ) {
-	register(db, t, []Op{OpUpdate}, phase, fn, opts)
+	register(db, h, []Op{OpUpdate}, phase, fn, opts)
 }
 
-// OnDelete registers a hook for deletes of T's table.
-func OnDelete[T any](db *DB, t tabler[T], phase Phase,
+// OnDelete registers a hook for deletes of h's table.
+func OnDelete[T any](db *DB, h Handle[T], phase Phase,
 	fn func(ctx context.Context, m *Mutation[T]) error, opts ...HookOption,
 ) {
-	register(db, t, []Op{OpDelete}, phase, fn, opts)
+	register(db, h, []Op{OpDelete}, phase, fn, opts)
 }
 
-// OnWrite registers a hook for every write of T's table.
-func OnWrite[T any](db *DB, t tabler[T], phase Phase,
+// OnWrite registers a hook for every write of h's table.
+func OnWrite[T any](db *DB, h Handle[T], phase Phase,
 	fn func(ctx context.Context, m *Mutation[T]) error, opts ...HookOption,
 ) {
-	register(db, t, []Op{OpCreate, OpUpdate, OpDelete}, phase, fn, opts)
+	register(db, h, []Op{OpCreate, OpUpdate, OpDelete}, phase, fn, opts)
 }
 
 // Interceptor sees a statement on a table before it is rendered and may add predicates to its

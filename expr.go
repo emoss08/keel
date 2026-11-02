@@ -156,7 +156,7 @@ func NotExists(q subquery) Pred {
 	}}
 }
 
-// subquery is a query used inside another statement. *Query[T] implements it.
+// subquery is a query used inside another statement. Every Query[T] and QueryCore implement it.
 type subquery interface {
 	writeSubquery(r *render, existsOnly bool)
 }

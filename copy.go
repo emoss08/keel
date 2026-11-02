@@ -12,8 +12,9 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-// Copy inserts rows through Postgres's binary COPY protocol and returns how many it inserted. It
-// streams the rows, so it beats CreateMany for loads of many thousands of rows.
+// Copy inserts rows into t's table through Postgres's binary COPY protocol and returns how many it
+// inserted. It streams the rows, so it beats CreateMany for loads of many thousands of rows.
+// Generated table types call it for their Copy method.
 //
 // Rows are prepared as Create prepares them: the autoid, tenant, autocreate and autoupdate columns
 // are filled, a row of another tenant is refused, and the BeforeCreate, BeforeSave and BeforeWrite
@@ -25,16 +26,12 @@ import (
 // Config.OnBegin is set, after the OnBegin statements, when the table has AfterWrite hooks, or
 // when the context is marked with OnReplica on a DB with replicas, so that its commit position
 // is read with COMMIT.
-func (h Handle[T]) Copy(ctx context.Context, db *DB, rows []T) (int64, error) {
+func Copy[T any](ctx context.Context, db *DB, t *TableBase, rows []T) (int64, error) {
 	mustBeRowPointer[T]()
 	if len(rows) == 0 {
 		return 0, nil
 	}
-	ps := make([]unsafe.Pointer, len(rows))
-	for i, r := range rows {
-		ps[i] = toPtr(r)
-	}
-	return db.copyRows(ctx, h.Ref.Table, ps)
+	return db.copyRows(ctx, t.Ref.Table, rowPtrs(rows))
 }
 
 func (db *DB) copyRows(ctx context.Context, t *schema.Table, rows []unsafe.Pointer) (int64, error) {

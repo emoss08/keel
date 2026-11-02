@@ -488,8 +488,9 @@ func TestGenerateTagErrors(t *testing.T) {
 	})
 }
 
-func TestGenerateOutput(t *testing.T) {
-	files, err := generate(t, `type Status string
+// outputModels are two related models, one with a hook, whose generated code the output tests read
+// and compile.
+const outputModels = `type Status string
 
 type Account struct {
 	keel.Table ~keel:"accounts"~
@@ -513,7 +514,10 @@ type Note struct {
 }
 
 func (n *Note) AfterLoad(ctx context.Context) error { return nil }
-`)
+`
+
+func TestGenerateOutput(t *testing.T) {
+	files, err := generate(t, outputModels)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -544,9 +548,54 @@ func (n *Note) AfterLoad(ctx context.Context) error { return nil }
 		"afterLoadNote,",
 		"accountsTable.Relations[0].Target = NotesSchema()",
 		`IDPrefix:   "acc_"`,
+		"type AccountsTable struct {\n\tkeel.TableBase\n\tID ",
+		"var Accounts = &AccountsTable{\n\tTableBase: keel.TableBase{Ref: &accountsRef},\n",
+		"return &AccountsTable{\n\t\tTableBase: keel.TableBase{Ref: r},\n",
+		"// AccountsQuery is a query over models.Account.\ntype AccountsQuery struct{ keel.QueryCore }\n",
+		"var _ keel.Handle[*models.Account] = (*AccountsTable)(nil)\n",
+		"var _ keel.Query[*models.Account] = (*AccountsQuery)(nil)\n",
+		"func (t *AccountsTable) Query() keel.Query[*models.Account] {\n" +
+			"\treturn &AccountsQuery{QueryCore: keel.NewQueryCore(t.Ref)}\n}\n",
+		"func (t *AccountsTable) Where(ps ...keel.Pred) keel.Query[*models.Account] {\n" +
+			"\treturn t.Query().Where(ps...)\n}\n",
+		"func (t *AccountsTable) Join(other interface{ TableRef() *keel.Ref }, on ...keel.Pred) keel.Query[*models.Account] {\n" +
+			"\treturn t.Query().Join(other, on...)\n}\n",
+		"func (t *AccountsTable) Create(ctx context.Context, db *keel.DB, row *models.Account) error {\n" +
+			"\treturn keel.Create(ctx, db, &t.TableBase, row)\n}\n",
+		"func (t *AccountsTable) Upsert(ctx context.Context, db *keel.DB, rows []*models.Account, c keel.Conflict) ([]bool, error) {\n" +
+			"\treturn keel.Upsert(ctx, db, &t.TableBase, rows, c)\n}\n",
+		"func (q *AccountsQuery) Where(ps ...keel.Pred) keel.Query[*models.Account] {\n" +
+			"\tq.QueryCore.Where(ps...)\n\treturn q\n}\n",
+		"func (q *AccountsQuery) Timeout(d time.Duration) keel.Query[*models.Account] {\n" +
+			"\tq.QueryCore.Timeout(d)\n\treturn q\n}\n",
+		"func (q *AccountsQuery) LeftJoinLateral(sub keel." + lateralSource + ") keel.Query[*models.Account] {\n",
+		"func (q *AccountsQuery) Clone() keel.Query[*models.Account] {\n" +
+			"\treturn &AccountsQuery{QueryCore: *q.QueryCore.Clone()}\n}\n",
+		"func (q *AccountsQuery) List(ctx context.Context, db *keel.DB) ([]*models.Account, error) {\n" +
+			"\treturn keel.List[*models.Account](ctx, db, &q.QueryCore)\n}\n",
+		"func (q *AccountsQuery) Page(ctx context.Context, db *keel.DB, p keel.PageRequest) (keel.Page[*models.Account], error) {\n" +
+			"\treturn keel.PageOf[*models.Account](ctx, db, &q.QueryCore, p)\n}\n",
+		"func (q *AccountsQuery) Each(ctx context.Context, db *keel.DB, size int, fn func(ctx context.Context, batch []*models.Account) error) error {\n" +
+			"\treturn keel.Each[*models.Account](ctx, db, &q.QueryCore, size, fn)\n}\n",
+		"func (t *NotesTable) Query() keel.Query[*models.Note] {\n",
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("generated code lacks %q", want)
+		}
+	}
+	for _, name := range tableMethodNames() {
+		if n := strings.Count(src, "func (t *AccountsTable) "+name+"("); n != 1 {
+			t.Errorf("AccountsTable.%s is written %d times", name, n)
+		}
+	}
+	for _, name := range queryMethodNames() {
+		if n := strings.Count(src, "func (q *AccountsQuery) "+name+"("); n != 1 {
+			t.Errorf("AccountsQuery.%s is written %d times", name, n)
+		}
+	}
+	for _, gone := range []string{"keel.Handle[*models.Account]{", "*keel.Query[", "Handle:"} {
+		if strings.Contains(src, gone) {
+			t.Errorf("generated code still has %q", gone)
 		}
 	}
 	if strings.Contains(src, "Report:") {
