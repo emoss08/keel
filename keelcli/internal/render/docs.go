@@ -87,7 +87,7 @@ func HistoryTable(rows []migrateport.Record) Table {
 // PlanText describes a migration plan, with each migration's SQL for a dry run.
 func PlanText(p migrateport.Plan, withSQL bool, pt Painter, width int) string {
 	if p.Empty() {
-		return pt.Paint(OK, "Nothing to apply: the database is up to date.") + "\n"
+		return pt.Paint(OK, "Nothing to apply: the database is up to date.") + "\n" + ensureText(p, pt)
 	}
 	var b strings.Builder
 	t := Table{NoHeader: true, Width: width, Indent: 2, Columns: []Column{
@@ -118,6 +118,7 @@ func PlanText(p migrateport.Plan, withSQL bool, pt Painter, width int) string {
 			fmt.Fprintf(&b, "  %s\n", pt.Paint(Muted, s))
 		}
 	}
+	b.WriteString(ensureText(p, pt))
 	if withSQL {
 		for _, m := range p.Migrations {
 			fmt.Fprintf(&b, "\n%s\n", pt.Paint(Header, "-- "+m.ID()+" ("+m.Source+")"))
@@ -127,6 +128,19 @@ func PlanText(p migrateport.Plan, withSQL bool, pt Painter, width int) string {
 			}
 			b.WriteString(sql + "\n")
 		}
+	}
+	return b.String()
+}
+
+// ensureText lists the Ensure statements a run ends with, or nothing when there are none.
+func ensureText(p migrateport.Plan, pt Painter) string {
+	if len(p.Ensure) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s\n", pt.Paint(Strong, "Then, in a transaction of its own, as every run ends:"))
+	for _, s := range p.Ensure {
+		fmt.Fprintf(&b, "  %s\n", pt.Paint(Muted, s))
 	}
 	return b.String()
 }

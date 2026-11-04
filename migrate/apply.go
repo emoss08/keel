@@ -58,14 +58,19 @@ func (r *run) up(ctx context.Context, o UpOptions) (Result, error) {
 		if err := r.apply(ctx, mg, after); err != nil {
 			err = fmt.Errorf("migrate: %s: %w", mg.ID(), err)
 			if len(res.Applied) > 0 && len(res.Plan.After) > 0 {
-				err = errors.Join(err, r.afterTx(ctx, res.Plan.After))
+				err = errors.Join(err, r.statementsTx(ctx, After, res.Plan.After))
 			}
 			return res, err
 		}
 		res.Applied = append(res.Applied, mg)
 	}
 	if len(steps) > 0 && steps[len(steps)-1].Directives.NoTx && len(res.Plan.After) > 0 {
-		return res, r.afterTx(ctx, res.Plan.After)
+		if err := r.statementsTx(ctx, After, res.Plan.After); err != nil {
+			return res, err
+		}
+	}
+	if len(res.Plan.Ensure) > 0 {
+		return res, r.statementsTx(ctx, Ensure, res.Plan.Ensure)
 	}
 	return res, nil
 }
@@ -122,7 +127,7 @@ func (r *run) attemptTx(ctx context.Context, mg Migration, after []string, start
 		err = record(ctx, tx, r.m.opts, mg, time.Since(start))
 	}
 	if err == nil {
-		err = r.runAfter(ctx, tx, after)
+		err = r.runStatements(ctx, tx, After, after)
 	}
 	if blockers := stop(); err != nil {
 		return blockers, err
@@ -191,8 +196,8 @@ func (r *run) noTxSteps(mg Migration) []noTxStep {
 	return out
 }
 
-// afterTx runs the After statements in a transaction of their own.
-func (r *run) afterTx(ctx context.Context, after []string) error {
+// statementsTx runs the After or Ensure statements in a transaction of their own.
+func (r *run) statementsTx(ctx context.Context, kind EventKind, stmts []string) error {
 	lt := r.m.opts.lockTimeout(Directives{})
 	err := r.retry(ctx, nil, Directives{}, 0, 0, func() ([]Blocker, error) {
 		tx, err := r.m.conn.Begin(ctx)
@@ -204,24 +209,24 @@ func (r *run) afterTx(ctx context.Context, after []string) error {
 			return nil, err
 		}
 		stop := r.watchFor(ctx, lt)
-		err = r.runAfter(ctx, tx, after)
+		err = r.runStatements(ctx, tx, kind, stmts)
 		if blockers := stop(); err != nil {
 			return blockers, err
 		}
 		return nil, tx.Commit(ctx)
 	})
 	if err != nil {
-		return fmt.Errorf("migrate: after: %w", err)
+		return fmt.Errorf("migrate: %s: %w", kind, err)
 	}
 	return nil
 }
 
-// runAfter runs the After statements in tx.
-func (r *run) runAfter(ctx context.Context, tx pgx.Tx, after []string) error {
-	for _, s := range after {
-		r.m.emit(Event{Kind: After, Index: r.index, Total: r.total, SQL: s})
+// runStatements runs the After or Ensure statements in tx, sending kind before each.
+func (r *run) runStatements(ctx context.Context, tx pgx.Tx, kind EventKind, stmts []string) error {
+	for _, s := range stmts {
+		r.m.emit(Event{Kind: kind, Index: r.index, Total: r.total, SQL: s})
 		if _, err := tx.Exec(ctx, s); err != nil {
-			return fmt.Errorf("after %q: %w", s, err)
+			return fmt.Errorf("%s %q: %w", kind, s, err)
 		}
 	}
 	return nil

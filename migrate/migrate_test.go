@@ -310,6 +310,83 @@ func TestAfter(t *testing.T) {
 	})
 }
 
+func TestEnsure(t *testing.T) {
+	ctx := context.Background()
+	ensure := []string{"CREATE TABLE IF NOT EXISTS ensure_runs (n serial)", "INSERT INTO ensure_runs DEFAULT VALUES"}
+	t.Run("at the end of every run", func(t *testing.T) {
+		dsn := database(t)
+		rec := newRecorder()
+		m := open(t, dsn, one(files(
+			"20260101000000_a.sql", "CREATE TABLE a (id int);",
+		)), Options{After: []string{"SELECT 1"}, Ensure: ensure, Observer: rec.observe})
+		res, err := m.Up(ctx, UpOptions{})
+		if err != nil || len(res.Plan.Ensure) != 2 {
+			t.Fatalf("%+v %v", res.Plan, err)
+		}
+		k := rec.kinds()
+		if fmt.Sprint(k[len(k)-5:]) != fmt.Sprint([]EventKind{After, MigrationEnd, Ensure, Ensure, RunEnd}) {
+			t.Fatalf("events %v", k)
+		}
+		plan, err := m.Plan(ctx, UpOptions{})
+		if err != nil || !plan.Empty() || len(plan.Ensure) != 2 {
+			t.Fatalf("plan of an up-to-date database %+v %v", plan, err)
+		}
+		res, err = m.Up(ctx, UpOptions{})
+		if err != nil || len(res.Applied) != 0 || res.Plan.After != nil {
+			t.Fatalf("%+v %v", res, err)
+		}
+		if n := scalar[int](t, connect(t, dsn), "SELECT count(*) FROM ensure_runs"); n != 2 {
+			t.Fatalf("Ensure ran %d times over two runs", n)
+		}
+	})
+	t.Run("not after a failure", func(t *testing.T) {
+		dsn := database(t)
+		m := open(t, dsn, one(files(
+			"20260101000000_a.sql", "CREATE TABLE a (id int);",
+			"20260102000000_b.sql", "SELECT 1/0;",
+		)), Options{Ensure: ensure})
+		if _, err := m.Up(ctx, UpOptions{}); err == nil {
+			t.Fatal("no error")
+		}
+		if scalar[bool](t, connect(t, dsn), "SELECT to_regclass('ensure_runs') IS NOT NULL") {
+			t.Fatal("Ensure ran after a failed run")
+		}
+	})
+	t.Run("not while migrations remain pending", func(t *testing.T) {
+		dsn := database(t)
+		m := open(t, dsn, one(files(
+			"20260101000000_a.sql", "CREATE TABLE a (id int);",
+			"20260102000000_b.sql", "CREATE TABLE b (id int);",
+		)), Options{Ensure: []string{"INSERT INTO b VALUES (1)"}})
+		res, err := m.Up(ctx, UpOptions{To: "20260101000000"})
+		if err != nil || res.Plan.Ensure != nil {
+			t.Fatalf("Ensure planned with b pending: %+v %v", res.Plan, err)
+		}
+		if _, err := m.Up(ctx, UpOptions{}); err != nil {
+			t.Fatal(err)
+		}
+		if n := scalar[int](t, connect(t, dsn), "SELECT count(*) FROM b"); n != 1 {
+			t.Fatalf("Ensure ran %d times once nothing was pending", n)
+		}
+	})
+	t.Run("a failing statement fails the run", func(t *testing.T) {
+		dsn := database(t)
+		m := open(t, dsn, one(files("20260101000000_a.sql", "CREATE TABLE a (id int);")), Options{})
+		if _, err := m.Up(ctx, UpOptions{}); err != nil {
+			t.Fatal(err)
+		}
+		m = open(t, dsn, one(files("20260101000000_a.sql", "CREATE TABLE a (id int);")),
+			Options{Ensure: []string{"INSERT INTO a VALUES (1)", "SELECT 1/0"}})
+		_, err := m.Up(ctx, UpOptions{})
+		if err == nil || !strings.Contains(err.Error(), "migrate: ensure: ensure \"SELECT 1/0\"") {
+			t.Fatalf("error %v", err)
+		}
+		if n := scalar[int](t, connect(t, dsn), "SELECT count(*) FROM a"); n != 0 {
+			t.Fatal("a failed Ensure transaction committed")
+		}
+	})
+}
+
 func TestOutOfOrder(t *testing.T) {
 	ctx := context.Background()
 	dsn := database(t)

@@ -18,6 +18,8 @@ type Plan struct {
 	Repeatables []Migration
 	// After are the Options.After statements, set when Up runs anything.
 	After []string
+	// Ensure are the Options.Ensure statements, set when Up leaves no migration pending.
+	Ensure []string
 }
 
 // Total is the number of migrations the plan marks or runs.
@@ -261,6 +263,9 @@ func plan(ms []Migration, recs []Record, o Options, uo UpOptions) (Plan, error) 
 	}
 	if len(p.Pending)+len(p.Repeatables) > 0 {
 		p.After = o.After
+	}
+	if len(p.Pending) == len(a.pending) && len(p.Repeatables) == len(a.due) {
+		p.Ensure = o.Ensure
 	}
 	return p, nil
 }

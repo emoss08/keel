@@ -30,7 +30,7 @@ func TestMigrationEventsFollowThePort(t *testing.T) {
 	b := &migrate.Migration{Version: "20260103000000", Name: "b"}
 	timeout := errors.New("lock timeout")
 	var got []string
-	tr := newMigrationEvents(func(e migrateport.Event) { got = append(got, describeMigration(e)) }, 2, clock)
+	tr := newMigrationEvents(func(e migrateport.Event) { got = append(got, describeMigration(e)) }, 2, 0, clock)
 	for _, e := range []migrate.Event{
 		{Kind: migrate.LockWait, Duration: time.Millisecond},
 		{Kind: migrate.LockWait, Duration: time.Second},
@@ -76,7 +76,7 @@ func TestMigrationEventsFollowThePort(t *testing.T) {
 
 func TestMigrationEventsWithoutAWait(t *testing.T) {
 	var got []migrateport.Event
-	tr := newMigrationEvents(func(e migrateport.Event) { got = append(got, e) }, 1, time.Now)
+	tr := newMigrationEvents(func(e migrateport.Event) { got = append(got, e) }, 1, 0, time.Now)
 	a := &migrate.Migration{Version: "20260102000000", Name: "a"}
 	tr.event(migrate.Event{Kind: migrate.LockAcquired, Duration: 3 * time.Millisecond})
 	tr.event(migrate.Event{Kind: migrate.MigrationStart, Migration: a, Total: 1})
@@ -93,6 +93,53 @@ func TestMigrationEventsWithoutAWait(t *testing.T) {
 	}
 	if got[0].Duration != 0 || got[3].Migration != nil || got[3].Attempt != 1 || got[4].Total != 0 {
 		t.Fatalf("events %+v", got)
+	}
+}
+
+func TestMigrationEventsReportEnsureAfterAfter(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	clock := func() time.Time { return now }
+	a := &migrate.Migration{Version: "20260102000000", Name: "a"}
+	timeout := errors.New("lock timeout")
+	var events []migrateport.Event
+	var got []string
+	tr := newMigrationEvents(func(e migrateport.Event) {
+		events = append(events, e)
+		got = append(got, describeMigration(e))
+	}, 1, 2, clock)
+	for _, e := range []migrate.Event{
+		{Kind: migrate.LockAcquired},
+		{Kind: migrate.MigrationStart, Migration: a, Total: 1},
+		{Kind: migrate.After, Total: 1, SQL: "SELECT 1"},
+		{Kind: migrate.MigrationEnd, Migration: a, Total: 1, Duration: time.Second},
+		{Kind: migrate.Ensure, Index: 1, Total: 1, SQL: "SELECT 2"},
+		{Kind: migrate.Ensure, Index: 1, Total: 1, SQL: "SELECT 3"},
+		{Kind: migrate.Retry, Index: 1, Total: 1, Attempt: 2, Err: timeout},
+		{Kind: migrate.Ensure, Index: 1, Total: 1, SQL: "SELECT 2"},
+		{Kind: migrate.Ensure, Index: 1, Total: 1, SQL: "SELECT 3"},
+		{Kind: migrate.RunEnd, Total: 1, Duration: 2 * time.Second},
+	} {
+		if e.Kind == migrate.After || e.Kind == migrate.Ensure {
+			now = now.Add(5 * time.Millisecond)
+		}
+		tr.event(e)
+	}
+	want := []string{
+		"lock_acquired i=0/0 stmt=0/0 attempt=0 d=0s err=false",
+		"migration_start 20260102000000_a i=1/1 stmt=0/0 attempt=0 d=0s err=false",
+		"after i=0/0 stmt=1/1 attempt=0 d=0s err=false",
+		"migration_end 20260102000000_a i=1/1 stmt=0/0 attempt=0 d=1s err=false",
+		"ensure i=0/0 stmt=1/2 attempt=0 d=5ms err=false",
+		"retry i=0/0 stmt=0/0 attempt=1 d=0s err=true",
+		"ensure i=0/0 stmt=1/2 attempt=0 d=5ms err=false",
+		"ensure i=0/0 stmt=2/2 attempt=0 d=0s err=false",
+		"run_end i=0/1 stmt=0/0 attempt=0 d=2s err=false",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("got:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	if retry := events[5]; retry.Of != migrateport.Ensure || retry.Migration != nil {
+		t.Fatalf("retry of the ensure statements %+v", retry)
 	}
 }
 

@@ -22,7 +22,8 @@ const (
 	MigrationStart
 	// Statement is sent before each statement of a notx migration.
 	Statement
-	// Retry is sent before a migration or notx statement is retried after a lock timeout.
+	// Retry is sent before a migration, a notx statement, or the After or Ensure statements are
+	// retried after a lock timeout; Migration is nil for the statements.
 	Retry
 	// MigrationEnd is sent after a migration committed or failed.
 	MigrationEnd
@@ -30,6 +31,8 @@ const (
 	BaselineMarked
 	// After is sent before each Options.After statement runs.
 	After
+	// Ensure is sent before each Options.Ensure statement runs.
+	Ensure
 	// RunEnd is sent when Up returns.
 	RunEnd
 )
@@ -37,7 +40,7 @@ const (
 // eventNames are the names of the event kinds.
 var eventNames = [...]string{
 	"lock_wait", "lock_acquired", "migration_start", "statement", "retry", "migration_end",
-	"baseline_marked", "after", "run_end",
+	"baseline_marked", "after", "ensure", "run_end",
 }
 
 // String returns the kind's snake_case name, such as migration_start.
@@ -63,7 +66,7 @@ type Event struct {
 	Blockers   []Blocker
 	Duration   time.Duration
 	Err        error
-	// SQL is the statement a Statement or After event is about to run.
+	// SQL is the statement a Statement, After or Ensure event is about to run.
 	SQL string
 }
 

@@ -119,11 +119,13 @@ type Record struct {
 }
 
 // Plan is what Up would do: the migrations it would run in order, the baseline migrations it
-// would record without running, and the After statements it would run at the end.
+// would record without running, the After statements it would run at the end, and the Ensure
+// statements it runs at the end of every run that leaves nothing pending.
 type Plan struct {
 	Migrations []Migration
 	Baseline   []Migration
 	After      []string
+	Ensure     []string
 }
 
 // Empty reports whether the plan does nothing.
@@ -152,6 +154,7 @@ const (
 	MigrationEnd
 	BaselineMarked
 	After
+	Ensure
 	RunEnd
 )
 
@@ -172,6 +175,8 @@ func (k EventKind) String() string {
 		return "baseline_marked"
 	case After:
 		return "after"
+	case Ensure:
+		return "ensure"
 	case RunEnd:
 		return "run_end"
 	default:
@@ -186,9 +191,9 @@ func (k EventKind) String() string {
 // Migration, Index (1-based) of Total, the migrations the run executes; baselines recorded
 // without running are not counted. Statement: a notx migration starting statement Statement of
 // Statements. Retry: Attempt that failed with a lock timeout, Err, Blockers; Migration is nil
-// when the After statements are retried. MigrationEnd: Duration, Err. BaselineMarked: Migration.
-// After: Statement of Statements finished, Duration. RunEnd: Total migrations applied,
-// Duration, Err.
+// when the After or Ensure statements are retried, and Of says which. MigrationEnd: Duration,
+// Err. BaselineMarked: Migration. After and Ensure: Statement of Statements finished, Duration.
+// RunEnd: Total migrations applied, Duration, Err.
 type Event struct {
 	Kind       EventKind
 	Migration  *Migration
@@ -200,6 +205,7 @@ type Event struct {
 	Blockers   []Blocker
 	Duration   time.Duration
 	Err        error
+	Of         EventKind
 }
 
 // Blocker is a backend holding a lock a migration waits for.

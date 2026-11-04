@@ -163,7 +163,7 @@ func (x *Migrations) Plan(ctx context.Context, opts migrateport.PlanOptions) (mi
 // run that applied anything refreshes the shared pool, whose prepared statements may describe
 // tables the run changed.
 func (x *Migrations) Up(ctx context.Context, opts migrateport.UpOptions, observe migrateport.Observer) error {
-	t := newMigrationEvents(observe, len(x.c.Options.After), x.c.Now)
+	t := newMigrationEvents(observe, len(x.c.Options.After), len(x.c.Options.Ensure), x.c.Now)
 	return x.write(ctx, t.event, func(m *migrate.Migrator) error {
 		res, err := m.Up(ctx, migrate.UpOptions{To: opts.To})
 		if len(res.Applied) > 0 || len(res.Marked) > 0 {

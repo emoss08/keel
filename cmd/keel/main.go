@@ -149,6 +149,7 @@ type migrateFlags struct {
 	retries     int
 	outOfOrder  bool
 	after       listFlag
+	ensure      listFlag
 }
 
 // bind declares the flags.
@@ -160,6 +161,7 @@ func (f *migrateFlags) bind(fs *flag.FlagSet) {
 	fs.IntVar(&f.retries, "retries", migrate.DefaultRetries, "retries after a lock timeout, 0 for none")
 	fs.BoolVar(&f.outOfOrder, "allow-out-of-order", false, "apply migrations older than the newest applied one")
 	fs.Var(&f.after, "after", "`statement` run after a run that applied anything, repeatable")
+	fs.Var(&f.ensure, "ensure", "`statement` run at the end of every run that leaves nothing pending, repeatable")
 }
 
 // setup points the app at the -dir sources with the migrator options the flags set.
@@ -184,7 +186,7 @@ func (f *migrateFlags) sources() []migrate.Dir {
 // options returns the migrator options.
 func (f *migrateFlags) options() migrate.Options {
 	o := migrate.Options{Schema: f.schema, LockTimeout: f.lockTimeout, Retries: f.retries,
-		AllowOutOfOrder: f.outOfOrder, After: f.after}
+		AllowOutOfOrder: f.outOfOrder, After: f.after, Ensure: f.ensure}
 	if f.lockTimeout <= 0 {
 		o.LockTimeout = -1
 	}

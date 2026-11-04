@@ -4048,7 +4048,7 @@ keel                                                   # the console, in a termi
 
 Global flags go before or after the command: `-dsn` (default `$KEEL_DSN`), `-dir [name=]path`
 (repeatable; default `migrations`), `-schema`, `-lock-timeout` (`0` for none), `-retries` (`0` for
-none), `-allow-out-of-order`, `-after statement` (repeatable), `-json`, `-plain`, `-yes` and
+none), `-allow-out-of-order`, `-after statement` (repeatable), `-ensure statement` (repeatable), `-json`, `-plain`, `-yes` and
 `-yes-production`. With `-json`, runs write one JSON object per event and the other commands one
 JSON document. Exit codes: `1` failure, `2` usage error or refusal, `3` a check found problems
 (`check`, `lint` on an error finding, `stamp -check`, `doctor`). Destructive commands (`squash`,

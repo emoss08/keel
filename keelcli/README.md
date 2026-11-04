@@ -149,7 +149,7 @@ keel                                                    # the console
 
 Its global flags are `-dsn` (default `$KEEL_DSN`), `-dir [name=]path` (repeatable, default
 `migrations`), `-schema`, `-lock-timeout` (`0` for none), `-retries` (`0` for none),
-`-allow-out-of-order` and `-after statement` (repeatable), before or after the command, next to
+`-allow-out-of-order`, `-after statement` and `-ensure statement` (both repeatable), before or after the command, next to
 keelcli's own.
 
 ### The ports

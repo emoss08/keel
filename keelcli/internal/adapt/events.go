@@ -17,31 +17,42 @@ import (
 // RunEnd.Total as the migrations applied. migrate's Retry.Attempt is the attempt about to run; the
 // port's is the attempt that failed. migrate's LockWait has no attempt and its LockAcquired always
 // carries the time spent taking the lock; the port numbers the waits and reports zero when the
-// lock was free. migrate sends After before each statement with its SQL; the port sends it once
-// the statement finished, with its duration, so a statement is reported when the next event shows
-// it succeeded.
+// lock was free. migrate sends After and Ensure before each statement with its SQL; the port sends
+// them once the statement finished, with its duration, so a statement is reported when the next
+// event shows it succeeded. migrate's Retry of the statements carries no migration; the port's says
+// in Of whether they are After or Ensure, which migrate shows by sending Ensure only after every
+// After.
 type migrationEvents struct {
 	observe migrateport.Observer
-	after   int
+	totals  map[migrateport.EventKind]int
 	now     func() time.Time
 
 	waits   int
 	marks   int
 	index   int
 	applied int
-	afterN  int
-	pending *pendingAfter
+	phase   migrateport.EventKind
+	n       int
+	pending *pendingStatement
 }
 
-// pendingAfter is an After statement running, reported once the next event shows it finished.
-type pendingAfter struct {
+// pendingStatement is an After or Ensure statement running, reported once the next event shows it
+// finished.
+type pendingStatement struct {
+	kind  migrateport.EventKind
 	n     int
 	start time.Time
 }
 
-// newMigrationEvents translates for observe; after is the number of After statements.
-func newMigrationEvents(observe migrateport.Observer, after int, now func() time.Time) *migrationEvents {
-	return &migrationEvents{observe: observe, after: after, now: now}
+// newMigrationEvents translates for observe; after and ensure are the numbers of After and Ensure
+// statements.
+func newMigrationEvents(observe migrateport.Observer, after, ensure int, now func() time.Time) *migrationEvents {
+	return &migrationEvents{
+		observe: observe,
+		totals:  map[migrateport.EventKind]int{migrateport.After: after, migrateport.Ensure: ensure},
+		now:     now,
+		phase:   migrateport.After,
+	}
 }
 
 // event translates one migrate event.
@@ -71,9 +82,9 @@ func (t *migrationEvents) event(e migrate.Event) {
 	case migrate.MigrationEnd:
 		t.end(e)
 	case migrate.After:
-		t.flush(true)
-		t.afterN++
-		t.pending = &pendingAfter{n: t.afterN, start: t.now()}
+		t.statement(migrateport.After)
+	case migrate.Ensure:
+		t.statement(migrateport.Ensure)
 	case migrate.RunEnd:
 		t.flush(e.Err == nil)
 		t.observe(migrateport.Event{Kind: migrateport.RunEnd, Total: t.applied, Duration: e.Duration, Err: e.Err})
@@ -85,12 +96,22 @@ func (t *migrationEvents) step(kind migrateport.EventKind, e migrate.Event) migr
 	return migrateport.Event{Kind: kind, Migration: portMigration(e.Migration), Index: t.index, Total: e.Total - t.marks}
 }
 
-// retry reports the attempt that failed. A retry runs the After statements again, so their count
-// restarts.
+// statement starts reporting an After or Ensure statement, after the one before it succeeded.
+func (t *migrationEvents) statement(kind migrateport.EventKind) {
+	t.flush(true)
+	if kind != t.phase {
+		t.phase, t.n = kind, 0
+	}
+	t.n++
+	t.pending = &pendingStatement{kind: kind, n: t.n, start: t.now()}
+}
+
+// retry reports the attempt that failed. A retry runs the After or Ensure statements again, so
+// their count restarts.
 func (t *migrationEvents) retry(e migrate.Event) {
 	t.flush(false)
-	t.afterN = 0
-	out := migrateport.Event{Kind: migrateport.Retry, Attempt: e.Attempt - 1, Err: e.Err, Blockers: blockers(e.Blockers)}
+	t.n = 0
+	out := migrateport.Event{Kind: migrateport.Retry, Attempt: e.Attempt - 1, Err: e.Err, Blockers: blockers(e.Blockers), Of: t.phase}
 	if e.Migration != nil {
 		out = t.step(migrateport.Retry, e)
 		out.Attempt, out.Err, out.Blockers = e.Attempt-1, e.Err, blockers(e.Blockers)
@@ -110,17 +131,18 @@ func (t *migrationEvents) end(e migrate.Event) {
 	t.observe(out)
 }
 
-// flush reports the running After statement when ok, the next event having shown it succeeded.
+// flush reports the running After or Ensure statement when ok, the next event having shown it
+// succeeded.
 func (t *migrationEvents) flush(ok bool) {
 	p := t.pending
 	t.pending = nil
 	if p == nil || !ok {
 		return
 	}
-	t.observe(migrateport.Event{Kind: migrateport.After, Statement: p.n, Statements: t.after, Duration: t.now().Sub(p.start)})
+	t.observe(migrateport.Event{Kind: p.kind, Statement: p.n, Statements: t.totals[p.kind], Duration: t.now().Sub(p.start)})
 }
 
-// portMigration converts an event's migration, which is nil for After statements.
+// portMigration converts an event's migration, which is nil for After and Ensure statements.
 func portMigration(m *migrate.Migration) *migrateport.Migration {
 	if m == nil {
 		return nil

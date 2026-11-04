@@ -97,6 +97,7 @@ func plan(p migrate.Plan) migrateport.Plan {
 		Migrations: migrations(append(append([]migrate.Migration(nil), p.Pending...), p.Repeatables...)),
 		Baseline:   migrations(p.Marks),
 		After:      p.After,
+		Ensure:     p.Ensure,
 	}
 }
 

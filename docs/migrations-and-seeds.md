@@ -159,6 +159,21 @@ migrate.Options{After: []string{"SELECT trenova_rls.reconcile()"}}
 Trenova's rule that every tenant-table migration ends with `reconcile()` becomes automatic, so it can't
 be forgotten.
 
+`Options.Ensure` lists statements run at the end of every run that leaves no migration pending, whether
+or not it applied anything, in a transaction of their own after the migrations and their `After`
+statements, still under the migration lock:
+
+```go
+migrate.Options{Ensure: []string{"SELECT trenova_rls.mark_leakproof_operators()"}}
+```
+
+They are for state a database can lose outside migrations, which a run that applies nothing would
+otherwise never put back: an attribute on a `pg_catalog` function that neither `pg_dump` nor
+`pg_upgrade` carries, a grant someone revoked by hand. Each must be idempotent, since it runs on every
+deploy. A run that fails skips them, and so does `up -to` while migrations remain pending, since they
+may need objects those migrations create. A failing statement fails the run, as `ensure "<sql>": …`.
+`Plan` lists them even for an up-to-date database, and `-ensure statement` (repeatable) sets them on the `keel` command.
+
 **Ordering.** A pending migration whose version is lower than the newest applied one is an error, unless
 `Options.AllowOutOfOrder` is set. That catches the branch that merged with an older timestamp, before
 production does. `keel migrate check` reports it in CI against the target database's history, or against
@@ -171,11 +186,11 @@ the newest version on the base branch.
 
 | Feature | How |
 |---|---|
-| Plan and dry run | `Plan` returns what `Up` would do (pending, baseline marks, After statements); `up -dry-run` prints the SQL |
+| Plan and dry run | `Plan` returns what `Up` would do (pending, baseline marks, After and Ensure statements); `up -dry-run` prints the SQL |
 | Target | `up -to <version>` stops after that version |
 | Repeatable migrations | `R_<name>.sql` files (functions, views, RLS policy helpers, grants) re-run after the versioned ones whenever their checksum changes, in name order |
 | Go migrations | `migrate.Func{Version, Name, Up func(ctx, pgx.Tx) error}` for data changes SQL cannot express, ordered with the SQL files |
-| Progress events | `Options.Observer` receives lock wait, lock acquired, migration start, statement (notx), retry, migration end, After, run end; the CLI and TUI render from them |
+| Progress events | `Options.Observer` receives lock wait, lock acquired, migration start, statement (notx), retry, migration end, After, Ensure, run end; the CLI and TUI render from them |
 | Who is blocking | on lock waits and 55P03 retries the event names the blocking backends from `pg_locks`/`pg_stat_activity`: pid, application, state, age, query |
 | Baseline an existing database | `migrate baseline <version>` records every migration up to version as applied without running it |
 | Repair | `migrate repair <version>` accepts the current checksum of an applied file after a comment-only edit, with the old and new checksums in the output |

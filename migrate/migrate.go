@@ -84,6 +84,14 @@ type Options struct {
 	// part-way, joining its error to the run's). Use it for work SQL cannot do, such as telling a
 	// data layer's caches that migrated tables changed (keel.MarkChanged).
 	AfterFunc func(ctx context.Context, applied []Migration) error
+	// Ensure lists statements run at the end of every Up that leaves no migration pending,
+	// whether or not it applied anything: after the migrations and their After statements, in a
+	// transaction of their own, under the migration lock. Each must be idempotent. Use them for
+	// state a database can lose outside migrations, such as an attribute on a pg_catalog
+	// function that a dump or pg_upgrade does not carry, or a grant someone revoked by hand. Up
+	// skips them when it fails, and when -to leaves migrations pending, since they may need
+	// objects those migrations create.
+	Ensure []string
 	// Observer receives the run's progress. It is called synchronously on the goroutine running
 	// Up, Baseline or Repair, so it must not block.
 	Observer func(Event)
@@ -365,7 +373,7 @@ type Result struct {
 
 // Up applies the plan: it records the baselines a database with history already has, runs every
 // pending migration in version order, then the repeatable migrations that are due, then
-// Options.After. It returns what it applied, also when it fails part-way.
+// Options.After, then Options.Ensure. It returns what it applied, also when it fails part-way.
 func (m *Migrator) Up(ctx context.Context, o UpOptions) (Result, error) {
 	if o.DryRun {
 		p, err := m.Plan(ctx, o)

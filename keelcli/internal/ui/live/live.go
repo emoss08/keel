@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"charm.land/bubbles/v2/key"
@@ -324,7 +325,7 @@ func (m *Model) migration(e migrateport.Event) {
 	case migrateport.Statement:
 		r.statement, r.statements = e.Statement, e.Statements
 	case migrateport.Retry:
-		m.lock = &lockState{title: "After statements wait on a lock", detail: fmt.Sprintf("lock timeout · retry %d", e.Attempt),
+		m.lock = &lockState{title: statementsTitle(e) + " statements wait on a lock", detail: fmt.Sprintf("lock timeout · retry %d", e.Attempt),
 			since: now, blockers: e.Blockers}
 		if r != nil {
 			r.retries = e.Attempt
@@ -336,11 +337,17 @@ func (m *Model) migration(e migrateport.Event) {
 		r.state = endState(e.Err)
 	case migrateport.BaselineMarked:
 		r.state, r.reason = done, "baseline recorded"
-	case migrateport.After:
-		s.after = fmt.Sprintf("after statements %d/%d in %s", e.Statement, e.Statements, render.Duration(e.Duration))
+	case migrateport.After, migrateport.Ensure:
+		s.after = fmt.Sprintf("%s statements %d/%d in %s", e.Kind, e.Statement, e.Statements, render.Duration(e.Duration))
 	case migrateport.RunEnd:
 		s.ended, s.applied, s.took, s.err = true, e.Total, e.Duration, e.Err
 	}
+}
+
+// statementsTitle names the After or Ensure statements a Retry retries, at the start of a sentence.
+func statementsTitle(e migrateport.Event) string {
+	name := render.StatementsOf(e)
+	return strings.ToUpper(name[:1]) + name[1:]
 }
 
 func (m *Model) seed(e seedport.Event) {

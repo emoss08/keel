@@ -58,7 +58,7 @@ func (l *Lines) Migration(e migrateport.Event) {
 		l.printf("migrate", "%s %s  statement %d/%d", step(e.Index, e.Total), e.Migration.ID(), e.Statement, e.Statements)
 	case migrateport.Retry:
 		if e.Migration == nil {
-			l.printf("migrate", "after statements  lock timeout, retry %d: %v", e.Attempt, e.Err)
+			l.printf("migrate", "%s statements  lock timeout, retry %d: %v", StatementsOf(e), e.Attempt, e.Err)
 		} else {
 			l.printf("migrate", "%s %s  lock timeout, retry %d: %v", step(e.Index, e.Total), e.Migration.ID(), e.Attempt, e.Err)
 		}
@@ -71,8 +71,8 @@ func (l *Lines) Migration(e migrateport.Event) {
 		l.printf("migrate", "%s %s  applied in %s", step(e.Index, e.Total), e.Migration.ID(), Duration(e.Duration))
 	case migrateport.BaselineMarked:
 		l.printf("migrate", "baseline %s recorded as applied", e.Migration.ID())
-	case migrateport.After:
-		l.printf("migrate", "after statement %d/%d in %s", e.Statement, e.Statements, Duration(e.Duration))
+	case migrateport.After, migrateport.Ensure:
+		l.printf("migrate", "%s statement %d/%d in %s", e.Kind, e.Statement, e.Statements, Duration(e.Duration))
 	case migrateport.RunEnd:
 		if e.Err != nil {
 			l.printf("migrate", "stopped after %s, %s applied: %v", Duration(e.Duration), Plural(e.Total, "migration", "migrations"), e.Err)
@@ -168,4 +168,13 @@ func step(i, n int) string {
 	}
 	w := len(fmt.Sprint(n))
 	return "[" + strings.Repeat(" ", w-len(fmt.Sprint(i))) + fmt.Sprintf("%d/%d]", i, n)
+}
+
+// StatementsOf names the statements a Retry without a migration retries: ensure when Of says so,
+// after otherwise, since a port that predates Ensure leaves Of unset.
+func StatementsOf(e migrateport.Event) string {
+	if e.Of == migrateport.Ensure {
+		return migrateport.Ensure.String()
+	}
+	return migrateport.After.String()
 }
