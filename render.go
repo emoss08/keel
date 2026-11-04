@@ -36,6 +36,9 @@ type render struct {
 
 	// reads collects the tables the statement reads, for a terminal the result cache may serve.
 	reads *readSet
+
+	// seen, when set, is told of every column the statement writes, for InlineSQL.
+	seen func(Col)
 }
 
 // cteName is the name a statement gives a CTE that keel names: its base name, numbered when the
@@ -168,6 +171,7 @@ func (r *render) recycle() {
 	r.ctx = nil
 	r.db = nil
 	r.reads = nil
+	r.seen = nil
 	r.bare = false
 	clear(r.shared)
 	r.shared = r.shared[:0]
@@ -485,6 +489,9 @@ func (r *render) addJoin(sc *scope, ref *Ref, parentAlias string, selected bool)
 }
 
 func (r *render) col(c Col) {
+	if r.seen != nil {
+		r.seen(c)
+	}
 	if c.Ref.Table.Columns[c.Index].Flags.Has(schema.FlagComputed) {
 		r.computed(c)
 		return
