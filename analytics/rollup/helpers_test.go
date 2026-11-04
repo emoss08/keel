@@ -141,6 +141,7 @@ var zoned = rollup.MustDefine("shipments_zoned", fleetdb.ShipmentsSchema(),
 	), rollup.Histogram("weight_bin", s.Weight, []float64{0, 5, 10}, nil)...),
 	rollup.TenantZone(keel.StringOf(keel.Raw("CASE WHEN ? LIKE 'org%' THEN 'America/Chicago' ELSE 'UTC' END", s.OrganizationID))),
 	rollup.Where(s.Status.Ne(fleet.StatusCanceled)),
+	rollup.IndexBy(s.CustomerID),
 	rollup.WithoutSourceIndex())
 
 // setup builds the test database from keel's test migrations and the rollups' migrations.

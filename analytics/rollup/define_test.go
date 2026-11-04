@@ -202,6 +202,10 @@ func TestDefineRejectsBadMeasuresOverExpressions(t *testing.T) {
 		{"histogram without bounds", rollup.Histogram("w", s.Weight, nil, nil), nil, "at least one bound"},
 		{"filter on another table", rollup.Measures(rollup.Count()),
 			[]rollup.Option{rollup.Where(fleetdb.Customers.Name.Eq("x"))}, "where:"},
+		{"index by a column that is no dimension", rollup.Measures(rollup.Count()),
+			[]rollup.Option{rollup.IndexBy(s.Weight)}, "is not a dimension"},
+		{"index by nothing", rollup.Measures(rollup.Count()),
+			[]rollup.Option{rollup.IndexBy()}, "at least one dimension"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -218,6 +222,7 @@ func TestTenantZonedMigrationBucketsByTheRowsZoneAndKeepsTenantColumnsNotNull(t 
 	for _, want := range []string{
 		"CASE WHEN", "'America/Chicago'", `FILTER (WHERE`, `"delivered"`, `"weight_bin_2"`,
 		`SET NOT NULL`,
+		`CREATE INDEX "shipments_zoned_by_customer_id" ON "shipments_zoned" ("organization_id", "business_unit_id", "customer_id", "bucket");`,
 	} {
 		if !strings.Contains(sql, want) {
 			t.Errorf("migration does not contain %s:\n%s", want, sql)

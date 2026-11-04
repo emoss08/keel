@@ -5581,7 +5581,9 @@ var ShipmentsDaily = rollup.MustDefine("shipments_daily", fleetdb.ShipmentsSchem
   read from a source row (a lookup of the row's organization's zone); Rebuild a tenant whose zone
   changes, and read the rollup directly, since the router answers reports in one zone and refuses a
   tenant-zoned rollup. `Where(pred)` aggregates only the source rows where it holds; changes to the
-  columns it reads still mark slices. The rollup table keeps the source's `NOT NULL` on its tenant
+  columns it reads still mark slices. `IndexBy(dims...)` adds an index on the tenant columns, those
+  dimensions and `bucket`, for reads narrowed to one value of a dimension (one facility's days);
+  each column must be a dimension. The rollup table keeps the source's `NOT NULL` on its tenant
   columns.
 - `Define` returns an error, and `MustDefine` panics, when a column belongs to another table or was
   taken through a relation; the grain is not a time; a dimension is a tenant column, the grain, a

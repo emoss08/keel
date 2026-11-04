@@ -203,6 +203,7 @@ type options struct {
 	tenantZone  keel.Expr
 	where       keel.Pred
 	sourceIndex bool
+	indexes     [][]colRef
 }
 
 // Zone computes the rollup's buckets in the IANA time zone name instead of UTC. A report is
@@ -219,6 +220,20 @@ func TenantZone(zone keel.Expr) Option { return func(o *options) { o.tenantZone 
 // Where keeps only the source rows where holds: the rollup aggregates them alone. Changes to the
 // columns where reads still mark slices, so a row leaving or entering the filter refreshes them.
 func Where(holds keel.Pred) Option { return func(o *options) { o.where = holds } }
+
+// IndexBy adds an index on the rollup table that leads with dims after the tenant columns, then the
+// bucket: a read narrowed to one value of a dimension (one facility's figures) reaches its rows
+// directly instead of walking every row of its tenant's buckets. Each column must be one of the
+// rollup's dimensions.
+func IndexBy(dims ...keel.Expr) Option {
+	return func(o *options) {
+		cols := make([]colRef, len(dims))
+		for i, d := range dims {
+			cols[i] = columnOf(d)
+		}
+		o.indexes = append(o.indexes, cols)
+	}
+}
 
 // WithoutSourceIndex leaves out of the migration the index on the source table's tenant and grain
 // columns that refresh reads through, for a table that already has one with those leading columns.
@@ -239,6 +254,7 @@ type Rollup struct {
 	where       keel.Pred
 	customs     []customMeasure
 	sourceIndex bool
+	indexes     [][]string
 	cols        []column
 	table       *schema.Table
 }
@@ -293,6 +309,9 @@ func Define(name string, table *schema.Table, grain Grain, dims []Dim, measures 
 		return nil, fmt.Errorf("rollup: %s: %w", name, err)
 	}
 	if err := r.derive(); err != nil {
+		return nil, fmt.Errorf("rollup: %s: %w", name, err)
+	}
+	if err := r.resolveIndexes(o.indexes); err != nil {
 		return nil, fmt.Errorf("rollup: %s: %w", name, err)
 	}
 	return r, nil

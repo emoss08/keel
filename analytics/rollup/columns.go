@@ -256,3 +256,27 @@ func (r *Rollup) relations() []schema.Relation {
 	}
 	return out
 }
+
+// resolveIndexes names the columns of each IndexBy index, refusing a column that is not one of
+// the rollup's dimensions and an index that names none.
+func (r *Rollup) resolveIndexes(indexes [][]colRef) error {
+	for _, cols := range indexes {
+		if len(cols) == 0 {
+			return fmt.Errorf("index: name at least one dimension")
+		}
+		names := make([]string, len(cols))
+		for i, c := range cols {
+			src, err := r.own(c)
+			if err != nil {
+				return fmt.Errorf("index: %w", err)
+			}
+			at, ok := r.colIndex(src)
+			if !ok || r.cols[at].kind != colDim {
+				return fmt.Errorf("index: %s is not a dimension of the rollup", r.source.Columns[src].Name)
+			}
+			names[i] = r.cols[at].name
+		}
+		r.indexes = append(r.indexes, names)
+	}
+	return nil
+}

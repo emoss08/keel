@@ -95,10 +95,34 @@ $keel$;`,
 		"COMMENT ON TABLE " + tbl + " IS " + lit(r.marker()) + ";",
 		r.notNullSQL(),
 		"CREATE UNIQUE INDEX " + schema.Quote(truncIdent(r.name+"_key")) + " ON " + tbl + " (" + r.keyColumns() + ") NULLS NOT DISTINCT;",
-		r.functionSQL(),
 	}
+	parts = append(parts, r.indexesSQL()...)
+	parts = append(parts,
+		r.functionSQL(),
+	)
 	parts = append(parts, r.triggersSQL()...)
 	return strings.Join(parts, "\n")
+}
+
+// indexesSQL creates the IndexBy indexes: the tenant columns, the named dimensions, then the
+// bucket, so a read of one dimension value over a range of buckets is one index range.
+func (r *Rollup) indexesSQL() []string {
+	out := make([]string, 0, len(r.indexes))
+	for _, dims := range r.indexes {
+		var cols []string
+		for _, c := range r.cols {
+			if c.kind == colTenant {
+				cols = append(cols, schema.Quote(c.name))
+			}
+		}
+		for _, d := range dims {
+			cols = append(cols, schema.Quote(d))
+		}
+		cols = append(cols, schema.Quote(bucketColumn))
+		name := truncIdent(r.name + "_by_" + strings.Join(dims, "_"))
+		out = append(out, "CREATE INDEX "+schema.Quote(name)+" ON "+schema.Quote(r.name)+" ("+strings.Join(cols, ", ")+");")
+	}
+	return out
 }
 
 // notNullSQL keeps the source's NOT NULL on the rollup table's tenant columns, which CREATE TABLE AS
