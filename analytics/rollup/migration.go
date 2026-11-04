@@ -93,11 +93,28 @@ END
 $keel$;`,
 		"CREATE TABLE " + tbl + " AS SELECT " + sel + " FROM " + r.source.Quoted + " s GROUP BY " + group + " WITH NO DATA;",
 		"COMMENT ON TABLE " + tbl + " IS " + lit(r.marker()) + ";",
+		r.notNullSQL(),
 		"CREATE UNIQUE INDEX " + schema.Quote(truncIdent(r.name+"_key")) + " ON " + tbl + " (" + r.keyColumns() + ") NULLS NOT DISTINCT;",
 		r.functionSQL(),
 	}
 	parts = append(parts, r.triggersSQL()...)
 	return strings.Join(parts, "\n")
+}
+
+// notNullSQL keeps the source's NOT NULL on the rollup table's tenant columns, which CREATE TABLE AS
+// drops: row-level security and a tenant's unique key both rely on them.
+func (r *Rollup) notNullSQL() string {
+	var cols []string
+	for _, ci := range r.source.Tenant {
+		c := r.source.Columns[ci]
+		if !c.MayBeNull() {
+			cols = append(cols, "ALTER COLUMN "+schema.Quote(c.Name)+" SET NOT NULL")
+		}
+	}
+	if len(cols) == 0 {
+		return ""
+	}
+	return "ALTER TABLE " + schema.Quote(r.name) + " " + strings.Join(cols, ", ") + ";"
 }
 
 // functionSQL creates the trigger function: for each statement it inserts the distinct slices the

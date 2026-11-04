@@ -29,6 +29,9 @@ const (
 type stored struct {
 	fn  string
 	col int32
+	// custom is one more than the index in customs of a measure over an expression, zero for any
+	// other aggregate, so a stored aggregate written without it is a column's.
+	custom int
 }
 
 // column is one column of the rollup table: its name, role, the source column it comes from (-1
@@ -73,6 +76,10 @@ func (r *Rollup) storedAggs() []stored {
 		}
 	}
 	for _, m := range r.measures {
+		if m.custom > 0 {
+			add(stored{fn: "custom", col: -1, custom: m.custom})
+			continue
+		}
 		switch m.agg {
 		case ir.AggCount:
 			add(r.countOf(m.col))
@@ -104,6 +111,9 @@ func (r *Rollup) countOf(col int32) stored {
 // aggName names the column of a stored aggregate: row_count, or the source column's name with
 // _count, _sum, _min, _max or _distinct.
 func (r *Rollup) aggName(s stored) string {
+	if s.custom > 0 {
+		return r.customs[s.custom-1].name
+	}
 	if s.col < 0 {
 		return rowCountColumn
 	}
@@ -183,6 +193,16 @@ func (r *Rollup) nullableBucket() schema.ColFlag {
 // keep the source type.
 func (r *Rollup) aggColumn(c column) schema.Column {
 	sc := schema.Column{Name: c.name, Field: pascal(c.name), Label: label(c.name)}
+	if c.agg.custom > 0 {
+		if r.customs[c.agg.custom-1].fn == "count" {
+			sc.Kind = schema.KindInt64
+			sc.Report = &schema.ReportInfo{Kind: schema.Measure, Type: schema.ValueInt, Aggs: schema.AggsNumeric}
+			return sc
+		}
+		sc.Kind, sc.Flags = schema.KindOther, schema.FlagNullable
+		sc.Report = &schema.ReportInfo{Kind: schema.Measure, Type: schema.ValueDecimal, Aggs: schema.AggsNumeric}
+		return sc
+	}
 	switch c.agg.fn {
 	case "count", "count_distinct":
 		sc.Kind = schema.KindInt64

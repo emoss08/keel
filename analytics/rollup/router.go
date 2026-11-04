@@ -55,6 +55,10 @@ func NewRouter(rollups ...*Rollup) *Router {
 			continue
 		}
 		seen[r.name] = true
+		if r.tenantZone != nil {
+			rt.err = fmt.Errorf("rollup: %s is bucketed in each tenant's zone; read it directly, a report runs in one zone", r.name)
+			continue
+		}
 		rt.list = append(rt.list, index(r))
 	}
 	slices.SortStableFunc(rt.list, func(a, b *indexed) int {

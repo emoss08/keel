@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/emoss08/keel"
 	"github.com/emoss08/keel/analytics/ir"
 	"github.com/emoss08/keel/schema"
 )
@@ -58,7 +59,7 @@ func interval(unit ir.Bucket) string {
 // start in the rollup's zone.
 func (r *Rollup) bucketExpr(alias string) string {
 	c := qcol(alias, r.source.Columns[r.grain].Name)
-	unit, zone := lit(string(r.unit)), lit(r.zoneName)
+	unit, zone := lit(string(r.unit)), r.zoneSQL(alias)
 	switch r.grainType {
 	case schema.ValueEpoch:
 		return "date_trunc(" + unit + ", to_timestamp(" + c + "), " + zone + ")"
@@ -66,6 +67,15 @@ func (r *Rollup) bucketExpr(alias string) string {
 		return "(date_trunc(" + unit + ", " + c + "::timestamp) AT TIME ZONE " + zone + ")"
 	}
 	return "date_trunc(" + unit + ", " + c + ", " + zone + ")"
+}
+
+// zoneSQL is the zone a source row under alias is bucketed in: the rollup's, or for a tenant-zoned
+// rollup its tenant's.
+func (r *Rollup) zoneSQL(alias string) string {
+	if r.tenantZone != nil {
+		return "(" + r.mustInline(r.tenantZone, alias) + ")"
+	}
+	return lit(r.zoneName)
 }
 
 // upperExpr is the start of the bucket after bucket b, computed on the zone's wall clock so a
@@ -85,10 +95,18 @@ const dstMargin = "interval '3 hours'"
 // range, so the range is widened by dstMargin and the bucket compared too.
 func (r *Rollup) rangeExpr(alias, b string) string {
 	c := qcol(alias, r.source.Columns[r.grain].Name)
-	lo, hi := b, r.upperExpr(b)
-	exact := r.grainType == schema.ValueDate || r.zone == time.UTC
-	if !exact {
-		lo, hi = "("+b+" - "+dstMargin+")", "("+hi+" + "+dstMargin+")"
+	exact := r.tenantZone == nil && (r.grainType == schema.ValueDate || r.zone == time.UTC)
+	lo, hi := b, ""
+	switch {
+	case exact:
+		hi = r.upperExpr(b)
+	case r.tenantZone != nil:
+		// The tenant's zone is read per row, so the range is bounded without it, on the bucket's
+		// absolute start: every row of the bucket lies within its length of b, give or take a
+		// clock change, which keeps the bounds constants an index serves.
+		lo, hi = "("+b+" - "+dstMargin+")", "("+b+" + "+interval(r.unit)+" + "+dstMargin+")"
+	default:
+		lo, hi = "("+b+" - "+dstMargin+")", "("+r.upperExpr(b)+" + "+dstMargin+")"
 	}
 	var span string
 	switch r.grainType {
@@ -128,6 +146,9 @@ func (r *Rollup) aggExpr(c column, alias string) string {
 	case colBucket:
 		return r.bucketExpr(alias)
 	}
+	if c.agg.custom > 0 {
+		return r.customExpr(r.customs[c.agg.custom-1], alias)
+	}
 	if c.agg.col < 0 {
 		return "count(*)"
 	}
@@ -136,6 +157,26 @@ func (r *Rollup) aggExpr(c column, alias string) string {
 		return "count(DISTINCT " + arg + ")"
 	}
 	return c.agg.fn + "(" + arg + ")"
+}
+
+// customExpr is the aggregate of a measure over an expression, over source rows under alias.
+func (r *Rollup) customExpr(m customMeasure, alias string) string {
+	filter := ""
+	if m.where != nil {
+		filter = " FILTER (WHERE " + r.mustInline(m.where, alias) + ")"
+	}
+	if m.fn == "sum" {
+		return "sum(" + r.mustInline(m.expr, alias) + ")" + filter
+	}
+	return "count(*)" + filter
+}
+
+// whereSQL is the rollup's source filter over rows under alias, empty when it keeps every row.
+func (r *Rollup) whereSQL(alias string) string {
+	if r.where == nil {
+		return ""
+	}
+	return r.mustInline(r.where, alias)
 }
 
 // selectList is the rollup table's columns computed from source rows under alias, and the GROUP
@@ -184,6 +225,18 @@ func (r *Rollup) relevantColumns() []int32 {
 	for _, m := range r.measures {
 		if m.col >= 0 {
 			set[m.col] = true
+		}
+	}
+	for _, e := range []keel.Expr{r.tenantZone, r.where} {
+		for _, ci := range r.readsOf(e) {
+			set[ci] = true
+		}
+	}
+	for _, m := range r.customs {
+		for _, e := range []keel.Expr{m.expr, m.where} {
+			for _, ci := range r.readsOf(e) {
+				set[ci] = true
+			}
 		}
 	}
 	var out []int32

@@ -128,6 +128,21 @@ func openDBWith(t testing.TB, clk *clock, edit func(cfg *keel.Config)) *keel.DB 
 	return d
 }
 
+// zoned buckets each tenant on its own zone, read from the row, counts only shipments that were
+// not canceled, and stores measures over expressions.
+var zoned = rollup.MustDefine("shipments_zoned", fleetdb.ShipmentsSchema(),
+	rollup.Day(s.CreatedAt),
+	rollup.Dims(s.CustomerID),
+	append(rollup.Measures(
+		rollup.Count(),
+		rollup.CountWhere("delivered", s.Status.Eq(fleet.StatusDelivered)),
+		rollup.SumOf("total_all", s.Total),
+		rollup.SumWhere("heavy_total", s.Total, keel.Raw("? > ?", s.Weight, 5)),
+	), rollup.Histogram("weight_bin", s.Weight, []float64{0, 5, 10}, nil)...),
+	rollup.TenantZone(keel.StringOf(keel.Raw("CASE WHEN ? LIKE 'org%' THEN 'America/Chicago' ELSE 'UTC' END", s.OrganizationID))),
+	rollup.Where(s.Status.Ne(fleet.StatusCanceled)),
+	rollup.WithoutSourceIndex())
+
 // setup builds the test database from keel's test migrations and the rollups' migrations.
 func setup() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -142,6 +157,7 @@ func setup() error {
 		"20270101000002_rollup_stops_daily.sql":               {Data: []byte(rollup.Migration(stopsDaily))},
 		"20270101000003_rollup_shipments_chicago.sql":         {Data: []byte(rollup.Migration(chicagoDaily))},
 		"20270101000004_rollup_shipments_chicago_monthly.sql": {Data: []byte(rollup.Migration(chicagoMonthly))},
+		"20270101000005_rollup_shipments_zoned.sql":           {Data: []byte(rollup.Migration(zoned))},
 	}
 	var err error
 	testDSN, dropTest, err = migrate.Template(ctx, migrate.TemplateOptions{

@@ -1558,6 +1558,13 @@ n, err := s.Where(
 Never build the SQL text from values: pass them as arguments, so the statement stays one prepared
 shape and cannot be injected. `keel.Val(v)` binds a value where an expression is expected.
 
+`keel.InlineSQL(e, table, alias)` renders an expression for SQL that lives outside a statement (a
+trigger, a view, a generated column, a rollup's refresh), where nothing can be bound: its columns
+are written under `alias`, its values as literals that take the type of what they meet, as a bound
+parameter would (a string or an enum quoted, a slice as an array literal, a `driver.Valuer`
+through its value), and it returns the columns of `table` the expression reads. A column of
+another table is an error.
+
 ### Relation path filters, Any and None
 
 A relation method returns the handle of the related table on that path. Columns of a belongs-to or
@@ -5552,6 +5559,30 @@ var ShipmentsDaily = rollup.MustDefine("shipments_daily", fleetdb.ShipmentsSchem
   `CountDistinct`. Sums, counts, minimums and maximums compose, so a report over coarser buckets or
   fewer dimensions re-aggregates them; an average is stored as a sum and a count; a distinct count
   answers only a report at the rollup's exact grain and dimensions.
+- **Measures over expressions** name their own column: `CountWhere(name, pred)` counts the rows
+  where a predicate holds, `SumOf(name, expr)` totals an expression and `SumWhere(name, expr, pred)`
+  totals it where the predicate holds. They compose like plain counts and sums, so a wide row of
+  filtered measures stands in for dimensions that would multiply the rows:
+
+  ```go
+  late := s.ArrivedLate.IsTrue()
+  rollup.Measures(
+      rollup.Count(),
+      rollup.CountWhere("late_stops", late),
+      rollup.SumWhere("late_minutes", waited, late),
+  )
+  ```
+
+  `Histogram(prefix, expr, bounds, pred)` is one `CountWhere` per bin (`prefix_0`, `prefix_1`, …,
+  the last bin open above), and `Quantile(counts, bounds, q)` reads a median or a 90th percentile
+  back from the summed bins, interpolating inside the bin. Expressions read only the source table's
+  own columns; values in them are written into the rollup's SQL as literals (`keel.InlineSQL`).
+- **Options**: `Zone(name)` buckets in one zone. `TenantZone(expr)` buckets each tenant in its own,
+  read from a source row (a lookup of the row's organization's zone); Rebuild a tenant whose zone
+  changes, and read the rollup directly, since the router answers reports in one zone and refuses a
+  tenant-zoned rollup. `Where(pred)` aggregates only the source rows where it holds; changes to the
+  columns it reads still mark slices. The rollup table keeps the source's `NOT NULL` on its tenant
+  columns.
 - `Define` returns an error, and `MustDefine` panics, when a column belongs to another table or was
   taken through a relation; the grain is not a time; a dimension is a tenant column, the grain, a
   repeat or a tsvector; a sum or average reads non-numbers, a minimum or maximum unordered values;

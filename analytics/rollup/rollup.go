@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strconv"
 	"time"
 
 	"github.com/emoss08/keel"
@@ -92,6 +93,13 @@ type Measure struct {
 	agg  ir.Agg
 	col  colRef
 	rows bool
+
+	// name, expr and where are set for a measure over an expression: a count of the rows where
+	// holds, or a sum of expr, optionally where holds, stored in a column called name.
+	name  string
+	expr  keel.Expr
+	where keel.Pred
+	err   error
 }
 
 // Count counts rows.
@@ -115,6 +123,74 @@ func Max(c keel.Expr) Measure { return Measure{agg: ir.AggMax, col: columnOf(c)}
 // CountDistinct counts the distinct non-null values of c.
 func CountDistinct(c keel.Expr) Measure { return Measure{agg: ir.AggCountDistinct, col: columnOf(c)} }
 
+// CountWhere counts the rows where holds, stored in a column called name. Counts compose, so a
+// report over coarser buckets or fewer dimensions sums them. where reads only the source table's
+// own columns; it may hold values, which the rollup writes as literals.
+func CountWhere(name string, where keel.Pred) Measure {
+	return Measure{agg: ir.AggCount, name: name, where: where}
+}
+
+// SumOf totals the expression e over the rows, stored in a column called name.
+func SumOf(name string, e keel.Expr) Measure {
+	return Measure{agg: ir.AggSum, name: name, expr: e}
+}
+
+// SumWhere totals the expression e over the rows where holds, stored in a column called name.
+func SumWhere(name string, e keel.Expr, where keel.Pred) Measure {
+	return Measure{agg: ir.AggSum, name: name, expr: e, where: where}
+}
+
+// Histogram counts the rows where holds (every row, for a nil where) by which of the bins bounds
+// marks e falls in, one CountWhere per bin named prefix_0, prefix_1, …: bin i holds values from
+// bounds[i] up to bounds[i+1], and the last bin every value from the last bound up. Values below the
+// first bound are not counted. A quantile is read back from the summed bins with Quantile.
+func Histogram(prefix string, e keel.Expr, bounds []float64, where keel.Pred) []Measure {
+	if len(bounds) == 0 {
+		return []Measure{{name: prefix, err: errors.New("a histogram needs at least one bound")}}
+	}
+	out := make([]Measure, len(bounds))
+	for i, lo := range bounds {
+		in := keel.Pred(keel.Raw("? >= ?", e, lo))
+		if i+1 < len(bounds) {
+			in = keel.And(in, keel.Raw("? < ?", e, bounds[i+1]))
+		}
+		if where != nil {
+			in = keel.And(where, in)
+		}
+		out[i] = CountWhere(prefix+"_"+strconv.Itoa(i), in)
+	}
+	return out
+}
+
+// Quantile reads the q quantile (0 to 1) from a histogram's summed bin counts and the bounds it was
+// declared with, interpolating linearly inside the bin it falls in; the open last bin answers its
+// lower bound. It returns 0 when every bin is empty.
+func Quantile(counts []int64, bounds []float64, q float64) float64 {
+	var total int64
+	for _, c := range counts {
+		total += c
+	}
+	if total == 0 || len(counts) == 0 || len(bounds) < len(counts) {
+		return 0
+	}
+	target := q * float64(total)
+	var seen float64
+	for i, c := range counts {
+		if c == 0 {
+			continue
+		}
+		if seen+float64(c) >= target {
+			if i+1 >= len(bounds) {
+				return bounds[i]
+			}
+			lo, hi := bounds[i], bounds[i+1]
+			return lo + (hi-lo)*(target-seen)/float64(c)
+		}
+		seen += float64(c)
+	}
+	return bounds[len(counts)-1]
+}
+
 // Measures returns ms, for a declaration that reads as a list.
 func Measures(ms ...Measure) []Measure { return ms }
 
@@ -124,12 +200,25 @@ type Option func(*options)
 // options are a rollup's settings beyond its shape.
 type options struct {
 	zone        string
+	tenantZone  keel.Expr
+	where       keel.Pred
 	sourceIndex bool
 }
 
 // Zone computes the rollup's buckets in the IANA time zone name instead of UTC. A report is
 // answered from the rollup only when it runs in the same zone.
 func Zone(name string) Option { return func(o *options) { o.zone = name } }
+
+// TenantZone computes each tenant's buckets in that tenant's own time zone: zone is an expression
+// over a source row naming an IANA zone, such as a lookup of the row's organization's zone
+// (keel.StringOf(keel.Raw("(SELECT o.timezone FROM organizations o WHERE o.id = ?)", t.OrgID))).
+// The zone must be a name Postgres knows for every row; when a tenant's zone changes, Rebuild the
+// tenant. A tenant-zoned rollup is read directly, never routed to: a report runs in one zone.
+func TenantZone(zone keel.Expr) Option { return func(o *options) { o.tenantZone = zone } }
+
+// Where keeps only the source rows where holds: the rollup aggregates them alone. Changes to the
+// columns where reads still mark slices, so a row leaving or entering the filter refreshes them.
+func Where(holds keel.Pred) Option { return func(o *options) { o.where = holds } }
 
 // WithoutSourceIndex leaves out of the migration the index on the source table's tenant and grain
 // columns that refresh reads through, for a table that already has one with those leading columns.
@@ -146,15 +235,29 @@ type Rollup struct {
 	measures    []resolvedMeasure
 	zoneName    string
 	zone        *time.Location
+	tenantZone  keel.Expr
+	where       keel.Pred
+	customs     []customMeasure
 	sourceIndex bool
 	cols        []column
 	table       *schema.Table
 }
 
-// resolvedMeasure is a declared measure on a source column index, -1 for Count.
+// customMeasure is a measure over an expression: fn is "count" (rows where holds) or "sum" (of expr,
+// where holds when set), stored in the column name.
+type customMeasure struct {
+	name  string
+	fn    string
+	expr  keel.Expr
+	where keel.Pred
+}
+
+// resolvedMeasure is a declared measure on a source column index, -1 for Count. custom is one more
+// than the index in customs of a measure over an expression, zero for any other.
 type resolvedMeasure struct {
-	agg ir.Agg
-	col int32
+	agg    ir.Agg
+	col    int32
+	custom int
 }
 
 // MustDefine is Define for package-level declarations: it panics on an invalid rollup.
@@ -179,7 +282,13 @@ func Define(name string, table *schema.Table, grain Grain, dims []Dim, measures 
 	for _, opt := range opts {
 		opt(&o)
 	}
-	r := &Rollup{name: name, source: table, unit: grain.unit, zoneName: o.zone, sourceIndex: o.sourceIndex}
+	r := &Rollup{
+		name: name, source: table, unit: grain.unit, zoneName: o.zone, sourceIndex: o.sourceIndex,
+		tenantZone: o.tenantZone, where: o.where,
+	}
+	if r.tenantZone != nil {
+		r.zoneName = ""
+	}
 	if err := r.check(grain, dims, measures); err != nil {
 		return nil, fmt.Errorf("rollup: %s: %w", name, err)
 	}
@@ -197,11 +306,21 @@ func (r *Rollup) check(grain Grain, dims []Dim, measures []Measure) error {
 	if r.source == nil {
 		return errors.New("the table is nil")
 	}
-	loc, err := time.LoadLocation(r.zoneName)
-	if err != nil {
-		return fmt.Errorf("time zone %q: %w", r.zoneName, err)
+	var err error
+	if r.tenantZone == nil {
+		loc, lerr := time.LoadLocation(r.zoneName)
+		if lerr != nil {
+			return fmt.Errorf("time zone %q: %w", r.zoneName, lerr)
+		}
+		r.zone = loc
+	} else if _, err = r.inline(r.tenantZone, "s"); err != nil {
+		return fmt.Errorf("tenant zone: %w", err)
 	}
-	r.zone = loc
+	if r.where != nil {
+		if _, err = r.inline(r.where, "s"); err != nil {
+			return fmt.Errorf("where: %w", err)
+		}
+	}
 	if r.grain, err = r.own(grain.col); err != nil {
 		return fmt.Errorf("grain: %w", err)
 	}
@@ -283,8 +402,14 @@ func (r *Rollup) checkDim(idx int32) error {
 
 // checkMeasure resolves m, checking that its column suits its aggregation.
 func (r *Rollup) checkMeasure(m Measure) (resolvedMeasure, error) {
+	if m.err != nil {
+		return resolvedMeasure{}, fmt.Errorf("measure %s: %w", m.name, m.err)
+	}
 	if m.rows {
 		return resolvedMeasure{agg: ir.AggCount, col: -1}, nil
+	}
+	if m.name != "" {
+		return r.checkCustom(m)
 	}
 	idx, err := r.own(m.col)
 	if err != nil {
@@ -301,6 +426,68 @@ func (r *Rollup) checkMeasure(m Measure) (resolvedMeasure, error) {
 		return resolvedMeasure{}, fmt.Errorf("measure %s of %s: the column's values are not ordered", m.agg, c.Name)
 	}
 	return resolvedMeasure{agg: m.agg, col: idx}, nil
+}
+
+// columnName is what a column a measure names may be called.
+var columnName = regexp.MustCompile(`^[a-z][a-z0-9_]{0,62}$`)
+
+// checkCustom resolves a measure over an expression, checking its name and that its expressions
+// read only the source table's own columns.
+func (r *Rollup) checkCustom(m Measure) (resolvedMeasure, error) {
+	if !columnName.MatchString(m.name) {
+		return resolvedMeasure{}, fmt.Errorf("measure %s: the name must match %s", m.name, columnName)
+	}
+	cm := customMeasure{name: m.name, fn: "count", expr: m.expr, where: m.where}
+	if m.agg == ir.AggSum {
+		if m.expr == nil {
+			return resolvedMeasure{}, fmt.Errorf("measure %s: a sum needs an expression", m.name)
+		}
+		cm.fn = "sum"
+		if _, err := r.inline(m.expr, "s"); err != nil {
+			return resolvedMeasure{}, fmt.Errorf("measure %s: %w", m.name, err)
+		}
+	} else if m.where == nil {
+		return resolvedMeasure{}, fmt.Errorf("measure %s: a count needs a condition; Count counts every row", m.name)
+	}
+	if m.where != nil {
+		if _, err := r.inline(m.where, "s"); err != nil {
+			return resolvedMeasure{}, fmt.Errorf("measure %s: %w", m.name, err)
+		}
+	}
+	for _, c := range r.customs {
+		if c.name == m.name {
+			return resolvedMeasure{}, fmt.Errorf("measure %s is declared twice", m.name)
+		}
+	}
+	r.customs = append(r.customs, cm)
+	return resolvedMeasure{agg: m.agg, col: -1, custom: len(r.customs)}, nil
+}
+
+// inline renders e over the source table under alias, as SQL with its values written in.
+func (r *Rollup) inline(e keel.Expr, alias string) (string, error) {
+	sql, _, err := keel.InlineSQL(e, r.source, alias)
+	return sql, err
+}
+
+// mustInline is inline for an expression Define already rendered once.
+func (r *Rollup) mustInline(e keel.Expr, alias string) string {
+	sql, err := r.inline(e, alias)
+	if err != nil {
+		panic(fmt.Sprintf("rollup: %s: an expression that rendered at Define no longer renders: %v", r.name, err))
+	}
+	return sql
+}
+
+// readsOf returns the source columns e reads.
+func (r *Rollup) readsOf(e keel.Expr) []int32 {
+	if e == nil {
+		return nil
+	}
+	_, cols, err := keel.InlineSQL(e, r.source, "s")
+	if err != nil {
+		return nil
+	}
+	return cols
 }
 
 // valueType returns the report value type of c: its derived report type, or one inferred from its
@@ -353,8 +540,12 @@ func (r *Rollup) Unit() ir.Bucket { return r.unit }
 // GrainColumn returns the source column the grain buckets.
 func (r *Rollup) GrainColumn() *schema.Column { return &r.source.Columns[r.grain] }
 
-// Location returns the time zone buckets are computed in.
+// Location returns the time zone buckets are computed in, nil for a rollup bucketed in each
+// tenant's own zone (TenantZone).
 func (r *Rollup) Location() *time.Location { return r.zone }
+
+// TenantZoned reports whether buckets are computed in each tenant's own zone.
+func (r *Rollup) TenantZoned() bool { return r.tenantZone != nil }
 
 // Dimensions returns the source columns the rollup groups by.
 func (r *Rollup) Dimensions() []*schema.Column {
@@ -372,14 +563,19 @@ type Aggregate struct {
 	Column *schema.Column
 }
 
-// Aggregates returns the declared measures, each once, in declaration order.
+// Aggregates returns the declared measures over columns, each once, in declaration order; the
+// measures over expressions are the rollup table's own columns and route no report.
 func (r *Rollup) Aggregates() []Aggregate {
-	out := make([]Aggregate, len(r.measures))
-	for i, m := range r.measures {
-		out[i].Agg = m.agg
-		if m.col >= 0 {
-			out[i].Column = &r.source.Columns[m.col]
+	out := make([]Aggregate, 0, len(r.measures))
+	for _, m := range r.measures {
+		if m.custom > 0 {
+			continue
 		}
+		a := Aggregate{Agg: m.agg}
+		if m.col >= 0 {
+			a.Column = &r.source.Columns[m.col]
+		}
+		out = append(out, a)
 	}
 	return out
 }

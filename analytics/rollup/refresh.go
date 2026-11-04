@@ -305,6 +305,9 @@ func (r *Rollup) refreshPlan(types []string) *refreshPlan {
 	withBucket := "unnest(" + strings.Join(append(params, bparam), ", ") + ") AS u(" + strings.Join(append(aliases, "b"), ", ") + ")"
 	tenantsOnly := "unnest(" + strings.Join(params, ", ") + ") AS u(" + strings.Join(aliases, ", ") + ")"
 	sel, group := r.selectList("s")
+	if where := r.whereSQL("s"); where != "" {
+		onSource = append(onSource, "("+where+")")
+	}
 	insert := "INSERT INTO " + schema.Quote(r.name) + " (" + r.columnList() + ") SELECT " + sel
 	bucket := "x." + schema.Quote(bucketColumn)
 	p := &refreshPlan{r: r}
@@ -314,8 +317,14 @@ func (r *Rollup) refreshPlan(types []string) *refreshPlan {
 	p.bucketSQL = insert + " FROM " + withBucket + " JOIN " + r.source.Quoted + " s ON " +
 		strings.Join(append(onSource, r.rangeExpr("s", "u.b")), " AND ") + " GROUP BY " + group
 	if n == 0 {
-		p.nullSQL = insert + " FROM " + r.source.Quoted + " s WHERE " + grainNull + " GROUP BY " + group
-		p.wholeSQL = insert + " FROM " + r.source.Quoted + " s GROUP BY " + group
+		filter := strings.Join(onSource, " AND ")
+		nullWhere, wholeWhere := grainNull, ""
+		if filter != "" {
+			nullWhere += " AND " + filter
+			wholeWhere = " WHERE " + filter
+		}
+		p.nullSQL = insert + " FROM " + r.source.Quoted + " s WHERE " + nullWhere + " GROUP BY " + group
+		p.wholeSQL = insert + " FROM " + r.source.Quoted + " s" + wholeWhere + " GROUP BY " + group
 		return p
 	}
 	p.nullSQL = insert + " FROM " + tenantsOnly + " JOIN " + r.source.Quoted + " s ON " +

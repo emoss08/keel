@@ -298,3 +298,48 @@ func TestTimeGrainInAZoneWithNulls(t *testing.T) {
 		t.Fatalf("after filling the null: %v", got)
 	}
 }
+
+// zonedRows and zonedBase are the zoned rollup and the same figures computed from the source, in
+// Chicago, without canceled shipments.
+func (f *fixture) zonedRows() []string {
+	return f.rows(`SELECT concat_ws('|', bucket, customer_id, row_count, delivered, total_all, heavy_total,
+		weight_bin_0, weight_bin_1, weight_bin_2)
+		FROM shipments_zoned WHERE organization_id = $1 AND business_unit_id = $2`)
+}
+
+func (f *fixture) zonedBase() []string {
+	return f.rows(`SELECT concat_ws('|', date_trunc('day', to_timestamp(created_at), 'America/Chicago'), customer_id,
+		count(*), count(*) FILTER (WHERE status = 'Delivered'), sum(total), sum(total) FILTER (WHERE weight > 5),
+		count(*) FILTER (WHERE weight >= 0 AND weight < 5), count(*) FILTER (WHERE weight >= 5 AND weight < 10),
+		count(*) FILTER (WHERE weight >= 10))
+		FROM shipments WHERE organization_id = $1 AND business_unit_id = $2 AND status <> 'Canceled'
+		GROUP BY date_trunc('day', to_timestamp(created_at), 'America/Chicago'), customer_id`)
+}
+
+func TestTenantZonedFilteredRollupConverges(t *testing.T) {
+	clk := &clock{}
+	d := openDB(t, clk)
+	f := newFixture(t, d, clk)
+	f.base = time.Date(2026, 3, 1, 3, 0, 0, 0, time.UTC)
+	f.shipment(0, 0, fleet.StatusDelivered, 1000, ptr[int64](12))
+	f.shipment(0, 1, fleet.StatusNew, 300, ptr[int64](2))
+	canceled := f.shipment(1, 0, fleet.StatusCanceled, 900, ptr[int64](7))
+	f.shipment(7, 2, fleet.StatusDelivered, 450, nil)
+
+	_, err := rollup.Refresh(context.Background(), d, zoned)
+	ok(t, err)
+	got, want := f.zonedRows(), f.zonedBase()
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("rollup rows:\n%s\nsource rows:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+
+	canceled.Status = fleet.StatusDelivered
+	ok(t, fleetdb.Shipments.Save(f.ctx, d, canceled))
+	_, err = rollup.Refresh(context.Background(), d, zoned)
+	ok(t, err)
+	got, want = f.zonedRows(), f.zonedBase()
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("after a shipment left the filter's exclusion, rollup rows:\n%s\nsource rows:\n%s",
+			strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}

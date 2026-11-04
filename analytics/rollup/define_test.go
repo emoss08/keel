@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/emoss08/keel"
+	"github.com/emoss08/keel/analytics"
 	"github.com/emoss08/keel/analytics/ir"
 	"github.com/emoss08/keel/analytics/rollup"
 	"github.com/emoss08/keel/internal/testmodels/fleet/fleetdb"
@@ -180,5 +181,69 @@ func TestWriteMigrations(t *testing.T) {
 	ok(t, err)
 	if string(body) != rollup.Migration(changed) || !strings.HasSuffix(filepath.Base(more[0]), "_rollup_shipments_daily.sql") {
 		t.Fatalf("wrote %s", more[0])
+	}
+}
+
+func TestDefineRejectsBadMeasuresOverExpressions(t *testing.T) {
+	ship := fleetdb.ShipmentsSchema()
+	cases := []struct {
+		name     string
+		measures []rollup.Measure
+		opts     []rollup.Option
+		want     string
+	}{
+		{"bad column name", rollup.Measures(rollup.CountWhere("Late", s.Hazmat.IsTrue())), nil, "the name must match"},
+		{"count without a condition", rollup.Measures(rollup.CountWhere("late", nil)), nil, "needs a condition"},
+		{"sum without an expression", rollup.Measures(rollup.SumOf("late", nil)), nil, "needs an expression"},
+		{"declared twice", rollup.Measures(rollup.CountWhere("late", s.Hazmat.IsTrue()),
+			rollup.CountWhere("late", s.Hazmat.IsFalse())), nil, "declared twice"},
+		{"condition on another table", rollup.Measures(rollup.CountWhere("named", fleetdb.Customers.Name.Eq("x"))),
+			nil, "not one of its own columns"},
+		{"histogram without bounds", rollup.Histogram("w", s.Weight, nil, nil), nil, "at least one bound"},
+		{"filter on another table", rollup.Measures(rollup.Count()),
+			[]rollup.Option{rollup.Where(fleetdb.Customers.Name.Eq("x"))}, "where:"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := rollup.Define("r", ship, rollup.Day(s.CreatedAt), nil, c.measures, c.opts...)
+			if err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("err = %v, want it to contain %q", err, c.want)
+			}
+		})
+	}
+}
+
+func TestTenantZonedMigrationBucketsByTheRowsZoneAndKeepsTenantColumnsNotNull(t *testing.T) {
+	sql := rollup.Migration(zoned)
+	for _, want := range []string{
+		"CASE WHEN", "'America/Chicago'", `FILTER (WHERE`, `"delivered"`, `"weight_bin_2"`,
+		`SET NOT NULL`,
+	} {
+		if !strings.Contains(sql, want) {
+			t.Errorf("migration does not contain %s:\n%s", want, sql)
+		}
+	}
+	if zoned.Location() != nil || !zoned.TenantZoned() {
+		t.Error("a tenant-zoned rollup reports a fixed zone")
+	}
+	if _, err := rollup.NewRouter(zoned).Match(analytics.RollupQuery{}); err == nil ||
+		!strings.Contains(err.Error(), "each tenant's zone") {
+		t.Errorf("the router accepted a tenant-zoned rollup: %v", err)
+	}
+}
+
+func TestQuantileInterpolatesInsideTheBin(t *testing.T) {
+	bounds := []float64{0, 60, 120, 240}
+	if got := rollup.Quantile([]int64{2, 2, 0, 0}, bounds, 0.5); got != 60 {
+		t.Errorf("median = %v, want 60", got)
+	}
+	if got := rollup.Quantile([]int64{0, 4, 0, 0}, bounds, 0.75); got != 105 {
+		t.Errorf("75th percentile = %v, want 105", got)
+	}
+	if got := rollup.Quantile([]int64{0, 0, 0, 3}, bounds, 0.9); got != 240 {
+		t.Errorf("a quantile in the open last bin = %v, want its lower bound 240", got)
+	}
+	if got := rollup.Quantile([]int64{0, 0, 0, 0}, bounds, 0.5); got != 0 {
+		t.Errorf("an empty histogram = %v, want 0", got)
 	}
 }
