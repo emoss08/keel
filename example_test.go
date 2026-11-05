@@ -1,8 +1,8 @@
 package keel_test
 
 // The examples in this file are compiled but not run: none has an Output comment. They are the
-// compiled counterparts of the snippets in README.md and docs/guide.md, written against the fleet
-// test models (internal/testmodels/fleet) and their generated package fleetdb.
+// compiled counterparts of the snippets in README.md, docs/tour.md and docs/guide.md, written
+// against the fleet test models (internal/testmodels/fleet) and their generated package fleetdb.
 //
 // They share the scaffolding below, which stands in for an application's own setup: appDB is the
 // *keel.DB the application opens once at startup, and requestContext returns the context of a

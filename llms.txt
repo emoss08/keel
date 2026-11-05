@@ -23,7 +23,9 @@ Install the coding-agent skill (Claude Code), which carries these rules plus det
 
 ## Docs
 
-- [README](https://raw.githubusercontent.com/emoss08/keel/master/README.md): what keel is, who it is for, quick start and a feature tour
+- [README](https://raw.githubusercontent.com/emoss08/keel/master/README.md): what keel is, install and a quick start
+- [Why keel](https://raw.githubusercontent.com/emoss08/keel/master/docs/why-keel.md): what keel is for, its principles, and when to choose something else
+- [Tour](https://raw.githubusercontent.com/emoss08/keel/master/docs/tour.md): a short example of every feature, with links into the guide
 - [Guide](https://raw.githubusercontent.com/emoss08/keel/master/docs/guide.md): how to use keel by task: configuration, models and tags, generation, reading, loading, pagination, batching, dynamic queries, writing, transactions, tenancy, hooks, errors, migrations, seeds, performance, testing, coming from Bun, analytics
 - [Design](https://raw.githubusercontent.com/emoss08/keel/master/docs/design.md): the design contract and how each part works inside
 - [Migrations and seeds](https://raw.githubusercontent.com/emoss08/keel/master/docs/migrations-and-seeds.md): migrations, seeds and keelcli binaries
@@ -48,4 +50,6 @@ Install the coding-agent skill (Claude Code), which carries these rules plus det
 - [Compiled examples](https://raw.githubusercontent.com/emoss08/keel/master/example_test.go): every guide snippet as compiled Go
 - [Test models](https://raw.githubusercontent.com/emoss08/keel/master/internal/testmodels/fleet/fleet.go): the fleet models the docs use
 - [Analytics design](https://raw.githubusercontent.com/emoss08/keel/master/docs/analytics.md): the user-built report engine
-- [Benchmarks](https://raw.githubusercontent.com/emoss08/keel/master/docs/benchmarks.md): measurements against sqlc, sqlx, pgx, Bob, ent, GORM, Jet and Bun
+- [Performance](https://raw.githubusercontent.com/emoss08/keel/master/docs/performance.md): measurements, why keel is fast, and how to keep an application fast
+- [Benchmarks](https://raw.githubusercontent.com/emoss08/keel/master/docs/benchmarks.md): the benchmark method and raw output against sqlc, sqlx, pgx, Bob, ent, GORM, Jet and Bun
+- [Coding agents](https://raw.githubusercontent.com/emoss08/keel/master/docs/coding-agents.md): installing and choosing between the plugin and keel skill install
