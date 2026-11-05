@@ -1,0 +1,17 @@
+{
+  "name": "keel",
+  "description": "Agent skills for keel, the typed multi-tenant data layer for Go and PostgreSQL.",
+  "owner": {
+    "name": "Eric Moss",
+    "url": "https://github.com/emoss08"
+  },
+  "plugins": [
+    {
+      "name": "keel",
+      "source": "./",
+      "description": "Teaches Claude to write idiomatic, correct and fast keel code: models and keel gen, typed queries, relation loads, keyset pages, batches, writes, transactions, tenancy, hooks, migrations, seeds and tests.",
+      "category": "development",
+      "tags": ["go", "golang", "postgres", "postgresql", "pgx", "orm", "multi-tenant", "keel"]
+    }
+  ]
+}

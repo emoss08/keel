@@ -119,6 +119,30 @@ func TestAnalyticsTS(t *testing.T) {
 	contains(t, "help", ok(t, "help"), "analytics")
 }
 
+func TestSkill(t *testing.T) {
+	dir := t.TempDir()
+	out := ok(t, "skill", "install", "-to", dir)
+	contains(t, "skill install", out, "installed the keel skill", filepath.Join(dir, "keel"))
+	b, err := os.ReadFile(filepath.Join(dir, "keel", "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(b), "---\nname: keel\n") {
+		t.Fatalf("SKILL.md starts %q", string(b[:min(len(b), 40)]))
+	}
+	ok(t, "skill", "install", "-to", dir) // a reinstall replaces it
+
+	contains(t, "skill print", ok(t, "skill", "print"), "name: keel", "## Non-negotiable rules")
+	contains(t, "skill print reference", ok(t, "skill", "print", "references/writing.md"), "# Writing")
+	for _, args := range [][]string{{"skill"}, {"skill", "nope"}, {"skill", "print", "missing.md"},
+		{"skill", "install", "-user", "-to", dir}, {"skill", "install", "extra"}} {
+		if code, _, errOut := cli(t, args...); code != 2 {
+			t.Errorf("%v: exit %d %s", args, code, errOut)
+		}
+	}
+	contains(t, "help", ok(t, "help"), "skill")
+}
+
 func TestMigrateCommands(t *testing.T) {
 	dsn := database(t)
 	dir := t.TempDir()
