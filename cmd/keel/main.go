@@ -4,6 +4,8 @@
 //	keel migrate <command> [flags] [args]
 //	keel plans -dsn DSN -shapes FILE [-seq-scan-rows N] [-max-cost C] [-sort-limit] [-json]
 //	keel analytics ts [-check] -out path
+//	keel skill install [-user | -to dir] [-force]
+//	keel skill print [file]
 //
 // Every command but gen is keelcli's: in a terminal runs draw live views and keel with no
 // arguments opens the console; elsewhere output is plain lines, or JSON with -json. Run keel help
@@ -54,12 +56,12 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 func app(f *migrateFlags) keelcli.App {
 	return keelcli.App{
 		Name:        "keel",
-		Description: "typed data access for Postgres: gen writes the packages, analytics ts the analytics TypeScript module, plans checks recorded statement plans, the other commands manage migrations.",
+		Description: "typed data access for Postgres: gen writes the packages, analytics ts the analytics TypeScript module, plans checks recorded statement plans, skill installs the coding-agent skill, the other commands manage migrations.",
 		Version:     version(),
 		Config:      f.config,
 		Flags:       f.bind,
 		Setup:       f.setup,
-		Commands:    []keelcli.Command{genCommand(), analyticscli.Standalone()},
+		Commands:    []keelcli.Command{genCommand(), skillCommand(), analyticscli.Standalone()},
 	}
 }
 

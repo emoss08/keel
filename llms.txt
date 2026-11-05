@@ -1,0 +1,51 @@
+# keel
+
+> keel (github.com/emoss08/keel) is a typed, multi-tenant data layer for Go and PostgreSQL, built on pgx v5. You write plain structs tagged `keel:"…"`, `keel gen` writes a typed data-access package for them (`fleet` → `fleet/fleetdb`), and every query, relation load and write goes through that package: the compiler checks columns and values, and every statement is scoped to the caller's tenant (taken from the context) before it reaches Postgres. keel saves round trips by pipelining: a read and its whole relation tree, a keyset page and its total, a batch of independent reads, and BEGIN + row-level-security setup + statement + COMMIT are each one round trip.
+
+keel is pre-1.0, needs Go 1.26 and PostgreSQL (tested on 18), and never uses `database/sql`. The schema lives in hand-written SQL migrations (`keel/migrate`); keel never generates DDL from structs.
+
+Rules for writing keel code:
+
+- Query and write through the generated package: `s := fleetdb.Shipments; s.Where(s.Status.Eq(fleet.StatusNew)).Order(s.CreatedAt.Desc()).Limit(50).List(ctx, db)`. Columns are typed values (`s.Status`), relations are methods (`s.Customer()`), queries are `keel.Query[*fleet.Shipment]`. Never write column names as strings.
+- Every terminal takes `(ctx, db)`. The context carries the tenant, a system scope, the transaction, a replica mark and a budget. Never pass a transaction object.
+- Never add tenant filters or set tenant columns by hand; keel does it for every read, join, load, subquery and write. Crossing tenants needs a system scope on the context and `.AllTenants()` on the query (and each subquery).
+- Values are always bind parameters. In `keel.Raw("length(?) > ?", s.ProNumber, 8)` each `?` is an argument. Never build SQL text from values.
+- `List` requires `Limit`. Use `Page(ctx, db, keel.After(cursor, n).Total(cap))` for scrolling lists, `Each` for large walks, `keel.Batch` for independent reads, `Load(...)` for relations (to-one paths join, to-many paths filter with `Any`/`None`). Never load relations in a loop.
+- Writes fill `autoid` keys, tenant columns and `autocreate`/`autoupdate` stamps: `Create`, `CreateMany` (one array per column), `Copy` (binary COPY), `Save` (optimistic locking with a `version` column → `keel.ErrConflict`), `DeleteRow`, bulk `Update`/`Delete` (need a `Where`), `Upsert` with `keel.OnConflict(...)`, `CreateOrSkip`, `InsertFrom`.
+- Transactions are closures: `keel.Write(ctx, db, func(ctx context.Context) error { … })` / `keel.Read`; use the inner ctx, return an error to roll back, put side effects in `keel.AfterCommit` or `keel.Committed` hooks.
+- Errors: `errors.Is(err, keel.ErrNotFound)`, `keel.ErrConflict`, `keel.ErrNoScope`, `keel.ErrAllTenantsRequired`, `keel.ErrUnbounded`; `keel.IsUnique(err, "constraint")`; `var ce *keel.ConstraintError; errors.As(err, &ce)`.
+- After a model change: write a migration, run `keel gen` (CI runs `keel gen -check`), and keep a `keel.Verify` test. Lead every index on a tenant table with the tenant columns.
+
+Install the coding-agent skill (Claude Code), which carries these rules plus detailed references:
+
+- As a plugin: `/plugin marketplace add emoss08/keel` then `/plugin install keel@keel`
+- Into a project, matching the keel version in its go.mod: `go run github.com/emoss08/keel/cmd/keel skill install` (or `go tool keel skill install`); `-user` installs into `~/.claude/skills`, `-to dir` anywhere.
+
+## Docs
+
+- [README](https://raw.githubusercontent.com/emoss08/keel/master/README.md): what keel is, who it is for, quick start and a feature tour
+- [Guide](https://raw.githubusercontent.com/emoss08/keel/master/docs/guide.md): how to use keel by task: configuration, models and tags, generation, reading, loading, pagination, batching, dynamic queries, writing, transactions, tenancy, hooks, errors, migrations, seeds, performance, testing, coming from Bun, analytics
+- [Design](https://raw.githubusercontent.com/emoss08/keel/master/docs/design.md): the design contract and how each part works inside
+- [Migrations and seeds](https://raw.githubusercontent.com/emoss08/keel/master/docs/migrations-and-seeds.md): migrations, seeds and keelcli binaries
+- [keelcli](https://raw.githubusercontent.com/emoss08/keel/master/keelcli/README.md): building an application's database binary
+
+## Agent skill
+
+- [SKILL.md](https://raw.githubusercontent.com/emoss08/keel/master/skills/keel/SKILL.md): rules, canonical patterns, anti-patterns and a checklist for writing keel code
+- [Models and keel gen](https://raw.githubusercontent.com/emoss08/keel/master/skills/keel/references/models-and-gen.md): tag reference, Go types, relations, picks, nullzero, computed fields, model hooks
+- [Reading](https://raw.githubusercontent.com/emoss08/keel/master/skills/keel/references/reading.md): terminals, operators, typed expressions, raw SQL, joins, subqueries, CTEs, aggregates, windows, locks, search
+- [Loading, pagination, batching](https://raw.githubusercontent.com/emoss08/keel/master/skills/keel/references/loading-pagination-batch.md)
+- [Writing](https://raw.githubusercontent.com/emoss08/keel/master/skills/keel/references/writing.md)
+- [Transactions and tenancy](https://raw.githubusercontent.com/emoss08/keel/master/skills/keel/references/transactions-and-tenancy.md): transactions, scopes, concurrency, budgets, replicas, the result cache
+- [Hooks, errors, observability](https://raw.githubusercontent.com/emoss08/keel/master/skills/keel/references/hooks-errors-observability.md)
+- [Config, migrations, seeds](https://raw.githubusercontent.com/emoss08/keel/master/skills/keel/references/config-migrations-seeds.md)
+- [Testing and performance](https://raw.githubusercontent.com/emoss08/keel/master/skills/keel/references/testing-and-performance.md)
+- [Dynamic queries and analytics](https://raw.githubusercontent.com/emoss08/keel/master/skills/keel/references/dynamic-and-analytics.md)
+- [Migrating from other libraries](https://raw.githubusercontent.com/emoss08/keel/master/skills/keel/references/migrating-from-other-libraries.md): Bun, GORM, sqlx and pgx idioms mapped to keel
+
+## Optional
+
+- [Compiled examples](https://raw.githubusercontent.com/emoss08/keel/master/example_test.go): every guide snippet as compiled Go
+- [Test models](https://raw.githubusercontent.com/emoss08/keel/master/internal/testmodels/fleet/fleet.go): the fleet models the docs use
+- [Analytics design](https://raw.githubusercontent.com/emoss08/keel/master/docs/analytics.md): the user-built report engine
+- [Benchmarks](https://raw.githubusercontent.com/emoss08/keel/master/docs/benchmarks.md): measurements against sqlc, sqlx, pgx, Bob, ent, GORM, Jet and Bun

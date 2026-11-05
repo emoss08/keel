@@ -1,0 +1,12 @@
+{
+  "name": "keel",
+  "description": "Teaches Claude to write idiomatic, correct and fast keel code: models and keel gen, typed queries, relation loads, keyset pages, batches, writes, transactions, tenancy, hooks, migrations, seeds and tests.",
+  "author": {
+    "name": "Eric Moss",
+    "url": "https://github.com/emoss08"
+  },
+  "homepage": "https://github.com/emoss08/keel",
+  "repository": "https://github.com/emoss08/keel",
+  "license": "MIT",
+  "keywords": ["go", "golang", "postgres", "postgresql", "pgx", "orm", "multi-tenant", "keel"]
+}

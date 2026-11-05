@@ -150,6 +150,7 @@ long lists, bulk imports and reports.
 | `vector`, `postgis` | pgvector distances and HNSW settings; PostGIS points, geometries and spatial SQL |
 | `numeric` | `shopspring/decimal` values read and bound in binary, 2 to 3 times as fast as through their text |
 | `analytics` | a semantic layer for user-built reports: definitions, formulas, a compiler to tenant-scoped SQL, exports, rollups |
+| `skills` | the skill that teaches coding agents (Claude Code) to write keel code; `keel skill install` writes it |
 
 ## Install
 
@@ -158,6 +159,30 @@ go get github.com/emoss08/keel
 ```
 
 keel needs Go 1.26 and PostgreSQL (tested on 18).
+
+### With a coding agent
+
+keel ships a skill that teaches coding agents such as Claude Code to write keel code the way this
+README and the guide describe it: the generated package for every query, no hand-written tenant
+filters, relations loaded in the read, keyset pages, batched reads, and the errors and checks to
+expect. Install it as a Claude Code plugin:
+
+```text
+/plugin marketplace add emoss08/keel
+/plugin install keel@keel
+```
+
+or write it into your project, matching the keel version in your `go.mod`, so everyone who works on
+the project gets it:
+
+```sh
+go run github.com/emoss08/keel/cmd/keel skill install   # .claude/skills/keel at the module root
+go run github.com/emoss08/keel/cmd/keel skill install -user   # ~/.claude/skills/keel, for every project
+```
+
+`-to dir` installs into any skills directory, `keel skill print` writes the skill to stdout, and
+rerunning `install` after upgrading keel replaces it. [llms.txt](llms.txt) is the same guidance in
+the [llms.txt](https://llmstxt.org) format, with links to the full docs.
 
 ## Quick start
 
@@ -626,6 +651,7 @@ Trenova query runs through it. Releases are tagged
 - [docs/analytics.md](docs/analytics.md): the report engine's design.
 - [docs/benchmarks.md](docs/benchmarks.md): measurements against Bun and pgx.
 - [example_test.go](example_test.go): compiled examples for the guide.
+- [skills/keel](skills/keel/SKILL.md): the coding-agent skill, and [llms.txt](llms.txt).
 
 ## Development
 
