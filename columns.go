@@ -321,6 +321,16 @@ func (c StringCol) Match(re string) Pred { return cmp(c.Col, " ~ ", re) }
 // MatchFold matches a POSIX regular expression ignoring case.
 func (c StringCol) MatchFold(re string) Pred { return cmp(c.Col, " ~* ", re) }
 
+// TypedStringCol is the base of a generated column of a named string type, such as an enum: the
+// generated column adds Eq, In, To and the other comparisons, taking the named type. It carries
+// only Col's methods, so each generated column compiles a handful of method wrappers rather than
+// one for every text function StringCol has; Text returns the column as a StringCol for those.
+type TypedStringCol struct{ Col }
+
+// Text returns the column as a StringCol: its text functions (Lower, ILike, Contains, ...) and
+// comparisons with plain strings.
+func (c TypedStringCol) Text() StringCol { return StringCol(c) }
+
 // Int64Col is a bigint column.
 type Int64Col struct{ Col }
 
@@ -545,16 +555,17 @@ type TSVectorCol struct{ Col }
 // The value interfaces each column kind implements, so typed functions and comparisons take the
 // column wherever a value of its kind is expected. A scanner column (AnyCol) counts as numeric: it
 // is how decimal columns are typed.
-func (StringCol) stringValue()   {}
-func (Int64Col) int64Value()     {}
-func (Int64Col) numberValue()    {}
-func (Int32Col) int32Value()     {}
-func (Int32Col) numberValue()    {}
-func (Int16Col) numberValue()    {}
-func (Float64Col) float64Value() {}
-func (Float64Col) numberValue()  {}
-func (AnyCol) numericValue()     {}
-func (AnyCol) numberValue()      {}
-func (BoolCol) boolValue()       {}
-func (TimeCol) timeValue()       {}
-func (JSONBCol) jsonbValue()     {}
+func (StringCol) stringValue()      {}
+func (TypedStringCol) stringValue() {}
+func (Int64Col) int64Value()        {}
+func (Int64Col) numberValue()       {}
+func (Int32Col) int32Value()        {}
+func (Int32Col) numberValue()       {}
+func (Int16Col) numberValue()       {}
+func (Float64Col) float64Value()    {}
+func (Float64Col) numberValue()     {}
+func (AnyCol) numericValue()        {}
+func (AnyCol) numberValue()         {}
+func (BoolCol) boolValue()          {}
+func (TimeCol) timeValue()          {}
+func (JSONBCol) jsonbValue()        {}

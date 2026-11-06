@@ -250,20 +250,24 @@ func (s *Shipment) AfterLoad(ctx context.Context) error    // every loaded row, 
 - a handle type `ShipmentsTable` embedding `keel.TableBase`, with one field per column, one method
   per relation, `As`, a typed `Get` by primary key when the key, besides its tenant columns, is one
   non-pointer column, one query starter per starter of `keel.Handle[T]` (returning
-  `keel.Query[*shipment.Shipment]`) and one typed write per write of it, each calling the generic
-  function of the same name (`keel.Create(ctx, db, &t.TableBase, row)`);
+  `keel.Query[*shipment.Shipment]`) and one typed write per write of it, each calling keel's
+  non-generic pointer function of the same name (`keel.CreatePtr(ctx, db, &t.TableBase,
+  unsafe.Pointer(row))`);
 - a query type `ShipmentsQuery` embedding `keel.QueryCore` by value, with one method per builder of
   `keel.Query[T]` that calls the `QueryCore` builder and returns the query, `Clone`, and one method
-  per row terminal calling the generic function (`keel.List[*shipment.Shipment](ctx, db,
-  &q.QueryCore)`); `QueryCore`'s untyped terminals (`Count`, `Exists`, `Update`, `ToSQL`, …) and its
+  per row terminal calling the pointer function and converting the rows (`keel.ListPtrs(ctx, db,
+  &q.QueryCore)`, read back as `[]*shipment.Shipment`); `QueryCore`'s untyped terminals (`Count`, `Exists`, `Update`, `ToSQL`, …) and its
   unexported methods (`loadSpec`, `writeSubquery`, `writeProjection`) are promoted, so the type is
   a `keel.Loader`, a subquery and a `keel.Projection`;
-- compile-time assertions that the table type implements `keel.Handle[*shipment.Shipment]` and the
-  query type `keel.Query[*shipment.Shipment]`;
+- a compile-time assertion that the query type implements `keel.Query[*shipment.Shipment]` (the
+  table's `keel.Handle` is checked by keel's tests instead: instantiating it in the generated package
+  would compile a wrapper per method of `Handle` for every model);
 - a package variable `Shipments` built statically, `BuildShipments`, which relation and alias
   methods use, and `ShipmentsSchema`, which returns the table;
 - a column type per named Go type (`StatusCol`), so `Status.In(...)` accepts only
-  `shipment.Status`. Types declared outside model packages (`pulid.ID`) get their column type in a
+  `shipment.Status`. One of a named string type embeds `keel.TypedStringCol`, which has `Col`'s
+  methods and `Text()`, not `StringCol` and its text functions, which it would promote: a
+  promoted method costs a wrapper (two, with the pointer form) in every generated package. Types declared outside model packages (`pulid.ID`) get their column type in a
   shared package (`-kinds`).
 
 Relation targets are linked by a small generated `init` (pointer assignments only), because two
@@ -288,11 +292,21 @@ before). When `Handle[T]` (39 methods) and `Query[T]` (52) were generic structs,
 could see a table, which relation methods make nearly every package, recompiled about 92 wrapper
 methods per table: in Trenova that was 56% of all compile CPU, and one 728-line repository compiled
 18,814 functions, 18,660 of them keel wrappers for 197 tables. A generic interface has no method
-bodies, so instantiating it costs nothing, and the methods of a non-generic type compile once in
-their own package; a prototype (60 tables of 31 methods) measured an importer at 1,892 functions
-with generic structs and 1 with interfaces.
+bodies, so instantiating it costs one method-expression wrapper per method, shared by every pointer
+type argument (about 50 per package that sees any `Query[T]`), and the methods of a non-generic
+type compile once in their own package; a prototype (60 tables of 31 methods) measured an importer
+at 1,892 functions with generic structs and about 50 with interfaces.
 
-The rule that follows: no exported keel type instantiated per model has methods.
+The rules that follow:
+
+- No exported keel type instantiated per model has methods.
+- No exported method of a keel type that most packages reach names an instantiated generic type:
+  `CTETable` has no `Query` method, since it is reachable from `QueryCore`, `DB` and every column.
+- Generic functions are shims over non-generic functions on row addresses (`ListPtrs`,
+  `CreatePtr`, `PagePtrs`, ...), and generated code calls the non-generic ones: a generic function
+  compiles once in every package that calls it, and a program has a generated package per domain.
+- A generated column type embeds the narrowest keel kind that serves it (`TypedStringCol` for a
+  named string type), since every method it promotes compiles a wrapper in its package.
 
 - `QueryCore` holds the engine. Its builders return `*QueryCore`; its untyped terminals and every
   unexported method a query needs (`loadSpec`, `writeSubquery`, `writeProjection`, `pickCount`,

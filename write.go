@@ -16,31 +16,22 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-// rowPtrs returns the addresses rows hold.
-func rowPtrs[T any](rows []T) []unsafe.Pointer {
-	ps := make([]unsafe.Pointer, len(rows))
-	for i, r := range rows {
-		ps[i] = toPtr(r)
-	}
-	return ps
-}
+// rowPtrs reads rows of pointer type T as the addresses they hold, sharing their array.
+func rowPtrs[T any](rows []T) []unsafe.Pointer { return *(*[]unsafe.Pointer)(unsafe.Pointer(&rows)) }
 
 // Create inserts row, of T, the model's pointer type, into t's table. The autoid column, the
 // tenant columns and the autocreate and autoupdate columns are filled first; readonly columns are
 // read back. Generated table types call it for their Create method.
 func Create[T any](ctx context.Context, db *DB, t *TableBase, row T) error {
 	mustBeRowPointer[T]()
-	return db.insert(ctx, t.Ref.Table, []unsafe.Pointer{toPtr(row)})
+	return CreatePtr(ctx, db, t, toPtr(row))
 }
 
 // CreateMany inserts rows into t's table with as few statements as Postgres's parameter limit
 // allows, all sent in one round trip. Generated table types call it for their CreateMany method.
 func CreateMany[T any](ctx context.Context, db *DB, t *TableBase, rows []T) error {
 	mustBeRowPointer[T]()
-	if len(rows) == 0 {
-		return nil
-	}
-	return db.insert(ctx, t.Ref.Table, rowPtrs(rows))
+	return CreateManyPtrs(ctx, db, t, rowPtrs(rows))
 }
 
 // Save updates row in t's table by its primary key. With a version column it compares the stored
@@ -51,7 +42,7 @@ func CreateMany[T any](ctx context.Context, db *DB, t *TableBase, rows []T) erro
 // Generated table types call it for their Save method.
 func Save[T any](ctx context.Context, db *DB, t *TableBase, row T, cols ...Column) error {
 	mustBeRowPointer[T]()
-	return db.save(ctx, t.Ref, toPtr(row), cols, false)
+	return SavePtr(ctx, db, t, toPtr(row), cols...)
 }
 
 // SaveExcept is Save writing every updatable column except cols: the columns a caller must never
@@ -59,7 +50,7 @@ func Save[T any](ctx context.Context, db *DB, t *TableBase, row T, cols ...Colum
 // is always written. Generated table types call it for their SaveExcept method.
 func SaveExcept[T any](ctx context.Context, db *DB, t *TableBase, row T, cols ...Column) error {
 	mustBeRowPointer[T]()
-	return db.save(ctx, t.Ref, toPtr(row), cols, true)
+	return SaveExceptPtr(ctx, db, t, toPtr(row), cols...)
 }
 
 // DeleteRow deletes row from t's table by its primary key. Interceptors' predicates join the
@@ -67,7 +58,7 @@ func SaveExcept[T any](ctx context.Context, db *DB, t *TableBase, row T, cols ..
 // they exclude. Generated table types call it for their DeleteRow method.
 func DeleteRow[T any](ctx context.Context, db *DB, t *TableBase, row T) error {
 	mustBeRowPointer[T]()
-	return db.deleteRow(ctx, t.Ref, toPtr(row))
+	return DeleteRowPtr(ctx, db, t, toPtr(row))
 }
 
 // Conflict is the ON CONFLICT clause of an upsert. Its methods return a changed copy.
@@ -328,10 +319,7 @@ func (c *Conflict) assignment(ci int32) *Assignment {
 // it for their Upsert method.
 func Upsert[T any](ctx context.Context, db *DB, t *TableBase, rows []T, c Conflict) ([]bool, error) {
 	mustBeRowPointer[T]()
-	if len(rows) == 0 {
-		return nil, nil
-	}
-	return db.upsert(ctx, t.Ref, rowPtrs(rows), c)
+	return UpsertPtrs(ctx, db, t, rowPtrs(rows), c)
 }
 
 // CreateOrSkip inserts rows into t's table, skipping those that conflict on targets (columns or
@@ -341,10 +329,16 @@ func Upsert[T any](ctx context.Context, db *DB, t *TableBase, rows []T, c Confli
 // CreateOrSkip method.
 func CreateOrSkip[T any](ctx context.Context, db *DB, t *TableBase, rows []T, targets ...Expr) (int64, error) {
 	mustBeRowPointer[T]()
+	return CreateOrSkipPtrs(ctx, db, t, rowPtrs(rows), targets...)
+}
+
+// CreateOrSkipPtrs is CreateOrSkip with rows as the addresses of their models; generated table
+// types call it.
+func CreateOrSkipPtrs(ctx context.Context, db *DB, t *TableBase, rows []unsafe.Pointer, targets ...Expr) (int64, error) {
 	if len(rows) == 0 {
 		return 0, nil
 	}
-	ins, err := db.upsert(ctx, t.Ref, rowPtrs(rows), OnConflict(targets...).DoNothing())
+	ins, err := db.upsert(ctx, t.Ref, slices.Clone(rows), OnConflict(targets...).DoNothing())
 	var n int64
 	for _, b := range ins {
 		if b {

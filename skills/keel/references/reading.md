@@ -52,7 +52,10 @@ Every clause takes expressions, never strings. Values are bind parameters.
 | `StringArrayCol`, `Int64ArrayCol` | `Has`, `Overlaps`, `ContainsAll`, `ContainedBy`, `Len`, `Unnest`, `To`, `Append`, `Remove`, `At(i)`, `Without(v)` |
 | `TSVectorCol` | `Match(q, opts...)`, `Rank(q, opts...)`, `RankCD(q, opts...)` |
 
-Generated wrappers (`StatusCol`, `IdsIDCol`) take the named type. `In` binds one array (`= ANY($1)`),
+Generated wrappers (`StatusCol`, `IdsIDCol`) take the named type. A named string type's wrapper has
+`Col`'s methods (`Asc`, `IsNull`, `Count`, ...) and the typed comparisons; text functions go through
+`Text()`: `s.Status.Text().Lower()`, `s.ID.Text().Collate("C")`, `s.ID.Text().InArray(a)`. Read a
+CTE with `keel.RowsOf(cte.TableRef())`; `CTETable` has no `Query` method. `In` binds one array (`= ANY($1)`),
 so 3 and 3,000 values are one prepared statement. Combinators: `keel.And`, `keel.Or` (skip nil
 predicates), `keel.Not`, `keel.True()`. `Where` ANDs its arguments. `keel.When(cond, p)` returns
 `p` or nil.
@@ -189,7 +192,7 @@ busy := keel.CTE("busy", []string{"customer_id", "loads"},
     s.Group(s.CustomerID).Pick(s.CustomerID, keel.Count()).Where(s.Status.Eq(fleet.StatusInTransit)))
 customers, err := c.With(busy).Join(busy, busy.Col("customer_id").EqCol(c.ID)).
     Where(busy.Col("loads").Gte(10)).All(ctx, db)
-top, err := keel.Into[load](ctx, db, busy.Query().With(busy).
+top, err := keel.Into[load](ctx, db, keel.RowsOf(busy.TableRef()).With(busy).
     Pick(busy.Col("customer_id"), busy.Col("loads")).Order(busy.Col("loads").Desc()).Limit(5))
 
 chain := keel.RecursiveCTE("chain", []string{"id", "depth"}, base) // .Recurse(step), .Distinct()

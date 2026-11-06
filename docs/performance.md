@@ -130,7 +130,9 @@ With one handle and one query type per table, and relation methods that let almo
 see almost every table, that made an application recompile keel's methods for every table in
 nearly every package: in Trenova (197 tables) it was 56% of all compile time, and one 728-line
 package compiled 18,814 functions, 18,660 of them copies of keel's methods. An interface has no
-method bodies, so using it costs nothing; keel's engine compiles once in keel, and the typed
-wrappers `keel gen` writes compile once in the generated package. A 60-table prototype went from
-1,892 functions compiled in an importing package to 1. See
+method bodies, so using it costs one small wrapper per method, shared by every table; keel's engine
+compiles once in keel, and the typed wrappers `keel gen` writes compile once in the generated
+package, calling keel's non-generic pointer functions so that no generated package compiles a
+generic keel function. A 60-table prototype went from 1,892 functions compiled in an importing
+package to about 50. See
 [Why queries are interfaces](guide.md#why-queries-are-interfaces).

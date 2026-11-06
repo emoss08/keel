@@ -240,14 +240,14 @@ func (q *query) prepareRows(ctx context.Context, run *runner, fo fetchOpts, emit
 	return rd, nil
 }
 
-// fetchInto prepares the query's rows read, needing want rows; its finish hands the rows, typed,
-// to set.
-func fetchInto[T any](ctx context.Context, run *runner, q *query, fo fetchOpts, want cardinality,
-	set func(rows []T),
+// fetchRows prepares the query's rows read, needing want rows; its finish hands the rows, as the
+// addresses of their models, to set.
+func fetchRows(ctx context.Context, run *runner, q *query, fo fetchOpts, want cardinality,
+	set func(rows []unsafe.Pointer),
 ) (*read, error) {
-	out := make([]T, 0, fo.rowHint(q))
+	out := make([]unsafe.Pointer, 0, fo.rowHint(q))
 	fo.whole = want == oneRow
-	rd, err := q.prepareRows(ctx, run, fo, func(p unsafe.Pointer) { out = append(out, fromPtr[T](p)) })
+	rd, err := q.prepareRows(ctx, run, fo, func(p unsafe.Pointer) { out = append(out, p) })
 	if err != nil {
 		return nil, err
 	}

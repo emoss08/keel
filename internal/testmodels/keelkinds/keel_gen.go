@@ -4,27 +4,30 @@ package keelkinds
 
 import (
 	"database/sql"
+	"unsafe"
 
 	"github.com/emoss08/keel"
 	"github.com/emoss08/keel/internal/testmodels/ids"
 )
 
 // IdsIDCol is a column of ids.ID values.
-type IdsIDCol struct{ keel.StringCol }
+type IdsIDCol struct{ keel.TypedStringCol }
 
-func (c IdsIDCol) Eq(v ids.ID) keel.Pred             { return c.StringCol.Eq(string(v)) }
-func (c IdsIDCol) Ne(v ids.ID) keel.Pred             { return c.StringCol.Ne(string(v)) }
-func (c IdsIDCol) Gt(v ids.ID) keel.Pred             { return c.StringCol.Gt(string(v)) }
-func (c IdsIDCol) Gte(v ids.ID) keel.Pred            { return c.StringCol.Gte(string(v)) }
-func (c IdsIDCol) Lt(v ids.ID) keel.Pred             { return c.StringCol.Lt(string(v)) }
-func (c IdsIDCol) Lte(v ids.ID) keel.Pred            { return c.StringCol.Lte(string(v)) }
-func (c IdsIDCol) IsDistinctFrom(v ids.ID) keel.Pred { return c.StringCol.IsDistinctFrom(string(v)) }
-func (c IdsIDCol) Between(lo, hi ids.ID) keel.Pred {
-	return c.StringCol.Between(string(lo), string(hi))
+func (c IdsIDCol) Eq(v ids.ID) keel.Pred             { return c.Text().Eq(string(v)) }
+func (c IdsIDCol) Ne(v ids.ID) keel.Pred             { return c.Text().Ne(string(v)) }
+func (c IdsIDCol) Gt(v ids.ID) keel.Pred             { return c.Text().Gt(string(v)) }
+func (c IdsIDCol) Gte(v ids.ID) keel.Pred            { return c.Text().Gte(string(v)) }
+func (c IdsIDCol) Lt(v ids.ID) keel.Pred             { return c.Text().Lt(string(v)) }
+func (c IdsIDCol) Lte(v ids.ID) keel.Pred            { return c.Text().Lte(string(v)) }
+func (c IdsIDCol) IsDistinctFrom(v ids.ID) keel.Pred { return c.Text().IsDistinctFrom(string(v)) }
+func (c IdsIDCol) Between(lo, hi ids.ID) keel.Pred   { return c.Text().Between(string(lo), string(hi)) }
+func (c IdsIDCol) To(v ids.ID) keel.Assignment       { return c.Text().To(string(v)) }
+func (c IdsIDCol) In(vs ...ids.ID) keel.Pred {
+	return c.Text().In(*(*[]string)(unsafe.Pointer(&vs))...)
 }
-func (c IdsIDCol) To(v ids.ID) keel.Assignment  { return c.StringCol.To(string(v)) }
-func (c IdsIDCol) In(vs ...ids.ID) keel.Pred    { return c.StringCol.In(keel.Strings(vs)...) }
-func (c IdsIDCol) NotIn(vs ...ids.ID) keel.Pred { return c.StringCol.NotIn(keel.Strings(vs)...) }
+func (c IdsIDCol) NotIn(vs ...ids.ID) keel.Pred {
+	return c.Text().NotIn(*(*[]string)(unsafe.Pointer(&vs))...)
+}
 
 // SqlNullStringCol is a column of sql.NullString values.
 type SqlNullStringCol struct{ keel.AnyCol }

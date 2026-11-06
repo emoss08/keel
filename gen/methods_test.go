@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -79,21 +80,34 @@ func TestMethodSpecsMatchKeel(t *testing.T) {
 	check("Handle", tableMethodNames(), "TableBase")
 	check("Query", queryMethodNames(), "QueryCore")
 
-	generic := func(name string) {
-		f, ok := scope.Lookup(name).(*types.Func)
-		if !ok {
-			t.Errorf("keel has no function %s", name)
+	called := regexp.MustCompile(`\{keel\}\.(\w+)\(`)
+	pointerFn := func(s methodSpec) {
+		m := called.FindStringSubmatch(s.body)
+		if m == nil {
+			t.Errorf("the body of %s calls no keel function", s.name)
 			return
 		}
-		if f.Type().(*types.Signature).TypeParams().Len() != 1 {
-			t.Errorf("keel.%s does not take the row type as its one type parameter", name)
+		f, ok := scope.Lookup(m[1]).(*types.Func)
+		if !ok {
+			t.Errorf("keel has no function %s", m[1])
+			return
+		}
+		if f.Type().(*types.Signature).TypeParams().Len() != 0 {
+			t.Errorf("keel.%s, which %s calls, is generic: every generated package would compile it", m[1], s.name)
+		}
+		generic, ok := scope.Lookup(s.name).(*types.Func)
+		if s.name == "Page" {
+			generic, ok = scope.Lookup("PageOf").(*types.Func)
+		}
+		if !ok || generic.Type().(*types.Signature).TypeParams().Len() != 1 {
+			t.Errorf("keel has no generic %s for models keel gen does not cover", s.name)
 		}
 	}
 	for _, s := range tableWrites {
-		generic(s.fn)
+		pointerFn(s)
 	}
 	for _, s := range queryTerminals {
-		generic(s.fn)
+		pointerFn(s)
 	}
 	if _, ok := scope.Lookup(newQueryCore).(*types.Func); !ok {
 		t.Errorf("keel has no function %s", newQueryCore)

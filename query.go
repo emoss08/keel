@@ -411,36 +411,32 @@ func (q *QueryCore) None(ps ...Pred) Pred { return q.any(ps, true) }
 // none matches, ErrNotSingular when more do. Generated query types call it for their One method.
 func One[T any](ctx context.Context, db *DB, q *QueryCore) (T, error) {
 	mustBeRowPointer[T]()
-	var row T
-	err := Batch(ctx, db, oneItem(&q.q, &row))
-	return row, err
+	row, err := OnePtr(ctx, db, q)
+	return fromPtr[T](row), err
 }
 
 // First returns the first row in q's order, or ErrNotFound. Generated query types call it for
 // their First method.
 func First[T any](ctx context.Context, db *DB, q *QueryCore) (T, error) {
 	mustBeRowPointer[T]()
-	var row T
-	err := Batch(ctx, db, firstItem(&q.q, &row))
-	return row, err
+	row, err := FirstPtr(ctx, db, q)
+	return fromPtr[T](row), err
 }
 
 // List returns the rows q matches. The query must have a Limit. Generated query types call it for
 // their List method.
 func List[T any](ctx context.Context, db *DB, q *QueryCore) ([]T, error) {
 	mustBeRowPointer[T]()
-	var rows []T
-	err := Batch(ctx, db, listItem(&q.q, &rows))
-	return rows, err
+	rows, err := ListPtrs(ctx, db, q)
+	return fromPtrs[T](rows), err
 }
 
 // All returns every row q matches. Use it only for sets known to be small. Generated query types
 // call it for their All method.
 func All[T any](ctx context.Context, db *DB, q *QueryCore) ([]T, error) {
 	mustBeRowPointer[T]()
-	var rows []T
-	err := Batch(ctx, db, allItem(&q.q, &rows))
-	return rows, err
+	rows, err := AllPtrs(ctx, db, q)
+	return fromPtrs[T](rows), err
 }
 
 // Count returns the number of matching rows.
@@ -482,12 +478,8 @@ func (q *QueryCore) Update(ctx context.Context, db *DB, sets ...Assignment) (int
 // Generated query types call it for their UpdateReturning method.
 func UpdateReturning[T any](ctx context.Context, db *DB, q *QueryCore, sets ...Assignment) ([]T, error) {
 	mustBeRowPointer[T]()
-	var rows []T
-	err := q.q.updateReturning(ctx, db, sets, func(row unsafe.Pointer) { rows = append(rows, fromPtr[T](row)) })
-	if err != nil {
-		return nil, err
-	}
-	return rows, nil
+	rows, err := UpdateReturningPtrs(ctx, db, q, sets...)
+	return fromPtrs[T](rows), err
 }
 
 // Delete deletes every matching row and returns the number of rows deleted.
@@ -538,9 +530,19 @@ func errf(format string, args ...any) error { return fmt.Errorf("keel: "+format,
 func Each[T any](ctx context.Context, db *DB, q *QueryCore, size int,
 	fn func(ctx context.Context, batch []T) error,
 ) error {
+	mustBeRowPointer[T]()
+	return EachPtrs(ctx, db, q, size, func(ctx context.Context, rows []unsafe.Pointer) error {
+		return fn(ctx, fromPtrs[T](rows))
+	})
+}
+
+// EachPtrs is Each with rows as the addresses of their models; generated query types call it.
+func EachPtrs(ctx context.Context, db *DB, q *QueryCore, size int,
+	fn func(ctx context.Context, rows []unsafe.Pointer) error,
+) error {
 	cursor := ""
 	for {
-		page, err := PageOf[T](ctx, db, q, After(cursor, size))
+		page, err := PagePtrs(ctx, db, q, After(cursor, size))
 		if err != nil {
 			return err
 		}
@@ -574,6 +576,20 @@ func (q *QueryCore) ToSQL(ctx context.Context, db *DB) (string, []any, error) {
 
 // fromPtr converts the address of a model row to T, the row's pointer type.
 func fromPtr[T any](p unsafe.Pointer) T { return *(*T)(unsafe.Pointer(&p)) }
+
+// fromPtrs reads a slice of row addresses as rows of pointer type T. Every pointer type has the
+// layout of unsafe.Pointer, so the slices share their array.
+func fromPtrs[T any](rows []unsafe.Pointer) []T { return *(*[]T)(unsafe.Pointer(&rows)) }
+
+// rowsDst, rowDst and pageDst read a destination of rows of pointer type T as one of row
+// addresses, which keel's non-generic reads fill.
+func rowsDst[T any](dst *[]T) *[]unsafe.Pointer { return (*[]unsafe.Pointer)(unsafe.Pointer(dst)) }
+
+func rowDst[T any](dst *T) *unsafe.Pointer { return (*unsafe.Pointer)(unsafe.Pointer(dst)) }
+
+func pageDst[T any](dst *Page[T]) *Page[unsafe.Pointer] {
+	return (*Page[unsafe.Pointer])(unsafe.Pointer(dst))
+}
 
 // toPtr returns the address a row of pointer type T holds.
 func toPtr[T any](row T) unsafe.Pointer { return *(*unsafe.Pointer)(unsafe.Pointer(&row)) }

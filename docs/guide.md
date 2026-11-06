@@ -1715,9 +1715,12 @@ rows, err := keel.Into[labelRow](ctx, db, s.LeftJoinLateral(lbl).Pick(s.ProNumbe
 ### Common table expressions
 
 `keel.CTE(name, columns, body)` declares `WITH name (columns) AS (body)`. Declare it on the query
-with `With`, then join it, filter on its columns with `Col(name)` (an `AnyCol`), or read it through
-`Query()`, which returns a `keel.Query[*keel.Row]` to read with `keel.Into`. A query over the CTE
-declares it too.
+with `With`, then join it, filter on its columns with `Col(name)` (an `AnyCol`), or read it with
+`keel.RowsOf(cte.TableRef())`, a `keel.Query[*keel.Row]` to read with `keel.Into`. A query over the
+CTE declares it too. The CTE has no `Query` method on purpose: an exported method that names
+`Query[*Row]` would make every package that can see a `CTETable` (through `QueryCore`, `DB` or any
+column) compile the interface's method wrappers, so reading a CTE goes through the package-level
+`RowsOf`.
 
 ```go
 s, c := fleetdb.Shipments, fleetdb.Customers
@@ -1735,7 +1738,7 @@ type load struct {
     Customer ids.ID
     Loads    int64
 }
-top, err := keel.Into[load](ctx, db, busy.Query().With(busy).
+top, err := keel.Into[load](ctx, db, keel.RowsOf(busy.TableRef()).With(busy).
     Pick(busy.Col("customer_id"), busy.Col("loads")).
     Order(busy.Col("loads").Desc()).
     Limit(5))
@@ -1763,11 +1766,11 @@ type node struct {
     ID    ids.ID
     Depth int32
 }
-tree, err := keel.Into[node](ctx, db, chain.Query().With(chain).
+tree, err := keel.Into[node](ctx, db, keel.RowsOf(chain.TableRef()).With(chain).
     Pick(chain.Col("id"), chain.Col("depth")).
     Order(chain.Col("depth").Asc()))
 
-team, err := w.With(chain).Where(w.ID.InQuery(chain.Query().Pick(chain.Col("id")))).All(ctx, db)
+team, err := w.With(chain).Where(w.ID.InQuery(keel.RowsOf(chain.TableRef()).Pick(chain.Col("id")))).All(ctx, db)
 ```
 
 ### Set operations
@@ -1787,7 +1790,7 @@ flagged := keel.CTE("flagged", []string{"customer_id"}, keel.Union(
     s.Pick(s.CustomerID).Where(s.Status.Eq(fleet.StatusCanceled)),
 ))
 n, err := c.With(flagged).
-    Where(c.ID.InQuery(flagged.Query().Pick(flagged.Col("customer_id")))).
+    Where(c.ID.InQuery(keel.RowsOf(flagged.TableRef()).Pick(flagged.Col("customer_id")))).
     Count(ctx, db)
 ```
 
@@ -4616,16 +4619,32 @@ every method of every table's handle and query. In Trenova, with 197 tables, tha
 compile time: one repository package of 728 lines compiled 18,814 functions, 18,660 of them copies
 of keel's handle and query methods.
 
-A generic interface has no method bodies, so using one for a new type argument compiles nothing.
-The methods of a type that is not generic are compiled once, in the package that declares it. So
-keel keeps the engine in `QueryCore`, compiled once in keel; `keel gen` writes a small table type
-and query type per model whose methods only call into it, compiled once in the generated package;
-and every other package sees interfaces. In a prototype with 60 tables of 31 methods each, a
-package that imports them compiled 1,892 functions with generic structs and 1 with interfaces.
+A generic interface has no method bodies, so it costs far less: the compiler writes one small
+wrapper per method (the method expression `Query[T].Where`), and every pointer type argument shares
+one set of them, so a package that sees any `Query[T]` compiles about 50 wrappers, however many
+tables it sees. The methods of a type that is not generic are compiled once, in the package that
+declares it. So keel keeps the engine in `QueryCore`, compiled once in keel; `keel gen` writes a
+small table type and query type per model whose methods only call into it, compiled once in the
+generated package; and every other package sees interfaces. In a prototype with 60 tables of 31
+methods each, a package that imports them compiled 1,892 functions with generic structs and about
+50 with interfaces.
 
-Generic functions (`keel.List[T]`, `keel.Create[T]`, `keel.ListInto[T]`, `keel.CursorAt[T]`) are
-compiled only where they are called, and every pointer type shares one compiled copy, so they cost
-nothing elsewhere.
+Two more rules keep those wrappers and copies out of packages that do not need them:
+
+- No keel type that most packages reach names a `Query[T]` in an exported method. `CTETable` has
+  no `Query` method for that reason (read a CTE with `keel.RowsOf(cte.TableRef())`): it is
+  reachable from `QueryCore`, `DB` and every column, and a method returning `Query[*Row]` made
+  every package that touched keel compile the interface's wrappers.
+- Generic functions (`keel.List[T]`, `keel.Create[T]`, `keel.ListInto[T]`) are compiled in every
+  package that calls them, one copy per package shared by every pointer type. Their bodies are
+  shims over non-generic functions on row addresses (`keel.ListPtrs`, `keel.CreatePtr`, ...), and
+  generated code calls those directly and converts the rows itself, so a generated package
+  compiles no generic keel code at all.
+
+A generated column of a named string type (an enum, `pulid.ID`) embeds `keel.TypedStringCol`, which
+carries `Col`'s methods only, not `keel.StringCol`: a type that embeds another compiles a wrapper
+for each method it promotes, and `StringCol`'s text functions made each enum column compile about
+150 functions. Use `Text()` for those: `s.Status.Text().Lower()`, `s.ID.Text().Collate("C")`.
 
 ## Testing
 
