@@ -84,7 +84,7 @@ struct is the value written; keel never substitutes `DEFAULT` for a zero value (
 | other basic slices | `keel.AnyCol` |
 | `string` + `tsvector` | `keel.TSVectorCol` |
 | anything + `jsonb` | `keel.JSONBCol` |
-| named type over a basic type (`Status`, `ids.ID`) | generated wrapper (`StatusCol`, `IdsIDCol`) whose methods take the named type |
+| named type over a basic type (`Status`, `ids.ID`) | generated wrapper (`StatusCol`, `IdsIDCol`) whose methods take the named type; a named string type's wrapper embeds `keel.TypedStringCol`, so its text functions go through `Text()` |
 | `sql.Scanner` type (`Money`, `decimal.Decimal`, PostGIS) | generated wrapper over `keel.AnyCol` |
 
 Pointers and `Null…` scanners are nullable. Structs, maps and other slices need `jsonb`. A named
