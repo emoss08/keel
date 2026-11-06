@@ -66,8 +66,38 @@ func IntoOne[R any](ctx context.Context, db *DB, p Projection) (R, error) {
 }
 
 // intoItem runs a projection that must return want rows, decodes its rows into R and hands them
-// to set.
+// to set. Only the sink depends on R: the statement, the layout and the scan loop are intoRows,
+// compiled once in keel, so each R a package reads compiles three small closures rather than the
+// loop.
 func intoItem[R any](p Projection, want cardinality, set func(rows []R)) BatchItem {
+	var out []R
+	return intoRows(p, want, reflect.TypeFor[R](), intoSink{
+		reset: func(hint int) {
+			out = nil
+			if hint > 0 {
+				out = make([]R, 0, hint)
+			}
+		},
+		next: func() unsafe.Pointer {
+			out = append(out, *new(R))
+			return unsafe.Pointer(&out[len(out)-1])
+		},
+		finish: func() { set(out) },
+	})
+}
+
+// intoSink is where intoRows decodes a projection's rows of one Go type: reset starts an empty
+// result with room for hint rows, next appends a zero row and returns its address, and finish
+// hands the rows over.
+type intoSink struct {
+	reset  func(hint int)
+	next   func() unsafe.Pointer
+	finish func()
+}
+
+// intoRows runs a projection that must return want rows and decodes each row, as a value of typ,
+// into the row sink.next returns.
+func intoRows(p Projection, want cardinality, typ reflect.Type, sink intoSink) BatchItem {
 	return BatchItem{prepare: func(ctx context.Context, run *runner) (*read, error) {
 		r := newRender(run.sc, ctx, run.db)
 		defer r.recycle()
@@ -78,18 +108,19 @@ func intoItem[R any](p Projection, want cardinality, set func(rows []R)) BatchIt
 		if info.exprs == 0 {
 			return nil, errf("Into needs Pick")
 		}
-		layout, err := layoutOf(reflect.TypeFor[R](), info.exprs)
+		layout, err := layoutOf(typ, info.exprs)
 		if err != nil {
 			return nil, err
 		}
-		var out []R
+		hint := 0
 		if info.limit > 0 && info.limit <= 1024 {
-			out = make([]R, 0, info.limit)
+			hint = int(info.limit)
 		}
+		sink.reset(hint)
 		s := &stmt{sql: string(r.buf), args: r.argsCopy(), op: "select", table: info.table,
 			customPlan: info.customPlan}
 		rd := &read{stmts: []*stmt{s}, timeout: info.timeout, want: want}
-		rd.finish = func() { set(out) }
+		rd.finish = sink.finish
 		s.scan = func(rows pgx.Rows) error {
 			m := rows.Conn().TypeMap()
 			fds := rows.FieldDescriptions()
@@ -98,9 +129,10 @@ func intoItem[R any](p Projection, want cardinality, set func(rows []R)) BatchIt
 					layout.typ, len(layout.fields))
 			}
 			plans := make([]pgtype.ScanPlan, len(fds))
+			n := 0
 			for rows.Next() {
-				var v R
-				base := unsafe.Pointer(&v)
+				base := sink.next()
+				n++
 				raw := rows.RawValues()
 				for i, f := range layout.fields {
 					dst := reflect.NewAt(f.typ, unsafe.Add(base, f.offset)).Interface()
@@ -111,9 +143,8 @@ func intoItem[R any](p Projection, want cardinality, set func(rows []R)) BatchIt
 						return errf("scan %s field %d: %w", layout.typ, i, err)
 					}
 				}
-				out = append(out, v)
 			}
-			rd.rows = len(out)
+			rd.rows = n
 			return nil
 		}
 		return rd, nil
