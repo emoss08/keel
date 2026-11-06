@@ -5,16 +5,21 @@ import (
 	"strings"
 )
 
-// methodSpec is one typed method keel gen writes on every table or query type. params, results and
-// args are Go source in which {keel}, {context} and {time} stand for the imports and {row} for the
-// model's pointer type. args are what the body passes on; fn is the keel function a typed write or
-// row terminal calls; doc completes the method's one-line doc comment.
+// methodSpec is one typed method keel gen writes on every table or query type. params, results,
+// args and body are Go source in which {keel}, {context}, {time} and {unsafe} stand for the imports
+// and {row} for the model's pointer type. args are what a builder passes on to QueryCore; body is
+// the body of a typed write or row terminal; doc completes the method's one-line doc comment.
+//
+// A write or terminal calls keel's non-generic pointer function (CreatePtr, ListPtrs, ...) and
+// converts the rows to {row} itself, rather than call keel's generic Create or List: a program has
+// a generated package per domain, and each one that called a generic function would compile its
+// own copy of it.
 type methodSpec struct {
 	name    string
-	fn      string
 	params  string
 	results string
 	args    string
+	body    string
 	doc     string
 }
 
@@ -95,44 +100,69 @@ var tableStarters = []string{
 	"Compute",
 }
 
-// tableWrites are the typed writes of keel.Handle: the generated table type calls the keel
-// function fn with its keel.TableBase.
+// rowPtr and rowPtrs pass a row and a slice of rows of the model's pointer type to keel's pointer
+// functions; asRows reads a slice of row pointers back as rows. A slice of pointers of any type
+// has the layout of []unsafe.Pointer, so the conversions copy nothing.
+const (
+	rowPtr  = "{unsafe}.Pointer(row)"
+	rowPtrs = "*(*[]{unsafe}.Pointer)({unsafe}.Pointer(&rows))"
+	asRows  = "*(*[]{row})({unsafe}.Pointer(&rows))"
+)
+
+// tableWrites are the typed writes of keel.Handle: the generated table type calls keel's pointer
+// function with its keel.TableBase.
 var tableWrites = []methodSpec{
-	{name: "Create", fn: "Create", params: "row {row}", args: "row", results: "error",
-		doc: "inserts row."},
-	{name: "CreateMany", fn: "CreateMany", params: "rows []{row}", args: "rows", results: "error",
-		doc: "inserts rows with as few statements as Postgres's parameter limit allows."},
-	{name: "Save", fn: "Save", params: "row {row}, cols ...{keel}.Column", args: "row, cols...", results: "error",
-		doc: "updates row by its primary key."},
-	{name: "SaveExcept", fn: "SaveExcept", params: "row {row}, cols ...{keel}.Column", args: "row, cols...",
-		results: "error", doc: "is Save writing every updatable column except cols."},
-	{name: "DeleteRow", fn: "DeleteRow", params: "row {row}", args: "row", results: "error",
-		doc: "deletes row by its primary key."},
-	{name: "Upsert", fn: "Upsert", params: "rows []{row}, c {keel}.Conflict", args: "rows, c",
-		results: "([]bool, error)", doc: "inserts rows, updating the existing row on conflict."},
-	{name: "CreateOrSkip", fn: "CreateOrSkip", params: "rows []{row}, targets ...{keel}.Expr",
-		args: "rows, targets...", results: "(int64, error)", doc: "inserts rows, skipping those that conflict on targets."},
-	{name: "Copy", fn: "Copy", params: "rows []{row}", args: "rows", results: "(int64, error)",
-		doc: "inserts rows through Postgres's binary COPY protocol."},
+	{name: "Create", params: "row {row}", results: "error",
+		body: "return {keel}.CreatePtr(ctx, db, &t.TableBase, " + rowPtr + ")",
+		doc:  "inserts row."},
+	{name: "CreateMany", params: "rows []{row}", results: "error",
+		body: "return {keel}.CreateManyPtrs(ctx, db, &t.TableBase, " + rowPtrs + ")",
+		doc:  "inserts rows with as few statements as Postgres's parameter limit allows."},
+	{name: "Save", params: "row {row}, cols ...{keel}.Column", results: "error",
+		body: "return {keel}.SavePtr(ctx, db, &t.TableBase, " + rowPtr + ", cols...)",
+		doc:  "updates row by its primary key."},
+	{name: "SaveExcept", params: "row {row}, cols ...{keel}.Column", results: "error",
+		body: "return {keel}.SaveExceptPtr(ctx, db, &t.TableBase, " + rowPtr + ", cols...)",
+		doc:  "is Save writing every updatable column except cols."},
+	{name: "DeleteRow", params: "row {row}", results: "error",
+		body: "return {keel}.DeleteRowPtr(ctx, db, &t.TableBase, " + rowPtr + ")",
+		doc:  "deletes row by its primary key."},
+	{name: "Upsert", params: "rows []{row}, c {keel}.Conflict", results: "([]bool, error)",
+		body: "return {keel}.UpsertPtrs(ctx, db, &t.TableBase, " + rowPtrs + ", c)",
+		doc:  "inserts rows, updating the existing row on conflict."},
+	{name: "CreateOrSkip", params: "rows []{row}, targets ...{keel}.Expr", results: "(int64, error)",
+		body: "return {keel}.CreateOrSkipPtrs(ctx, db, &t.TableBase, " + rowPtrs + ", targets...)",
+		doc:  "inserts rows, skipping those that conflict on targets."},
+	{name: "Copy", params: "rows []{row}", results: "(int64, error)",
+		body: "return {keel}.CopyPtrs(ctx, db, &t.TableBase, " + rowPtrs + ")",
+		doc:  "inserts rows through Postgres's binary COPY protocol."},
 }
 
-// queryTerminals are the row terminals of keel.Query: the generated query type calls the generic
-// keel function fn with its keel.QueryCore.
+// queryTerminals are the row terminals of keel.Query: the generated query type calls keel's
+// pointer function with its keel.QueryCore and converts the rows to the model's pointer type.
 var queryTerminals = []methodSpec{
-	{name: "One", fn: "One", results: "({row}, error)",
-		doc: "returns the only matching row, or keel.ErrNotFound or keel.ErrNotSingular."},
-	{name: "First", fn: "First", results: "({row}, error)",
-		doc: "returns the first row in the query's order, or keel.ErrNotFound."},
-	{name: "List", fn: "List", results: "([]{row}, error)",
-		doc: "returns the matching rows. The query must have a Limit."},
-	{name: "All", fn: "All", results: "([]{row}, error)",
-		doc: "returns every matching row. Use it only for sets known to be small."},
-	{name: "UpdateReturning", fn: "UpdateReturning", params: "sets ...{keel}.Assignment", args: "sets...",
-		results: "([]{row}, error)", doc: "sets columns on every matching row and returns the updated rows."},
-	{name: "Page", fn: "PageOf", params: "p {keel}.PageRequest", args: "p", results: "({keel}.Page[{row}], error)",
+	{name: "One", results: "({row}, error)",
+		body: "row, err := {keel}.OnePtr(ctx, db, &q.QueryCore)\n\treturn ({row})(row), err",
+		doc:  "returns the only matching row, or keel.ErrNotFound or keel.ErrNotSingular."},
+	{name: "First", results: "({row}, error)",
+		body: "row, err := {keel}.FirstPtr(ctx, db, &q.QueryCore)\n\treturn ({row})(row), err",
+		doc:  "returns the first row in the query's order, or keel.ErrNotFound."},
+	{name: "List", results: "([]{row}, error)",
+		body: "rows, err := {keel}.ListPtrs(ctx, db, &q.QueryCore)\n\treturn " + asRows + ", err",
+		doc:  "returns the matching rows. The query must have a Limit."},
+	{name: "All", results: "([]{row}, error)",
+		body: "rows, err := {keel}.AllPtrs(ctx, db, &q.QueryCore)\n\treturn " + asRows + ", err",
+		doc:  "returns every matching row. Use it only for sets known to be small."},
+	{name: "UpdateReturning", params: "sets ...{keel}.Assignment", results: "([]{row}, error)",
+		body: "rows, err := {keel}.UpdateReturningPtrs(ctx, db, &q.QueryCore, sets...)\n\treturn " + asRows + ", err",
+		doc:  "sets columns on every matching row and returns the updated rows."},
+	{name: "Page", params: "p {keel}.PageRequest", results: "({keel}.Page[{row}], error)",
+		body: "page, err := {keel}.PagePtrs(ctx, db, &q.QueryCore, p)\n" +
+			"\treturn *(*{keel}.Page[{row}])({unsafe}.Pointer(&page)), err",
 		doc: "returns the page of rows after the request's cursor."},
-	{name: "Each", fn: "Each", params: "size int, fn func(ctx {context}.Context, batch []{row}) error",
-		args: "size, fn", results: "error",
+	{name: "Each", params: "size int, fn func(ctx {context}.Context, batch []{row}) error", results: "error",
+		body: "return {keel}.EachPtrs(ctx, db, &q.QueryCore, size, " +
+			"func(ctx {context}.Context, rows []{unsafe}.Pointer) error {\n\t\treturn fn(ctx, " + asRows + ")\n\t})",
 		doc: "runs the query page by page and calls fn with each batch of at most size rows."},
 }
 
@@ -248,14 +278,15 @@ func (m *model) getKey() (*column, bool) {
 // typedNames are the names one table's typed methods are written with: the import names, the
 // model and its pointer type, and the generated table and query types.
 type typedNames struct {
-	keel, context, time string
-	model, row          string
-	table, query        string
+	keel, context, time, unsafe string
+	model, row                  string
+	table, query                string
 }
 
 // expand replaces the placeholders of a method spec's source.
 func (n typedNames) expand(s string) string {
-	return strings.NewReplacer("{keel}", n.keel, "{context}", n.context, "{time}", n.time, "{row}", n.row).Replace(s)
+	return strings.NewReplacer("{keel}", n.keel, "{context}", n.context, "{time}", n.time, "{unsafe}", n.unsafe,
+		"{row}", n.row).Replace(s)
 }
 
 // joinArgs joins two parameter or argument lists, either of which may be empty.
@@ -269,13 +300,15 @@ func joinArgs(a, b string) string {
 	return a + ", " + b
 }
 
-// emitTyped writes the query type of one table, the compile-time checks that the table and query
-// types implement keel.Handle and keel.Query, and their typed methods, from the method specs.
+// emitTyped writes the query type of one table, the compile-time check that the query type
+// implements keel.Query, and the typed methods of both, from the method specs. It writes no check
+// that the table implements keel.Handle: instantiating Handle for the model would make the package
+// compile a wrapper for each of Handle's methods; keel's tests check that generated tables
+// implement it.
 func emitTyped(w func(string, ...any), n typedNames) {
 	qt := n.expand("{keel}.Query[{row}]")
 	w("// %s is a query over %s.\n", n.query, n.model)
 	w("type %s struct{ %s.QueryCore }\n\n", n.query, n.keel)
-	w("var _ %s.Handle[%s] = (*%s)(nil)\n\n", n.keel, n.row, n.table)
 	w("var _ %s = (*%s)(nil)\n\n", qt, n.query)
 
 	w("// Query starts a query over the table.\n")
@@ -289,9 +322,8 @@ func emitTyped(w func(string, ...any), n typedNames) {
 	}
 	for _, s := range tableWrites {
 		w("// %s %s\n", s.name, s.doc)
-		w("func (t *%s) %s(%s) %s {\n\treturn %s.%s(%s)\n}\n\n", n.table, s.name,
-			n.expand(joinArgs(ctxDB, s.params)), n.expand(s.results), n.keel, s.fn,
-			joinArgs("ctx, db, &t.TableBase", s.args))
+		w("func (t *%s) %s(%s) %s {\n\t%s\n}\n\n", n.table, s.name,
+			n.expand(joinArgs(ctxDB, s.params)), n.expand(s.results), n.expand(s.body))
 	}
 
 	for _, s := range queryBuilders {
@@ -303,8 +335,7 @@ func emitTyped(w func(string, ...any), n typedNames) {
 	w("func (q *%s) Clone() %s {\n\treturn &%s{QueryCore: *q.QueryCore.Clone()}\n}\n\n", n.query, qt, n.query)
 	for _, s := range queryTerminals {
 		w("// %s %s\n", s.name, s.doc)
-		w("func (q *%s) %s(%s) %s {\n\treturn %s.%s[%s](%s)\n}\n\n", n.query, s.name,
-			n.expand(joinArgs(ctxDB, s.params)), n.expand(s.results), n.keel, s.fn, n.row,
-			joinArgs("ctx, db, &q.QueryCore", s.args))
+		w("func (q *%s) %s(%s) %s {\n\t%s\n}\n\n", n.query, s.name,
+			n.expand(joinArgs(ctxDB, s.params)), n.expand(s.results), n.expand(s.body))
 	}
 }

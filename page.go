@@ -78,14 +78,13 @@ func CursorAt[T any](p Page[T], i int) string {
 // name it, so every row has a unique position. Generated query types call it for their Page method.
 func PageOf[T any](ctx context.Context, db *DB, q *QueryCore, p PageRequest) (Page[T], error) {
 	mustBeRowPointer[T]()
-	var out Page[T]
-	err := Batch(ctx, db, pageItem(&q.q, p, &out))
-	return out, err
+	page, err := PagePtrs(ctx, db, q, p)
+	return *(*Page[T])(unsafe.Pointer(&page)), err
 }
 
 // pageRead prepares the read of one keyset page, with its count when p asks for a total (and the
 // count's estimate when p asks for one); its finish fills dst.
-func pageRead[T any](ctx context.Context, run *runner, q *query, p PageRequest, dst *Page[T]) (*read, error) {
+func pageRead(ctx context.Context, run *runner, q *query, p PageRequest, dst *Page[unsafe.Pointer]) (*read, error) {
 	if p.size <= 0 {
 		return nil, errf("Page needs a positive size")
 	}
@@ -125,8 +124,8 @@ func pageRead[T any](ctx context.Context, run *runner, q *query, p PageRequest, 
 		fo.countCap = countPast(p.total)
 		fo.count = &total
 	}
-	rd, err := fetchInto(ctx, run, q, fo, anyRows, func(items []T) {
-		out := Page[T]{keys: keys}
+	rd, err := fetchRows(ctx, run, q, fo, anyRows, func(items []unsafe.Pointer) {
+		out := Page[unsafe.Pointer]{keys: keys}
 		switch {
 		case est != nil:
 			c := est.count()
@@ -136,7 +135,7 @@ func pageRead[T any](ctx context.Context, run *runner, q *query, p PageRequest, 
 		}
 		if len(items) > p.size {
 			items = items[:p.size]
-			out.Next = keys.cursor(toPtr(items[len(items)-1]), len(items)-1)
+			out.Next = keys.cursor(items[len(items)-1], len(items)-1)
 		}
 		out.Items = items
 		*dst = out

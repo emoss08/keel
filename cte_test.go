@@ -34,7 +34,7 @@ func TestCTE(t *testing.T) {
 		Customer ids.ID
 		Loads    int64
 	}
-	top := must(keel.Into[load](w.ctx, d, heavy.Query().With(heavy).
+	top := must(keel.Into[load](w.ctx, d, keel.RowsOf(heavy.TableRef()).With(heavy).
 		Pick(heavy.Col("customer_id"), heavy.Col("loads")).
 		Order(heavy.Col("loads").Desc()).Limit(1)))(t)
 	eq(t, len(top), 1)
@@ -68,12 +68,12 @@ func TestRecursiveCTE(t *testing.T) {
 		ID    ids.ID
 		Depth int32
 	}
-	nodes := must(keel.Into[node](ctx, d, chain.Query().With(chain).
+	nodes := must(keel.Into[node](ctx, d, keel.RowsOf(chain.TableRef()).With(chain).
 		Pick(chain.Col("id"), chain.Col("depth")).Order(chain.Col("depth").Asc())))(t)
 	eq(t, len(nodes), 4)
 	eq(t, nodes[3].Depth, int32(3))
 
-	under := must(wk.With(chain).Where(wk.ID.InQuery(chain.Query().Pick(chain.Col("id")))).Count(ctx, d))(t)
+	under := must(wk.With(chain).Where(wk.ID.InQuery(keel.RowsOf(chain.TableRef()).Pick(chain.Col("id")))).Count(ctx, d))(t)
 	eq(t, under, int64(4))
 }
 
@@ -91,7 +91,7 @@ func TestCompound(t *testing.T) {
 		s.Pick(s.CustomerID).Where(s.Hazmat.IsTrue()),
 		s.Pick(s.CustomerID).Where(s.Status.Eq(fleet.StatusDelivered)),
 	))
-	n := must(c.With(both).Where(c.ID.InQuery(both.Query().Pick(both.Col("id")))).Count(w.ctx, d))(t)
+	n := must(c.With(both).Where(c.ID.InQuery(keel.RowsOf(both.TableRef()).Pick(both.Col("id")))).Count(w.ctx, d))(t)
 	eq(t, n, int64(2))
 }
 

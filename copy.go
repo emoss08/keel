@@ -2,6 +2,7 @@ package keel
 
 import (
 	"context"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -28,10 +29,15 @@ import (
 // is read with COMMIT.
 func Copy[T any](ctx context.Context, db *DB, t *TableBase, rows []T) (int64, error) {
 	mustBeRowPointer[T]()
+	return CopyPtrs(ctx, db, t, rowPtrs(rows))
+}
+
+// CopyPtrs is Copy with rows as the addresses of their models; generated table types call it.
+func CopyPtrs(ctx context.Context, db *DB, t *TableBase, rows []unsafe.Pointer) (int64, error) {
 	if len(rows) == 0 {
 		return 0, nil
 	}
-	return db.copyRows(ctx, t.Ref.Table, rowPtrs(rows))
+	return db.copyRows(ctx, t.Ref.Table, slices.Clone(rows))
 }
 
 func (db *DB) copyRows(ctx context.Context, t *schema.Table, rows []unsafe.Pointer) (int64, error) {

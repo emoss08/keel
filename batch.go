@@ -1,6 +1,9 @@
 package keel
 
-import "context"
+import (
+	"context"
+	"unsafe"
+)
 
 // BatchItem is one read of a Batch with its typed destination. ListInto, AllInto, OneInto,
 // FirstInto, PageInto, CountInto, CountUpToInto, CountEstimateInto and ExistsInto read what the
@@ -39,7 +42,7 @@ func ListInto[T any](q Query[T], dst *[]T) BatchItem {
 		return noDestination("ListInto")
 	}
 	mustBeRowPointer[T]()
-	return listItem(&q.queryCore().q, dst)
+	return listItem(&q.queryCore().q, rowsDst(dst))
 }
 
 // AllInto reads every matching row into dst, as All does.
@@ -48,7 +51,7 @@ func AllInto[T any](q Query[T], dst *[]T) BatchItem {
 		return noDestination("AllInto")
 	}
 	mustBeRowPointer[T]()
-	return allItem(&q.queryCore().q, dst)
+	return allItem(&q.queryCore().q, rowsDst(dst))
 }
 
 // OneInto reads the only matching row into dst, as One does: the batch fails with ErrNotFound
@@ -58,7 +61,7 @@ func OneInto[T any](q Query[T], dst *T) BatchItem {
 		return noDestination("OneInto")
 	}
 	mustBeRowPointer[T]()
-	return oneItem(&q.queryCore().q, dst)
+	return oneItem(&q.queryCore().q, rowDst(dst))
 }
 
 // FirstInto reads the first row in the query's order into dst, as First does: the batch fails
@@ -68,7 +71,7 @@ func FirstInto[T any](q Query[T], dst *T) BatchItem {
 		return noDestination("FirstInto")
 	}
 	mustBeRowPointer[T]()
-	return firstItem(&q.queryCore().q, dst)
+	return firstItem(&q.queryCore().q, rowDst(dst))
 }
 
 // PageInto reads one keyset page into dst, as Page does; a requested total (and its estimate) is
@@ -78,7 +81,7 @@ func PageInto[T any](q Query[T], p PageRequest, dst *Page[T]) BatchItem {
 		return noDestination("PageInto")
 	}
 	mustBeRowPointer[T]()
-	return pageItem(&q.queryCore().q, p, dst)
+	return pageItem(&q.queryCore().q, p, pageDst(dst))
 }
 
 // CountInto stores the number of matching rows in dst, as Count does.
@@ -109,40 +112,40 @@ func CountEstimateInto[T any](q Query[T], exactUpTo int64, dst *RowCount) BatchI
 }
 
 // listItem reads q's rows into dst; q must have a Limit.
-func listItem[T any](q *query, dst *[]T) BatchItem {
+func listItem(q *query, dst *[]unsafe.Pointer) BatchItem {
 	return BatchItem{prepare: func(ctx context.Context, run *runner) (*read, error) {
 		if q.limit <= 0 {
 			return nil, ErrUnbounded
 		}
-		return fetchInto(ctx, run, q, fetchOpts{}, anyRows, func(rows []T) { *dst = rows })
+		return fetchRows(ctx, run, q, fetchOpts{}, anyRows, func(rows []unsafe.Pointer) { *dst = rows })
 	}}
 }
 
 // allItem reads every row q matches into dst.
-func allItem[T any](q *query, dst *[]T) BatchItem {
+func allItem(q *query, dst *[]unsafe.Pointer) BatchItem {
 	return BatchItem{prepare: func(ctx context.Context, run *runner) (*read, error) {
-		return fetchInto(ctx, run, q, fetchOpts{}, anyRows, func(rows []T) { *dst = rows })
+		return fetchRows(ctx, run, q, fetchOpts{}, anyRows, func(rows []unsafe.Pointer) { *dst = rows })
 	}}
 }
 
 // oneItem reads the only row q matches into dst.
-func oneItem[T any](q *query, dst *T) BatchItem {
+func oneItem(q *query, dst *unsafe.Pointer) BatchItem {
 	return BatchItem{prepare: func(ctx context.Context, run *runner) (*read, error) {
-		return fetchInto(ctx, run, q, fetchOpts{limit: 2, sizeHint: 1}, oneRow,
-			func(rows []T) { *dst = rows[0] })
+		return fetchRows(ctx, run, q, fetchOpts{limit: 2, sizeHint: 1}, oneRow,
+			func(rows []unsafe.Pointer) { *dst = rows[0] })
 	}}
 }
 
 // firstItem reads the first row in q's order into dst.
-func firstItem[T any](q *query, dst *T) BatchItem {
+func firstItem(q *query, dst *unsafe.Pointer) BatchItem {
 	return BatchItem{prepare: func(ctx context.Context, run *runner) (*read, error) {
-		return fetchInto(ctx, run, q, fetchOpts{limit: 1, sizeHint: 1}, firstRow,
-			func(rows []T) { *dst = rows[0] })
+		return fetchRows(ctx, run, q, fetchOpts{limit: 1, sizeHint: 1}, firstRow,
+			func(rows []unsafe.Pointer) { *dst = rows[0] })
 	}}
 }
 
 // pageItem reads one keyset page of q into dst.
-func pageItem[T any](q *query, p PageRequest, dst *Page[T]) BatchItem {
+func pageItem(q *query, p PageRequest, dst *Page[unsafe.Pointer]) BatchItem {
 	return BatchItem{prepare: func(ctx context.Context, run *runner) (*read, error) {
 		return pageRead(ctx, run, q, p, dst)
 	}}

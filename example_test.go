@@ -611,7 +611,7 @@ func ExampleCTE() {
 		Customer ids.ID
 		Loads    int64
 	}
-	top, err := keel.Into[load](ctx, db, busy.Query().With(busy).
+	top, err := keel.Into[load](ctx, db, keel.RowsOf(busy.TableRef()).With(busy).
 		Pick(busy.Col("customer_id"), busy.Col("loads")).
 		Order(busy.Col("loads").Desc()).
 		Limit(5))
@@ -636,14 +636,14 @@ func ExampleRecursiveCTE() {
 		ID    ids.ID
 		Depth int32
 	}
-	tree, err := keel.Into[node](ctx, db, chain.Query().With(chain).
+	tree, err := keel.Into[node](ctx, db, keel.RowsOf(chain.TableRef()).With(chain).
 		Pick(chain.Col("id"), chain.Col("depth")).
 		Order(chain.Col("depth").Asc()))
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	team, err := w.With(chain).Where(w.ID.InQuery(chain.Query().Pick(chain.Col("id")))).All(ctx, db)
+	team, err := w.With(chain).Where(w.ID.InQuery(keel.RowsOf(chain.TableRef()).Pick(chain.Col("id")))).All(ctx, db)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -667,7 +667,7 @@ func ExampleUnionAll() {
 		s.Pick(s.CustomerID).Where(s.Status.Eq(fleet.StatusCanceled)),
 	))
 	n, err := c.With(flagged).
-		Where(c.ID.InQuery(flagged.Query().Pick(flagged.Col("customer_id")))).
+		Where(c.ID.InQuery(keel.RowsOf(flagged.TableRef()).Pick(flagged.Col("customer_id")))).
 		Count(ctx, db)
 	if err != nil {
 		log.Fatal(err)

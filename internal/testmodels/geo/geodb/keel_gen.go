@@ -68,9 +68,9 @@ type PlacesTable struct {
 // Places references the places table.
 var Places = &PlacesTable{
 	TableBase:      keel.TableBase{Ref: &placesRef},
-	ID:             keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: &placesRef, Index: 0}}},
-	OrganizationID: keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: &placesRef, Index: 1}}},
-	BusinessUnitID: keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: &placesRef, Index: 2}}},
+	ID:             keelkinds.IdsIDCol{TypedStringCol: keel.TypedStringCol{Col: keel.Col{Ref: &placesRef, Index: 0}}},
+	OrganizationID: keelkinds.IdsIDCol{TypedStringCol: keel.TypedStringCol{Col: keel.Col{Ref: &placesRef, Index: 1}}},
+	BusinessUnitID: keelkinds.IdsIDCol{TypedStringCol: keel.TypedStringCol{Col: keel.Col{Ref: &placesRef, Index: 2}}},
 	Name:           keel.StringCol{Col: keel.Col{Ref: &placesRef, Index: 3}},
 	Geom:           PointCol{AnyCol: keel.AnyCol{Col: keel.Col{Ref: &placesRef, Index: 4}}},
 	Center:         PointCol{AnyCol: keel.AnyCol{Col: keel.Col{Ref: &placesRef, Index: 5}}},
@@ -81,9 +81,9 @@ var Places = &PlacesTable{
 func BuildPlaces(r *keel.Ref) *PlacesTable {
 	return &PlacesTable{
 		TableBase:      keel.TableBase{Ref: r},
-		ID:             keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: r, Index: 0}}},
-		OrganizationID: keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: r, Index: 1}}},
-		BusinessUnitID: keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: r, Index: 2}}},
+		ID:             keelkinds.IdsIDCol{TypedStringCol: keel.TypedStringCol{Col: keel.Col{Ref: r, Index: 0}}},
+		OrganizationID: keelkinds.IdsIDCol{TypedStringCol: keel.TypedStringCol{Col: keel.Col{Ref: r, Index: 1}}},
+		BusinessUnitID: keelkinds.IdsIDCol{TypedStringCol: keel.TypedStringCol{Col: keel.Col{Ref: r, Index: 2}}},
 		Name:           keel.StringCol{Col: keel.Col{Ref: r, Index: 3}},
 		Geom:           PointCol{AnyCol: keel.AnyCol{Col: keel.Col{Ref: r, Index: 4}}},
 		Center:         PointCol{AnyCol: keel.AnyCol{Col: keel.Col{Ref: r, Index: 5}}},
@@ -104,8 +104,6 @@ func (t *PlacesTable) Get(ctx context.Context, db *keel.DB, key ids.ID) (*geo.Pl
 
 // PlacesQuery is a query over geo.Place.
 type PlacesQuery struct{ keel.QueryCore }
-
-var _ keel.Handle[*geo.Place] = (*PlacesTable)(nil)
 
 var _ keel.Query[*geo.Place] = (*PlacesQuery)(nil)
 
@@ -221,42 +219,42 @@ func (t *PlacesTable) Compute(col keel.Column, e keel.Expr) keel.Query[*geo.Plac
 
 // Create inserts row.
 func (t *PlacesTable) Create(ctx context.Context, db *keel.DB, row *geo.Place) error {
-	return keel.Create(ctx, db, &t.TableBase, row)
+	return keel.CreatePtr(ctx, db, &t.TableBase, unsafe.Pointer(row))
 }
 
 // CreateMany inserts rows with as few statements as Postgres's parameter limit allows.
 func (t *PlacesTable) CreateMany(ctx context.Context, db *keel.DB, rows []*geo.Place) error {
-	return keel.CreateMany(ctx, db, &t.TableBase, rows)
+	return keel.CreateManyPtrs(ctx, db, &t.TableBase, *(*[]unsafe.Pointer)(unsafe.Pointer(&rows)))
 }
 
 // Save updates row by its primary key.
 func (t *PlacesTable) Save(ctx context.Context, db *keel.DB, row *geo.Place, cols ...keel.Column) error {
-	return keel.Save(ctx, db, &t.TableBase, row, cols...)
+	return keel.SavePtr(ctx, db, &t.TableBase, unsafe.Pointer(row), cols...)
 }
 
 // SaveExcept is Save writing every updatable column except cols.
 func (t *PlacesTable) SaveExcept(ctx context.Context, db *keel.DB, row *geo.Place, cols ...keel.Column) error {
-	return keel.SaveExcept(ctx, db, &t.TableBase, row, cols...)
+	return keel.SaveExceptPtr(ctx, db, &t.TableBase, unsafe.Pointer(row), cols...)
 }
 
 // DeleteRow deletes row by its primary key.
 func (t *PlacesTable) DeleteRow(ctx context.Context, db *keel.DB, row *geo.Place) error {
-	return keel.DeleteRow(ctx, db, &t.TableBase, row)
+	return keel.DeleteRowPtr(ctx, db, &t.TableBase, unsafe.Pointer(row))
 }
 
 // Upsert inserts rows, updating the existing row on conflict.
 func (t *PlacesTable) Upsert(ctx context.Context, db *keel.DB, rows []*geo.Place, c keel.Conflict) ([]bool, error) {
-	return keel.Upsert(ctx, db, &t.TableBase, rows, c)
+	return keel.UpsertPtrs(ctx, db, &t.TableBase, *(*[]unsafe.Pointer)(unsafe.Pointer(&rows)), c)
 }
 
 // CreateOrSkip inserts rows, skipping those that conflict on targets.
 func (t *PlacesTable) CreateOrSkip(ctx context.Context, db *keel.DB, rows []*geo.Place, targets ...keel.Expr) (int64, error) {
-	return keel.CreateOrSkip(ctx, db, &t.TableBase, rows, targets...)
+	return keel.CreateOrSkipPtrs(ctx, db, &t.TableBase, *(*[]unsafe.Pointer)(unsafe.Pointer(&rows)), targets...)
 }
 
 // Copy inserts rows through Postgres's binary COPY protocol.
 func (t *PlacesTable) Copy(ctx context.Context, db *keel.DB, rows []*geo.Place) (int64, error) {
-	return keel.Copy(ctx, db, &t.TableBase, rows)
+	return keel.CopyPtrs(ctx, db, &t.TableBase, *(*[]unsafe.Pointer)(unsafe.Pointer(&rows)))
 }
 
 // Where adds predicates, joined by AND. Nil predicates are skipped.
@@ -428,37 +426,45 @@ func (q *PlacesQuery) Clone() keel.Query[*geo.Place] {
 
 // One returns the only matching row, or keel.ErrNotFound or keel.ErrNotSingular.
 func (q *PlacesQuery) One(ctx context.Context, db *keel.DB) (*geo.Place, error) {
-	return keel.One[*geo.Place](ctx, db, &q.QueryCore)
+	row, err := keel.OnePtr(ctx, db, &q.QueryCore)
+	return (*geo.Place)(row), err
 }
 
 // First returns the first row in the query's order, or keel.ErrNotFound.
 func (q *PlacesQuery) First(ctx context.Context, db *keel.DB) (*geo.Place, error) {
-	return keel.First[*geo.Place](ctx, db, &q.QueryCore)
+	row, err := keel.FirstPtr(ctx, db, &q.QueryCore)
+	return (*geo.Place)(row), err
 }
 
 // List returns the matching rows. The query must have a Limit.
 func (q *PlacesQuery) List(ctx context.Context, db *keel.DB) ([]*geo.Place, error) {
-	return keel.List[*geo.Place](ctx, db, &q.QueryCore)
+	rows, err := keel.ListPtrs(ctx, db, &q.QueryCore)
+	return *(*[]*geo.Place)(unsafe.Pointer(&rows)), err
 }
 
 // All returns every matching row. Use it only for sets known to be small.
 func (q *PlacesQuery) All(ctx context.Context, db *keel.DB) ([]*geo.Place, error) {
-	return keel.All[*geo.Place](ctx, db, &q.QueryCore)
+	rows, err := keel.AllPtrs(ctx, db, &q.QueryCore)
+	return *(*[]*geo.Place)(unsafe.Pointer(&rows)), err
 }
 
 // UpdateReturning sets columns on every matching row and returns the updated rows.
 func (q *PlacesQuery) UpdateReturning(ctx context.Context, db *keel.DB, sets ...keel.Assignment) ([]*geo.Place, error) {
-	return keel.UpdateReturning[*geo.Place](ctx, db, &q.QueryCore, sets...)
+	rows, err := keel.UpdateReturningPtrs(ctx, db, &q.QueryCore, sets...)
+	return *(*[]*geo.Place)(unsafe.Pointer(&rows)), err
 }
 
 // Page returns the page of rows after the request's cursor.
 func (q *PlacesQuery) Page(ctx context.Context, db *keel.DB, p keel.PageRequest) (keel.Page[*geo.Place], error) {
-	return keel.PageOf[*geo.Place](ctx, db, &q.QueryCore, p)
+	page, err := keel.PagePtrs(ctx, db, &q.QueryCore, p)
+	return *(*keel.Page[*geo.Place])(unsafe.Pointer(&page)), err
 }
 
 // Each runs the query page by page and calls fn with each batch of at most size rows.
 func (q *PlacesQuery) Each(ctx context.Context, db *keel.DB, size int, fn func(ctx context.Context, batch []*geo.Place) error) error {
-	return keel.Each[*geo.Place](ctx, db, &q.QueryCore, size, fn)
+	return keel.EachPtrs(ctx, db, &q.QueryCore, size, func(ctx context.Context, rows []unsafe.Pointer) error {
+		return fn(ctx, *(*[]*geo.Place)(unsafe.Pointer(&rows)))
+	})
 }
 
 func newPlace() unsafe.Pointer { return unsafe.Pointer(new(geo.Place)) }
@@ -564,9 +570,9 @@ type ZonesTable struct {
 // Zones references the zones table.
 var Zones = &ZonesTable{
 	TableBase:      keel.TableBase{Ref: &zonesRef},
-	ID:             keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: &zonesRef, Index: 0}}},
-	OrganizationID: keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: &zonesRef, Index: 1}}},
-	BusinessUnitID: keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: &zonesRef, Index: 2}}},
+	ID:             keelkinds.IdsIDCol{TypedStringCol: keel.TypedStringCol{Col: keel.Col{Ref: &zonesRef, Index: 0}}},
+	OrganizationID: keelkinds.IdsIDCol{TypedStringCol: keel.TypedStringCol{Col: keel.Col{Ref: &zonesRef, Index: 1}}},
+	BusinessUnitID: keelkinds.IdsIDCol{TypedStringCol: keel.TypedStringCol{Col: keel.Col{Ref: &zonesRef, Index: 2}}},
 	Name:           keel.StringCol{Col: keel.Col{Ref: &zonesRef, Index: 3}},
 	Center:         postgis.PointCol{AnyCol: keel.AnyCol{Col: keel.Col{Ref: &zonesRef, Index: 4}}},
 	Area:           postgis.GeometryCol{AnyCol: keel.AnyCol{Col: keel.Col{Ref: &zonesRef, Index: 5}}},
@@ -576,9 +582,9 @@ var Zones = &ZonesTable{
 func BuildZones(r *keel.Ref) *ZonesTable {
 	return &ZonesTable{
 		TableBase:      keel.TableBase{Ref: r},
-		ID:             keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: r, Index: 0}}},
-		OrganizationID: keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: r, Index: 1}}},
-		BusinessUnitID: keelkinds.IdsIDCol{StringCol: keel.StringCol{Col: keel.Col{Ref: r, Index: 2}}},
+		ID:             keelkinds.IdsIDCol{TypedStringCol: keel.TypedStringCol{Col: keel.Col{Ref: r, Index: 0}}},
+		OrganizationID: keelkinds.IdsIDCol{TypedStringCol: keel.TypedStringCol{Col: keel.Col{Ref: r, Index: 1}}},
+		BusinessUnitID: keelkinds.IdsIDCol{TypedStringCol: keel.TypedStringCol{Col: keel.Col{Ref: r, Index: 2}}},
 		Name:           keel.StringCol{Col: keel.Col{Ref: r, Index: 3}},
 		Center:         postgis.PointCol{AnyCol: keel.AnyCol{Col: keel.Col{Ref: r, Index: 4}}},
 		Area:           postgis.GeometryCol{AnyCol: keel.AnyCol{Col: keel.Col{Ref: r, Index: 5}}},
@@ -598,8 +604,6 @@ func (t *ZonesTable) Get(ctx context.Context, db *keel.DB, key ids.ID) (*geo.Zon
 
 // ZonesQuery is a query over geo.Zone.
 type ZonesQuery struct{ keel.QueryCore }
-
-var _ keel.Handle[*geo.Zone] = (*ZonesTable)(nil)
 
 var _ keel.Query[*geo.Zone] = (*ZonesQuery)(nil)
 
@@ -715,42 +719,42 @@ func (t *ZonesTable) Compute(col keel.Column, e keel.Expr) keel.Query[*geo.Zone]
 
 // Create inserts row.
 func (t *ZonesTable) Create(ctx context.Context, db *keel.DB, row *geo.Zone) error {
-	return keel.Create(ctx, db, &t.TableBase, row)
+	return keel.CreatePtr(ctx, db, &t.TableBase, unsafe.Pointer(row))
 }
 
 // CreateMany inserts rows with as few statements as Postgres's parameter limit allows.
 func (t *ZonesTable) CreateMany(ctx context.Context, db *keel.DB, rows []*geo.Zone) error {
-	return keel.CreateMany(ctx, db, &t.TableBase, rows)
+	return keel.CreateManyPtrs(ctx, db, &t.TableBase, *(*[]unsafe.Pointer)(unsafe.Pointer(&rows)))
 }
 
 // Save updates row by its primary key.
 func (t *ZonesTable) Save(ctx context.Context, db *keel.DB, row *geo.Zone, cols ...keel.Column) error {
-	return keel.Save(ctx, db, &t.TableBase, row, cols...)
+	return keel.SavePtr(ctx, db, &t.TableBase, unsafe.Pointer(row), cols...)
 }
 
 // SaveExcept is Save writing every updatable column except cols.
 func (t *ZonesTable) SaveExcept(ctx context.Context, db *keel.DB, row *geo.Zone, cols ...keel.Column) error {
-	return keel.SaveExcept(ctx, db, &t.TableBase, row, cols...)
+	return keel.SaveExceptPtr(ctx, db, &t.TableBase, unsafe.Pointer(row), cols...)
 }
 
 // DeleteRow deletes row by its primary key.
 func (t *ZonesTable) DeleteRow(ctx context.Context, db *keel.DB, row *geo.Zone) error {
-	return keel.DeleteRow(ctx, db, &t.TableBase, row)
+	return keel.DeleteRowPtr(ctx, db, &t.TableBase, unsafe.Pointer(row))
 }
 
 // Upsert inserts rows, updating the existing row on conflict.
 func (t *ZonesTable) Upsert(ctx context.Context, db *keel.DB, rows []*geo.Zone, c keel.Conflict) ([]bool, error) {
-	return keel.Upsert(ctx, db, &t.TableBase, rows, c)
+	return keel.UpsertPtrs(ctx, db, &t.TableBase, *(*[]unsafe.Pointer)(unsafe.Pointer(&rows)), c)
 }
 
 // CreateOrSkip inserts rows, skipping those that conflict on targets.
 func (t *ZonesTable) CreateOrSkip(ctx context.Context, db *keel.DB, rows []*geo.Zone, targets ...keel.Expr) (int64, error) {
-	return keel.CreateOrSkip(ctx, db, &t.TableBase, rows, targets...)
+	return keel.CreateOrSkipPtrs(ctx, db, &t.TableBase, *(*[]unsafe.Pointer)(unsafe.Pointer(&rows)), targets...)
 }
 
 // Copy inserts rows through Postgres's binary COPY protocol.
 func (t *ZonesTable) Copy(ctx context.Context, db *keel.DB, rows []*geo.Zone) (int64, error) {
-	return keel.Copy(ctx, db, &t.TableBase, rows)
+	return keel.CopyPtrs(ctx, db, &t.TableBase, *(*[]unsafe.Pointer)(unsafe.Pointer(&rows)))
 }
 
 // Where adds predicates, joined by AND. Nil predicates are skipped.
@@ -922,37 +926,45 @@ func (q *ZonesQuery) Clone() keel.Query[*geo.Zone] {
 
 // One returns the only matching row, or keel.ErrNotFound or keel.ErrNotSingular.
 func (q *ZonesQuery) One(ctx context.Context, db *keel.DB) (*geo.Zone, error) {
-	return keel.One[*geo.Zone](ctx, db, &q.QueryCore)
+	row, err := keel.OnePtr(ctx, db, &q.QueryCore)
+	return (*geo.Zone)(row), err
 }
 
 // First returns the first row in the query's order, or keel.ErrNotFound.
 func (q *ZonesQuery) First(ctx context.Context, db *keel.DB) (*geo.Zone, error) {
-	return keel.First[*geo.Zone](ctx, db, &q.QueryCore)
+	row, err := keel.FirstPtr(ctx, db, &q.QueryCore)
+	return (*geo.Zone)(row), err
 }
 
 // List returns the matching rows. The query must have a Limit.
 func (q *ZonesQuery) List(ctx context.Context, db *keel.DB) ([]*geo.Zone, error) {
-	return keel.List[*geo.Zone](ctx, db, &q.QueryCore)
+	rows, err := keel.ListPtrs(ctx, db, &q.QueryCore)
+	return *(*[]*geo.Zone)(unsafe.Pointer(&rows)), err
 }
 
 // All returns every matching row. Use it only for sets known to be small.
 func (q *ZonesQuery) All(ctx context.Context, db *keel.DB) ([]*geo.Zone, error) {
-	return keel.All[*geo.Zone](ctx, db, &q.QueryCore)
+	rows, err := keel.AllPtrs(ctx, db, &q.QueryCore)
+	return *(*[]*geo.Zone)(unsafe.Pointer(&rows)), err
 }
 
 // UpdateReturning sets columns on every matching row and returns the updated rows.
 func (q *ZonesQuery) UpdateReturning(ctx context.Context, db *keel.DB, sets ...keel.Assignment) ([]*geo.Zone, error) {
-	return keel.UpdateReturning[*geo.Zone](ctx, db, &q.QueryCore, sets...)
+	rows, err := keel.UpdateReturningPtrs(ctx, db, &q.QueryCore, sets...)
+	return *(*[]*geo.Zone)(unsafe.Pointer(&rows)), err
 }
 
 // Page returns the page of rows after the request's cursor.
 func (q *ZonesQuery) Page(ctx context.Context, db *keel.DB, p keel.PageRequest) (keel.Page[*geo.Zone], error) {
-	return keel.PageOf[*geo.Zone](ctx, db, &q.QueryCore, p)
+	page, err := keel.PagePtrs(ctx, db, &q.QueryCore, p)
+	return *(*keel.Page[*geo.Zone])(unsafe.Pointer(&page)), err
 }
 
 // Each runs the query page by page and calls fn with each batch of at most size rows.
 func (q *ZonesQuery) Each(ctx context.Context, db *keel.DB, size int, fn func(ctx context.Context, batch []*geo.Zone) error) error {
-	return keel.Each[*geo.Zone](ctx, db, &q.QueryCore, size, fn)
+	return keel.EachPtrs(ctx, db, &q.QueryCore, size, func(ctx context.Context, rows []unsafe.Pointer) error {
+		return fn(ctx, *(*[]*geo.Zone)(unsafe.Pointer(&rows)))
+	})
 }
 
 func newZone() unsafe.Pointer { return unsafe.Pointer(new(geo.Zone)) }

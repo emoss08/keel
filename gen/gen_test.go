@@ -537,7 +537,8 @@ func TestGenerateOutput(t *testing.T) {
 		"package modelsdb",
 		"type AccountsTable struct",
 		"Status    StatusCol",
-		"type StatusCol struct{ keel.StringCol }",
+		"type StatusCol struct{ keel.TypedStringCol }",
+		"func (c StatusCol) In(vs ...models.Status) keel.Pred {\n\treturn c.Text().In(*(*[]string)(unsafe.Pointer(&vs))...)\n}\n",
 		"func (c StatusCol) In(vs ...models.Status) keel.Pred",
 		"func (t *AccountsTable) Notes() *NotesTable",
 		"func (t *NotesTable) Account() *AccountsTable",
@@ -552,7 +553,6 @@ func TestGenerateOutput(t *testing.T) {
 		"var Accounts = &AccountsTable{\n\tTableBase: keel.TableBase{Ref: &accountsRef},\n",
 		"return &AccountsTable{\n\t\tTableBase: keel.TableBase{Ref: r},\n",
 		"// AccountsQuery is a query over models.Account.\ntype AccountsQuery struct{ keel.QueryCore }\n",
-		"var _ keel.Handle[*models.Account] = (*AccountsTable)(nil)\n",
 		"var _ keel.Query[*models.Account] = (*AccountsQuery)(nil)\n",
 		"func (t *AccountsTable) Query() keel.Query[*models.Account] {\n" +
 			"\treturn &AccountsQuery{QueryCore: keel.NewQueryCore(t.Ref)}\n}\n",
@@ -561,9 +561,9 @@ func TestGenerateOutput(t *testing.T) {
 		"func (t *AccountsTable) Join(other interface{ TableRef() *keel.Ref }, on ...keel.Pred) keel.Query[*models.Account] {\n" +
 			"\treturn t.Query().Join(other, on...)\n}\n",
 		"func (t *AccountsTable) Create(ctx context.Context, db *keel.DB, row *models.Account) error {\n" +
-			"\treturn keel.Create(ctx, db, &t.TableBase, row)\n}\n",
+			"\treturn keel.CreatePtr(ctx, db, &t.TableBase, unsafe.Pointer(row))\n}\n",
 		"func (t *AccountsTable) Upsert(ctx context.Context, db *keel.DB, rows []*models.Account, c keel.Conflict) ([]bool, error) {\n" +
-			"\treturn keel.Upsert(ctx, db, &t.TableBase, rows, c)\n}\n",
+			"\treturn keel.UpsertPtrs(ctx, db, &t.TableBase, *(*[]unsafe.Pointer)(unsafe.Pointer(&rows)), c)\n}\n",
 		"func (q *AccountsQuery) Where(ps ...keel.Pred) keel.Query[*models.Account] {\n" +
 			"\tq.QueryCore.Where(ps...)\n\treturn q\n}\n",
 		"func (q *AccountsQuery) Timeout(d time.Duration) keel.Query[*models.Account] {\n" +
@@ -572,11 +572,14 @@ func TestGenerateOutput(t *testing.T) {
 		"func (q *AccountsQuery) Clone() keel.Query[*models.Account] {\n" +
 			"\treturn &AccountsQuery{QueryCore: *q.QueryCore.Clone()}\n}\n",
 		"func (q *AccountsQuery) List(ctx context.Context, db *keel.DB) ([]*models.Account, error) {\n" +
-			"\treturn keel.List[*models.Account](ctx, db, &q.QueryCore)\n}\n",
+			"\trows, err := keel.ListPtrs(ctx, db, &q.QueryCore)\n" +
+			"\treturn *(*[]*models.Account)(unsafe.Pointer(&rows)), err\n}\n",
 		"func (q *AccountsQuery) Page(ctx context.Context, db *keel.DB, p keel.PageRequest) (keel.Page[*models.Account], error) {\n" +
-			"\treturn keel.PageOf[*models.Account](ctx, db, &q.QueryCore, p)\n}\n",
+			"\tpage, err := keel.PagePtrs(ctx, db, &q.QueryCore, p)\n" +
+			"\treturn *(*keel.Page[*models.Account])(unsafe.Pointer(&page)), err\n}\n",
 		"func (q *AccountsQuery) Each(ctx context.Context, db *keel.DB, size int, fn func(ctx context.Context, batch []*models.Account) error) error {\n" +
-			"\treturn keel.Each[*models.Account](ctx, db, &q.QueryCore, size, fn)\n}\n",
+			"\treturn keel.EachPtrs(ctx, db, &q.QueryCore, size, func(ctx context.Context, rows []unsafe.Pointer) error {\n" +
+			"\t\treturn fn(ctx, *(*[]*models.Account)(unsafe.Pointer(&rows)))\n\t})\n}\n",
 		"func (t *NotesTable) Query() keel.Query[*models.Note] {\n",
 	} {
 		if !strings.Contains(src, want) {
@@ -593,7 +596,8 @@ func TestGenerateOutput(t *testing.T) {
 			t.Errorf("AccountsQuery.%s is written %d times", name, n)
 		}
 	}
-	for _, gone := range []string{"keel.Handle[*models.Account]{", "*keel.Query[", "Handle:"} {
+	for _, gone := range []string{"keel.Handle[", "*keel.Query[", "Handle:", "keel.One[",
+		"keel.List[", "keel.PageOf[", "keel.Each[", "keel.Create(", "keel.Upsert("} {
 		if strings.Contains(src, gone) {
 			t.Errorf("generated code still has %q", gone)
 		}

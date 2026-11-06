@@ -116,28 +116,30 @@ type wrapper struct {
 }
 
 // libraryKind reports whether the package of obj, a type keel gen does not generate, declares the
-// column kind of obj itself: an exported <Name>Col struct embedding keel's base kind, as
-// keel/postgis declares PointCol for Point. Generated tables then use that kind, with its methods.
-func libraryKind(obj *types.TypeName, base string) bool {
+// column kind of obj itself: an exported <Name>Col struct embedding keel's base kind (or, for a
+// string kind, TypedStringCol), as keel/postgis declares PointCol for Point. Generated tables then
+// use that kind, with its methods. It returns the keel kind the struct embeds.
+func libraryKind(obj *types.TypeName, base string) (string, bool) {
 	kind, ok := obj.Pkg().Scope().Lookup(obj.Name() + "Col").(*types.TypeName)
 	if !ok || !kind.Exported() {
-		return false
+		return "", false
 	}
 	st, ok := kind.Type().Underlying().(*types.Struct)
 	if !ok {
-		return false
+		return "", false
 	}
 	for i := range st.NumFields() {
 		f := st.Field(i)
 		if !f.Embedded() {
 			continue
 		}
-		if named, ok := f.Type().(*types.Named); ok && named.Obj().Name() == base &&
+		if named, ok := f.Type().(*types.Named); ok &&
+			(named.Obj().Name() == base || named.Obj().Name() == wrapperBase(base)) &&
 			named.Obj().Pkg() != nil && named.Obj().Pkg().Path() == keelPath {
-			return true
+			return named.Obj().Name(), true
 		}
 	}
-	return false
+	return "", false
 }
 
 // emitter writes the files of one generation run.
@@ -168,13 +170,16 @@ func (e *emitter) planWrappers() {
 				w := &wrapper{named: c.named, scanner: c.scanner, basic: c.basic, valuePtr: c.valuePtr}
 				w.base = baseKind(c)
 				if owner, ok := e.pkgs[obj.Pkg().Path()]; ok {
+					w.base = wrapperBase(w.base)
 					w.outPath, w.outName = owner.outPath, owner.outName
 					w.name = obj.Name() + "Col"
-				} else if libraryKind(obj, w.base) {
+				} else if embedded, ok := libraryKind(obj, w.base); ok {
+					w.base = embedded
 					w.outPath, w.outName = obj.Pkg().Path(), obj.Pkg().Name()
 					w.name = obj.Name() + "Col"
 					w.library = true
 				} else {
+					w.base = wrapperBase(w.base)
 					w.outPath, w.outName = e.kinds.outPath, e.kinds.outName
 					w.name = exportedName(obj.Pkg().Name()) + obj.Name() + "Col"
 				}
@@ -182,6 +187,16 @@ func (e *emitter) planWrappers() {
 			}
 		}
 	}
+}
+
+// wrapperBase is the keel kind a generated column type embeds for a column of base kind: a named
+// string type embeds TypedStringCol, which carries Col's methods only, so the generated type
+// compiles a wrapper for each of a few methods rather than for every text function of StringCol.
+func wrapperBase(base string) string {
+	if base == "StringCol" {
+		return "TypedStringCol"
+	}
+	return base
 }
 
 func baseKind(c *column) string {
@@ -413,8 +428,8 @@ func (e *emitter) emitPackage(p *pkgModels) ([]byte, error) {
 			w("\treturn t.Where(t.%s.Eq(key)).One(ctx, db)\n}\n\n", pk.member)
 		}
 
-		emitTyped(w, typedNames{keel: keel, context: ctxPkg, time: im.add("time", "time"), model: model,
-			row: "*" + model, table: handle, query: m.plural + "Query"})
+		emitTyped(w, typedNames{keel: keel, context: ctxPkg, time: im.add("time", "time"), unsafe: unsafePkg,
+			model: model, row: "*" + model, table: handle, query: m.plural + "Query"})
 
 		w("func new%s() %s.Pointer { return %s.Pointer(new(%s)) }\n\n", m.name, unsafePkg, unsafePkg, model)
 		w("func newN%s(n int) %s.Pointer { return %s.Pointer(%s.SliceData(make([]%s, n))) }\n\n",
@@ -571,6 +586,10 @@ func (e *emitter) emitWrapper(b *bytes.Buffer, im *imports, wr *wrapper) {
 	w := func(format string, args ...any) { fmt.Fprintf(b, format, args...) }
 	w("// %s is a column of %s values.\n", wr.name, t)
 	w("type %s struct{ %s.%s }\n\n", wr.name, keel, wr.base)
+	recv := "c." + wr.base
+	if wr.base == "TypedStringCol" {
+		recv = "c.Text()"
+	}
 	conv := func(v string) string {
 		switch {
 		case wr.valuePtr:
@@ -586,17 +605,22 @@ func (e *emitter) emitWrapper(b *bytes.Buffer, im *imports, wr *wrapper) {
 		if wr.base == "BoolCol" && op != "Eq" {
 			continue
 		}
-		w("func (c %s) %s(v %s) %s.Pred { return c.%s.%s(%s) }\n", wr.name, op, t, keel, wr.base, op, conv("v"))
+		w("func (c %s) %s(v %s) %s.Pred { return %s.%s(%s) }\n", wr.name, op, t, keel, recv, op, conv("v"))
 	}
 	if wr.base != "BoolCol" {
-		w("func (c %s) Between(lo, hi %s) %s.Pred { return c.%s.Between(%s, %s) }\n", wr.name, t, keel,
-			wr.base, conv("lo"), conv("hi"))
+		w("func (c %s) Between(lo, hi %s) %s.Pred { return %s.Between(%s, %s) }\n", wr.name, t, keel,
+			recv, conv("lo"), conv("hi"))
 	}
-	w("func (c %s) To(v %s) %s.Assignment { return c.%s.To(%s) }\n", wr.name, t, keel, wr.base, conv("v"))
+	w("func (c %s) To(v %s) %s.Assignment { return %s.To(%s) }\n", wr.name, t, keel, recv, conv("v"))
 	switch wr.base {
-	case "StringCol":
-		w("func (c %s) In(vs ...%s) %s.Pred { return c.StringCol.In(%s.Strings(vs)...) }\n", wr.name, t, keel, keel)
-		w("func (c %s) NotIn(vs ...%s) %s.Pred { return c.StringCol.NotIn(%s.Strings(vs)...) }\n", wr.name, t, keel, keel)
+	case "TypedStringCol":
+		// A slice of a named string type has the layout of []string, so In and NotIn pass it as one
+		// rather than instantiate keel.Strings for each type in each package.
+		us := im.add("unsafe", "unsafe")
+		w("func (c %s) In(vs ...%s) %s.Pred { return c.Text().In(*(*[]string)(%s.Pointer(&vs))...) }\n",
+			wr.name, t, keel, us)
+		w("func (c %s) NotIn(vs ...%s) %s.Pred { return c.Text().NotIn(*(*[]string)(%s.Pointer(&vs))...) }\n",
+			wr.name, t, keel, us)
 	case "Int64Col":
 		w("func (c %s) In(vs ...%s) %s.Pred { return c.Int64Col.In(%s.Int64s(vs)...) }\n", wr.name, t, keel, keel)
 		w("func (c %s) NotIn(vs ...%s) %s.Pred { return c.Int64Col.NotIn(%s.Int64s(vs)...) }\n", wr.name, t, keel, keel)
@@ -641,11 +665,11 @@ func (e *emitter) colType(im *imports, c *column) string {
 
 func (e *emitter) colLit(im *imports, c *column, ref string) string {
 	keel := im.add(keelPath, "keel")
-	inner := fmt.Sprintf("%s.%s{Col: %s.Col{Ref: %s, Index: %d}}", keel, baseKind(c), keel, ref, c.idx)
 	if wr := e.wrapperFor(c); wr != nil {
+		inner := fmt.Sprintf("%s.%s{Col: %s.Col{Ref: %s, Index: %d}}", keel, wr.base, keel, ref, c.idx)
 		return fmt.Sprintf("%s{%s: %s}", im.qual(wr.outPath, wr.outName, wr.name), wr.base, inner)
 	}
-	return inner
+	return fmt.Sprintf("%s.%s{Col: %s.Col{Ref: %s, Index: %d}}", keel, baseKind(c), keel, ref, c.idx)
 }
 
 func (e *emitter) ptrExpr(im *imports, c *column, unsafePkg string) string {

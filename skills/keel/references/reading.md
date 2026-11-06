@@ -189,7 +189,7 @@ busy := keel.CTE("busy", []string{"customer_id", "loads"},
     s.Group(s.CustomerID).Pick(s.CustomerID, keel.Count()).Where(s.Status.Eq(fleet.StatusInTransit)))
 customers, err := c.With(busy).Join(busy, busy.Col("customer_id").EqCol(c.ID)).
     Where(busy.Col("loads").Gte(10)).All(ctx, db)
-top, err := keel.Into[load](ctx, db, busy.Query().With(busy).
+top, err := keel.Into[load](ctx, db, keel.RowsOf(busy.TableRef()).With(busy).
     Pick(busy.Col("customer_id"), busy.Col("loads")).Order(busy.Col("loads").Desc()).Limit(5))
 
 chain := keel.RecursiveCTE("chain", []string{"id", "depth"}, base) // .Recurse(step), .Distinct()

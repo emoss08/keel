@@ -51,7 +51,7 @@ func TestTypedOperatorsRender(t *testing.T) {
 			map[int]any{2: "MC ", 3: ""}},
 		{"cat chain", s.Pick(s.ProNumber.Cat(keel.ConstText("@"), s.ID)), `((s."pro_number" || '@') || s."id")`, nil},
 		{"cat of nothing", s.Pick(s.ProNumber.Cat()), `s."pro_number"`, nil},
-		{"collate", s.Pick(s.ID.Collate("C")), `(s."id" COLLATE "C")`, nil},
+		{"collate", s.Pick(s.ID.Text().Collate("C")), `(s."id" COLLATE "C")`, nil},
 		{"collate an expression", s.Pick(s.ProNumber.Lower().Collate("en-US-x-icu")),
 			`(lower(s."pro_number") COLLATE "en-US-x-icu")`, nil},
 		{"string case", s.Pick(keel.CaseString().
@@ -132,7 +132,7 @@ func TestTypedOperatorsRender(t *testing.T) {
 	if got, isSlice := args[2].([]string); !isSlice || got == nil || len(got) != 0 || !selects(sql, `$3::text[]`) {
 		t.Fatalf("a nil slice binds the empty array: %s %#v", sql, args)
 	}
-	sql, _ = renderOf(t, d, s.Pick(s.ID).Order(s.ID.Collate("C").Asc()))
+	sql, _ = renderOf(t, d, s.Pick(s.ID).Order(s.ID.Text().Collate("C").Asc()))
 	if !strings.HasSuffix(sql, ` ORDER BY (s."id" COLLATE "C") ASC`) {
 		t.Fatalf("collated order: %s", sql)
 	}
@@ -172,12 +172,12 @@ func TestTypedOperatorPredicatesRender(t *testing.T) {
 			`c."prefs" IS DISTINCT FROM $3::jsonb`},
 		{"interval compared", c.Pick(c.ID).Where(keel.Now().Since(c.LastSeenAt).GtExpr(keel.Interval("1 hour"))),
 			`(now() - c."last_seen_at") > $3::interval`},
-		{"in array", s.Pick(s.ID).Where(s.ID.InArray(keel.TextArray([]string{"a"}))), `(s."id" = ANY($3::text[]))`},
+		{"in array", s.Pick(s.ID).Where(s.ID.Text().InArray(keel.TextArray([]string{"a"}))), `(s."id" = ANY($3::text[]))`},
 		{"not in array", s.Pick(s.ID).Where(s.Weight.NotInArray(keel.Int64Array([]int64{1}))),
 			`(s."weight" <> ALL($3::bigint[]))`},
 		{"in an array column", s.Pick(s.ID).Where(s.ProNumber.Lower().InArray(s.Labels)),
 			`(lower(s."pro_number") = ANY(s."labels"))`},
-		{"in a viewed array", s.Pick(s.ID).Where(s.ID.InArray(keel.StringArrayOf(keel.Raw("ARRAY['a']")))),
+		{"in a viewed array", s.Pick(s.ID).Where(s.ID.Text().InArray(keel.StringArrayOf(keel.Raw("ARRAY['a']")))),
 			`(s."id" = ANY(ARRAY['a']))`},
 		{"array contains", s.Pick(s.ID).Where(s.Labels.ContainsAllExpr(keel.ArrayOfString(s.ProNumber))),
 			`(s."labels" @> ARRAY[s."pro_number"])`},
@@ -242,7 +242,7 @@ func TestTypedOperatorErrors(t *testing.T) {
 		"const NaN":                   s.Pick(keel.ConstFloat64(math.NaN())),
 		"const numeric not a decimal": s.Pick(keel.ConstNumeric("1e5")),
 		"const numeric injection":     s.Pick(keel.ConstNumeric("1); DROP TABLE x; --")),
-		"in array of nil":             s.Pick(s.ID).Where(s.ID.InArray(nil)),
+		"in array of nil":             s.Pick(s.ID).Where(s.ID.Text().InArray(nil)),
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, _, err := q.ToSQL(tenantCtx("org_1", "bu_1"), d); err == nil {
@@ -364,13 +364,13 @@ func TestTypedFormsRenderAsDynamic(t *testing.T) {
 		{"literal minus a column", keel.Int64(7).Sub(s.CreatedAt), keel.DynLit(int64(7)).Cast(keel.TypeInt64).Sub(s.CreatedAt)},
 		{"negation", s.Weight.Neg(), keel.DynOf(s.Weight).Neg()},
 		{"concatenation", s.ProNumber.Cat(s.ID), keel.DynOf(s.ProNumber).Concat(s.ID)},
-		{"collation", s.ID.Collate("C"), keel.DynOf(s.ID).Collate("C")},
+		{"collation", s.ID.Text().Collate("C"), keel.DynOf(s.ID).Collate("C")},
 		{"element", s.Labels.At(2), keel.DynOf(s.Labels).At(2)},
 		{"case", keel.CaseString().When(s.Hazmat.IsTrue(), keel.Text("h")).Else(keel.Text("n")),
 			keel.DynCase().When(s.Hazmat.IsTrue(), "h").Else("n")},
 		{"row", keel.Tuple(s.CreatedAt, s.ID).Gt(keel.Tuple(int64(1), "a")),
 			keel.DynRow(s.CreatedAt, s.ID).Gt(keel.DynRow(int64(1), "a"))},
-		{"array membership", s.ID.InArray(s.Labels), keel.DynOf(s.ID).In(s.Labels)},
+		{"array membership", s.ID.Text().InArray(s.Labels), keel.DynOf(s.ID).In(s.Labels)},
 		{"array constructor", keel.ArrayOfString(s.ProNumber, s.ID), keel.DynArray(s.ProNumber, s.ID)},
 		{"constant", keel.ConstInt64(768), keel.DynConst(768)},
 		{"text constant", keel.ConstText("o'k"), keel.DynConst("o'k")},
