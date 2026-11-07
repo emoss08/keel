@@ -428,6 +428,10 @@ var ShipmentsDaily = analytics.Rollup("shipments_daily", Shipments, analytics.Ro
 > context carries no transaction to write in. Marks are keyed by transaction id, so writers never
 > contend; a refresh deletes only committed marks and reads the source afterwards, so it never
 > misses a committed write.
+>
+> A grain column must hold dates, times or epochs. A bigint is read as epochs by its `_at`,
+> `_date` or `_time` suffix, or by `type=epoch` on a report table; any other bigint of Unix
+> seconds says so at the declaration: `rollup.Hour(e.Timestamp).Epoch()`.
 
 ## Formatting and exports
 
