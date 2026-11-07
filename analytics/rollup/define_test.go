@@ -36,6 +36,9 @@ func TestDefineRejects(t *testing.T) {
 		{"grain not a time", func() (*rollup.Rollup, error) {
 			return rollup.Define("r", ship, rollup.Day(s.Weight), nil, count)
 		}, "holds neither dates, times nor epochs"},
+		{"epoch grain on text", func() (*rollup.Rollup, error) {
+			return rollup.Define("r", ship, rollup.Day(s.ProNumber).Epoch(), nil, count)
+		}, "is declared as epochs but does not hold 64-bit integers"},
 		{"tenant dimension", func() (*rollup.Rollup, error) {
 			return rollup.Define("r", ship, rollup.Day(s.CreatedAt), rollup.Dims(s.OrganizationID), count)
 		}, "is a tenant column"},
@@ -250,5 +253,16 @@ func TestQuantileInterpolatesInsideTheBin(t *testing.T) {
 	}
 	if got := rollup.Quantile([]int64{0, 0, 0, 0}, bounds, 0.5); got != 0 {
 		t.Errorf("an empty histogram = %v, want 0", got)
+	}
+}
+
+func TestEpochGrainReadsAnUnsuffixedBigintAsUnixSeconds(t *testing.T) {
+	r, err := rollup.Define("weight_hourly", fleetdb.ShipmentsSchema(), rollup.Hour(s.Weight).Epoch(), nil,
+		rollup.Measures(rollup.Count()))
+	if err != nil {
+		t.Fatalf("Define: %v", err)
+	}
+	if sql := rollup.Migration(r); !strings.Contains(sql, "to_timestamp") {
+		t.Fatalf("an epoch grain buckets through to_timestamp; the migration has none:\n%s", sql)
 	}
 }

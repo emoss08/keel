@@ -52,8 +52,17 @@ func columnOf(e keel.Expr) colRef {
 
 // Grain is the period a rollup aggregates a date, time or epoch column to.
 type Grain struct {
-	col  colRef
-	unit ir.Bucket
+	col   colRef
+	unit  ir.Bucket
+	epoch bool
+}
+
+// Epoch declares that the grain column holds Unix seconds. A bigint column is read as epochs
+// without it only when its name ends in _at, _date or _time; Epoch covers one named otherwise,
+// such as "timestamp", whose table is not a report table and so cannot say type=epoch.
+func (g Grain) Epoch() Grain {
+	g.epoch = true
+	return g
 }
 
 // Hour aggregates to the hour of c.
@@ -245,6 +254,7 @@ type Rollup struct {
 	source      *schema.Table
 	grain       int32
 	grainType   schema.ValueType
+	epochGrain  bool
 	unit        ir.Bucket
 	dims        []int32
 	measures    []resolvedMeasure
@@ -300,7 +310,7 @@ func Define(name string, table *schema.Table, grain Grain, dims []Dim, measures 
 	}
 	r := &Rollup{
 		name: name, source: table, unit: grain.unit, zoneName: o.zone, sourceIndex: o.sourceIndex,
-		tenantZone: o.tenantZone, where: o.where,
+		tenantZone: o.tenantZone, where: o.where, epochGrain: grain.epoch,
 	}
 	if r.tenantZone != nil {
 		r.zoneName = ""
@@ -388,6 +398,12 @@ func (r *Rollup) own(c colRef) (int32, error) {
 func (r *Rollup) checkGrain() error {
 	c := &r.source.Columns[r.grain]
 	r.grainType = valueType(c)
+	if r.epochGrain {
+		if c.Kind != schema.KindInt64 {
+			return fmt.Errorf("grain: %s is declared as epochs but does not hold 64-bit integers", c.Name)
+		}
+		r.grainType = schema.ValueEpoch
+	}
 	switch r.grainType {
 	case schema.ValueTime, schema.ValueEpoch:
 	case schema.ValueDate:
