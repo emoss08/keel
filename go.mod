@@ -2,7 +2,7 @@ module github.com/emoss08/keel
 
 go 1.26.0
 
-toolchain go1.26.10
+toolchain go1.26.11
 
 retract (
 	v0.6.0 // Tagged on v0.5.0's commit by mistake, without the pool change; use v0.6.1.
@@ -27,7 +27,7 @@ require (
 	github.com/paulmach/orb v0.13.0
 	github.com/shopspring/decimal v1.5.0
 	github.com/sourcegraph/conc v0.3.1-0.20240121214520-5f936abd7ae8
-	github.com/xuri/excelize/v2 v2.11.0
+	github.com/xuri/excelize/v2 v2.11.1
 	golang.org/x/sync v0.24.0
 	golang.org/x/text v0.43.0
 	golang.org/x/tools v0.52.0
@@ -60,20 +60,20 @@ require (
 	github.com/mitchellh/hashstructure/v2 v2.0.2 // indirect
 	github.com/muesli/cancelreader v0.2.2 // indirect
 	github.com/pierrec/lz4/v4 v4.1.22 // indirect
-	github.com/richardlehane/mscfb v1.0.7 // indirect
+	github.com/richardlehane/mscfb v1.0.9 // indirect
 	github.com/richardlehane/msoleps v1.0.6 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/tiendc/go-deepcopy v1.7.2 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/xo/terminfo v1.0.0 // indirect
-	github.com/xuri/efp v0.0.1 // indirect
+	github.com/xuri/efp v0.0.3-0.20260924042702-217b81952dec // indirect
 	github.com/xuri/nfp v0.0.2-0.20250530014748-2ddeb826f9a9 // indirect
 	github.com/zeebo/xxh3 v1.0.2 // indirect
 	golang.org/x/arch v0.0.0-20210923205945-b76863e36670 // indirect
 	golang.org/x/crypto v0.58.0 // indirect
 	golang.org/x/exp v0.0.0-20250408133849-7e4ce0ab07d0 // indirect
 	golang.org/x/mod v0.42.0 // indirect
-	golang.org/x/net v0.61.0 // indirect
+	golang.org/x/net v0.62.0 // indirect
 	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/telemetry v0.0.0-20261009151841-97e8ea77aa2a // indirect
 	golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da // indirect
