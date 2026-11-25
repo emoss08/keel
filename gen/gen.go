@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"go/types"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -62,8 +63,12 @@ func Generate(o Options) ([]File, error) {
 	cfg := &packages.Config{
 		Mode: packages.NeedName | packages.NeedTypes | packages.NeedSyntax | packages.NeedModule | packages.NeedFiles,
 		Dir:  o.Dir,
-		Env:  loaderEnv(os.Environ()),
 	}
+	goflags, err := goEnv(o.Dir, "GOFLAGS")
+	if err != nil {
+		return nil, err
+	}
+	cfg.Env = loaderEnv(os.Environ(), goflags)
 	if len(o.Tags) > 0 {
 		cfg.BuildFlags = []string{"-tags=" + strings.Join(o.Tags, ",")}
 	}
@@ -243,22 +248,39 @@ func isGenerated(p *packages.Package) bool {
 	return false
 }
 
-// loaderEnv is env without -trimpath in GOFLAGS: the generator reads doc comments and enum
-// declarations from the files that dependencies' positions name, and a trimmed build names them
-// by module path instead of the file on disk.
-func loaderEnv(env []string) []string {
-	out := make([]string, 0, len(env))
+// loaderEnv is env with goflags, the effective GOFLAGS, minus -trimpath: the generator reads
+// doc comments and enum declarations from the files that dependencies' positions name, and a
+// trimmed build names them by module path instead of the file on disk. goflags comes from
+// go env, so a -trimpath set with go env -w is dropped too; setting GOFLAGS in the environment
+// overrides the go env file, so its other flags are kept by carrying them over, and an empty
+// GOFLAGS would read as unset and bring the file back, so -trimpath=false is always written.
+func loaderEnv(env []string, goflags string) []string {
+	out := make([]string, 0, len(env)+1)
 	for _, kv := range env {
-		if flags, ok := strings.CutPrefix(kv, "GOFLAGS="); ok {
-			kept := make([]string, 0, 4)
-			for _, f := range strings.Fields(flags) {
-				if f != "-trimpath" && f != "-trimpath=true" {
-					kept = append(kept, f)
-				}
-			}
-			kv = "GOFLAGS=" + strings.Join(kept, " ")
+		if !strings.HasPrefix(kv, "GOFLAGS=") {
+			out = append(out, kv)
 		}
-		out = append(out, kv)
 	}
-	return out
+	kept := make([]string, 0, 4)
+	for _, f := range strings.Fields(goflags) {
+		if f != "-trimpath" && f != "-trimpath=true" && f != "-trimpath=false" {
+			kept = append(kept, f)
+		}
+	}
+	kept = append(kept, "-trimpath=false")
+	return append(out, "GOFLAGS="+strings.Join(kept, " "))
+}
+
+// goEnv returns the value go env reports for name in dir, which honors both the environment and
+// the go env file.
+func goEnv(dir, name string) (string, error) {
+	cmd := exec.Command("go", "env", name)
+	cmd.Dir = dir
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("go env %s: %w: %s", name, err, strings.TrimSpace(stderr.String()))
+	}
+	return strings.TrimSpace(string(out)), nil
 }

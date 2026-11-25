@@ -18,8 +18,13 @@ import (
 func keelTypes(t *testing.T) *types.Package {
 	t.Helper()
 	_, file, _, _ := runtime.Caller(0)
+	dir := filepath.Dir(filepath.Dir(file))
+	goflags, err := goEnv(dir, "GOFLAGS")
+	if err != nil {
+		t.Fatal(err)
+	}
 	pkgs, err := packages.Load(&packages.Config{Mode: packages.NeedName | packages.NeedTypes,
-		Dir: filepath.Dir(filepath.Dir(file)), Env: loaderEnv(os.Environ())}, keelPath)
+		Dir: dir, Env: loaderEnv(os.Environ(), goflags)}, keelPath)
 	if err != nil {
 		t.Fatal(err)
 	}
