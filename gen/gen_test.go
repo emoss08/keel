@@ -665,9 +665,35 @@ func TestLookupTag(t *testing.T) {
 }
 
 func TestLoaderEnvDropsTrimpath(t *testing.T) {
-	got := loaderEnv([]string{"HOME=/h", "GOFLAGS=-trimpath -tags=x -p=4", "GOFLAGS=-trimpath=true"})
-	want := []string{"HOME=/h", "GOFLAGS=-tags=x -p=4", "GOFLAGS="}
+	got := loaderEnv([]string{"HOME=/h", "GOFLAGS=-trimpath", "PATH=/bin"}, "-trimpath -tags=x -trimpath=true -p=4")
+	want := []string{"HOME=/h", "PATH=/bin", "GOFLAGS=-tags=x -p=4 -trimpath=false"}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("loaderEnv = %q, want %q", got, want)
+	}
+}
+
+func TestGenerateReadsDependenciesWhenTheGoConfigTrimsPaths(t *testing.T) {
+	dir := moduleFiles(t, "", map[string]string{
+		"kinds/kinds.go": "package kinds\n\ntype Status string\n\nconst (\n" +
+			"\t// Open is waiting for work.\n\tOpen Status = \"Open\"\n\tClosed Status = \"Closed\"\n)\n",
+		"models/order.go": "package models\n\nimport (\n\t\"github.com/emoss08/keel\"\n" +
+			"\t\"example.com/app/kinds\"\n)\n\ntype Order struct {\n\tkeel.Table ~keel:\"orders\"~\n" +
+			"\tID string ~keel:\"id,pk\"~\n\tStatus kinds.Status ~keel:\"status\"~\n}\n",
+	})
+	goenv := filepath.Join(t.TempDir(), "env")
+	if err := os.WriteFile(goenv, []byte("GOFLAGS=-trimpath\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GOENV", goenv)
+	t.Setenv("GOFLAGS", "")
+
+	if _, err := Generate(Options{Dir: dir, Patterns: []string{"./models"}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestGoEnvReportsItsFailure(t *testing.T) {
+	if _, err := goEnv(filepath.Join(t.TempDir(), "missing"), "GOFLAGS"); err == nil {
+		t.Fatal("go env ran in a directory that does not exist")
 	}
 }
