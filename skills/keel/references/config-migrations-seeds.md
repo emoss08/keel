@@ -20,11 +20,7 @@ db, err := keel.Open(ctx, keel.Config{
         sc, ok := ctx.Value(scopeKey{}).(scope)
         return sc.SystemReason, ok && sc.SystemReason != ""
     },
-    OnBegin: func(ctx context.Context, tx keel.TxInfo) ([]keel.Statement, error) { // RLS, pipelined: no extra round trip
-        sc, _ := ctx.Value(scopeKey{}).(scope)
-        return []keel.Statement{{SQL: "SELECT set_config('app.organization_id', $1, true)",
-            Args: []any{string(sc.OrganizationID)}}}, nil
-    },
+    TenantSettings: []string{"app.organization_id", "app.business_unit_id"}, // RLS, pipelined: no extra round trip
     NewID:        newID,               // func(prefix string) string; required for autoid
     AfterConnect: numeric.Register,    // binary shopspring/decimal codec (keel/numeric)
     Tables:       keeltables.All(),    // readable constraint errors
@@ -36,7 +32,8 @@ db, err := keel.Open(ctx, keel.Config{
 |---|---|
 | `DSN` / `Pool` | connection string, or a parsed `*pgxpool.Config` to size the pool |
 | `TenantColumns`, `Tenant`, `System` | tenancy (see the transactions reference) |
-| `OnBegin` | statements at the start of every transaction; makes every terminal run in an implicit tx. It should only read its context |
+| `TenantSettings` | transaction-local settings holding the tenant's values, one per tenant column, for RLS policies; set with BEGIN, no extra round trip |
+| `OnBegin` | statements at the start of every transaction; makes every terminal run in an implicit tx. It should only read its context; prefer `TenantSettings` for tenant RLS |
 | `NewID`, `Now` | key generator, clock |
 | `Observers`, `ObserveArgs` | statement observers; bound values (dev only) |
 | `AfterConnect`, `LoadTypes`, `SkipEnums` | codecs, domains/composites; enums are registered automatically |
