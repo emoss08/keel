@@ -67,12 +67,12 @@ Open one per database at startup and close it at shutdown. The pool connects on 
 db, err := keel.Open(ctx, keel.Config{
     DSN:           os.Getenv("DATABASE_URL"),
     TenantColumns: []string{"organization_id", "business_unit_id"},
-    Tenant: func(ctx context.Context) ([]any, bool) {
+    Tenant: func(ctx context.Context) ([]string, bool) {
         sc, ok := ctx.Value(scopeKey{}).(scope)
         if !ok || sc.SystemReason != "" {
             return nil, false
         }
-        return []any{sc.OrganizationID, sc.BusinessUnitID}, true
+        return []string{string(sc.OrganizationID), string(sc.BusinessUnitID)}, true
     },
     System: func(ctx context.Context) (string, bool) {
         sc, ok := ctx.Value(scopeKey{}).(scope)
@@ -104,7 +104,7 @@ the request context.
 | `DSN` | `string` | connection string; required unless `Pool` is set |
 | `Pool` | `*pgxpool.Config` | a parsed pool configuration, used instead of `DSN`; keel sets its query mode and statement cache and wraps its `AfterConnect` |
 | `TenantColumns` | `[]string` | names of the tenant columns, in the order `Tenant` returns their values |
-| `Tenant` | `func(ctx) ([]any, bool)` | the tenant of the context; a result with a different number of values than `TenantColumns` counts as no tenant |
+| `Tenant` | `func(ctx) ([]string, bool)` | the tenant of the context, one text key per tenant column; a result with a different number of values than `TenantColumns` counts as no tenant |
 | `System` | `func(ctx) (reason string, ok bool)` | reports a system scope; checked before `Tenant` |
 | `OnBegin` | `func(ctx, keel.TxInfo) ([]keel.Statement, error)` | statements sent at the start of every transaction, explicit or implicit; when set, every terminal outside a transaction runs in an implicit one |
 | `NewID` | `func(prefix string) string` | new primary keys for `autoid` columns; a write that needs one fails without it |
@@ -114,7 +114,7 @@ the request context.
 | `AfterConnect` | `func(ctx, *pgx.Conn) error` | runs on every new connection after keel registers its types; register codecs here |
 | `LoadTypes` | `[]string` | user-defined types (domains, composites) and their array types to register on every connection |
 | `SkipEnums` | `bool` | stops keel registering every enum type of the database on each new connection |
-| `JSON` | `*keel.JSONCodec` | the JSON implementation for `json` and `jsonb` values (`Marshal`, `Unmarshal`, and `UnmarshalNumber` for `jsonnumber` columns); each nil function defaults to sonic's `encoding/json`-compatible mode |
+| `JSON` | `*keel.JSONCodec` | the JSON implementation for `json` and `jsonb` values (`Marshal`, `Unmarshal`, and `UnmarshalNumber` for `jsonnumber` columns); each nil function defaults to the standard library's `encoding/json` |
 | `PlanCache` | `keel.PlanCache` | how statements are prepared: `PlanCacheAuto` (default), `PlanCacheCustom`, `PlanCacheOff` |
 | `StatementCacheCapacity` | `int` | prepared statements (or, with `PlanCacheOff`, statement descriptions) kept per connection; defaults to 512 |
 | `Replicas` | `[]keel.ReplicaConfig` | streaming replicas (`DSN` or `Pool`, and a `Weight`) that reads marked with `keel.OnReplica` run on; see [Read replicas](#read-replicas) |
@@ -215,15 +215,18 @@ deallocated beyond it.
 
 ### JSON
 
-`jsonb` fields are encoded and decoded with [sonic](https://github.com/bytedance/sonic) in its
-`encoding/json`-compatible mode (`sonic.ConfigStd`): a value encodes to the bytes `encoding/json`
-would give it, HTML escaped and with map keys sorted, and decodes as `encoding/json` would decode
-it, several times faster. `Config.JSON` replaces any of the three functions; one it leaves nil
-keeps the default. sonic's fastest mode skips the escaping and the key sorting:
+`jsonb` fields are encoded and decoded with the standard library's `encoding/json`, which since
+Go 1.27 runs on the `encoding/json/v2` engine: a value encodes to the bytes `encoding/json` has
+always given it, HTML escaped and with map keys sorted, and decodes as it always has. keel depends
+on no third-party JSON library, which keeps it quick to compile. `Config.JSON` replaces any of the
+three functions; one it leaves nil keeps the default. A hot path can trade those guarantees for
+speed with `encoding/json/v2`'s own options or a faster library:
 
 ```go
-JSON: &keel.JSONCodec{Marshal: sonic.Marshal, Unmarshal: sonic.Unmarshal,
-    UnmarshalNumber: sonic.Config{UseNumber: true}.Froze().Unmarshal},
+JSON: &keel.JSONCodec{
+    Marshal:   func(v any) ([]byte, error) { return jsonv2.Marshal(v) },
+    Unmarshal: func(data []byte, v any) error { return jsonv2.Unmarshal(data, v) },
+},
 ```
 
 The codec is registered for `json` and `jsonb` on every connection and also encodes `jsonb` values
@@ -245,7 +248,7 @@ type AuditEntry struct {
 
 ```
 
-The default `UnmarshalNumber` is `sonic.ConfigStd` with `UseNumber`.
+The default `UnmarshalNumber` is `encoding/json`'s `Decoder` with `UseNumber`.
 
 `jsonnumber` applies wherever keel decodes the model's rows (queries, relation loads, values
 read back after writes) on connections keel opened; on a connection joined with `JoinTx`, which

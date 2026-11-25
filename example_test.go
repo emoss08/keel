@@ -106,12 +106,12 @@ func appConfig(dsn string) keel.Config {
 	return keel.Config{
 		DSN:           dsn,
 		TenantColumns: []string{"organization_id", "business_unit_id"},
-		Tenant: func(ctx context.Context) ([]any, bool) {
+		Tenant: func(ctx context.Context) ([]string, bool) {
 			sc, ok := ctx.Value(scopeKey{}).(scope)
 			if !ok || sc.SystemReason != "" {
 				return nil, false
 			}
-			return []any{sc.OrganizationID, sc.BusinessUnitID}, true
+			return []string{string(sc.OrganizationID), string(sc.BusinessUnitID)}, true
 		},
 		System: func(ctx context.Context) (string, bool) {
 			sc, ok := ctx.Value(scopeKey{}).(scope)
@@ -136,12 +136,12 @@ func Example_quickStart() {
 	db, err := keel.Open(ctx, keel.Config{
 		DSN:           os.Getenv("DATABASE_URL"),
 		TenantColumns: []string{"organization_id", "business_unit_id"},
-		Tenant: func(ctx context.Context) ([]any, bool) {
+		Tenant: func(ctx context.Context) ([]string, bool) {
 			t, ok := ctx.Value(tenantCtxKey{}).([2]ids.ID)
 			if !ok {
 				return nil, false
 			}
-			return []any{t[0], t[1]}, true
+			return []string{string(t[0]), string(t[1])}, true
 		},
 		NewID: newID,
 	})

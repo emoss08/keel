@@ -103,12 +103,12 @@ func openDBWith(t testing.TB, clk *clock, edit func(cfg *keel.Config)) *keel.DB 
 	cfg := keel.Config{
 		DSN:           testDSN,
 		TenantColumns: []string{"organization_id", "business_unit_id"},
-		Tenant: func(ctx context.Context) ([]any, bool) {
+		Tenant: func(ctx context.Context) ([]string, bool) {
 			v, ok := ctx.Value(tenantKey{}).(tenant)
 			if !ok {
 				return nil, false
 			}
-			return []any{v.org, v.bu}, true
+			return []string{string(v.org), string(v.bu)}, true
 		},
 		System: func(ctx context.Context) (string, bool) {
 			r, ok := ctx.Value(systemKey{}).(string)

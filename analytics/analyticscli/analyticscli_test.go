@@ -213,9 +213,9 @@ func config() keel.Config {
 	return keel.Config{
 		DSN:           testDSN,
 		TenantColumns: []string{"organization_id", "business_unit_id"},
-		Tenant: func(ctx context.Context) ([]any, bool) {
+		Tenant: func(ctx context.Context) ([]string, bool) {
 			v, ok := ctx.Value(tenantKey{}).([2]ids.ID)
-			return []any{v[0], v[1]}, ok
+			return []string{string(v[0]), string(v[1])}, ok
 		},
 		NewID: func(prefix string) string { return prefix + randHex() },
 	}

@@ -342,9 +342,9 @@ func TestSlowConnectionWaitsNameTheirTenant(t *testing.T) {
 	db, err := Open(ctx, Config{
 		Pool:          pc,
 		TenantColumns: []string{"organization_id"},
-		Tenant: func(ctx context.Context) ([]any, bool) {
+		Tenant: func(ctx context.Context) ([]string, bool) {
 			org, ok := ctx.Value(waitTenantKey{}).(string)
-			return []any{org}, ok
+			return []string{org}, ok
 		},
 		SlowWaits: SlowWaitConfig{
 			After:  10 * time.Millisecond,

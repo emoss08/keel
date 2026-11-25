@@ -9,12 +9,12 @@ Open one `*keel.DB` per database at startup (safe for concurrent use), `defer db
 db, err := keel.Open(ctx, keel.Config{
     DSN:           os.Getenv("DATABASE_URL"),
     TenantColumns: []string{"organization_id", "business_unit_id"},
-    Tenant: func(ctx context.Context) ([]any, bool) {
+    Tenant: func(ctx context.Context) ([]string, bool) {
         sc, ok := ctx.Value(scopeKey{}).(scope)
         if !ok || sc.SystemReason != "" {
             return nil, false
         }
-        return []any{sc.OrganizationID, sc.BusinessUnitID}, true
+        return []string{string(sc.OrganizationID), string(sc.BusinessUnitID)}, true
     },
     System: func(ctx context.Context) (string, bool) {
         sc, ok := ctx.Value(scopeKey{}).(scope)
@@ -40,7 +40,7 @@ db, err := keel.Open(ctx, keel.Config{
 | `NewID`, `Now` | key generator, clock |
 | `Observers`, `ObserveArgs` | statement observers; bound values (dev only) |
 | `AfterConnect`, `LoadTypes`, `SkipEnums` | codecs, domains/composites; enums are registered automatically |
-| `JSON` | `*keel.JSONCodec` (default sonic, encoding/json compatible) |
+| `JSON` | `*keel.JSONCodec` (default the standard library's encoding/json) |
 | `PlanCache`, `StatementCacheCapacity` | `PlanCacheAuto` (default), `PlanCacheCustom`, `PlanCacheOff` (old PgBouncer) |
 | `Replicas`, `MaxReplicaLag` | read replicas |
 | `DataVersions`, `Cache` | change counters and the result cache |

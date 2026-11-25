@@ -28,7 +28,7 @@ func (db *DB) resolveScope(ctx context.Context) *scopeState {
 		if values, ok := db.cfg.Tenant(ctx); ok && len(values) == len(db.cfg.TenantColumns) {
 			st.tenant = make([]any, len(values))
 			for i, v := range values {
-				st.tenant[i] = normalize(v)
+				st.tenant[i] = v
 			}
 		}
 	}

@@ -134,12 +134,12 @@ type tenantCtxKey struct{}
 db, err := keel.Open(ctx, keel.Config{
     DSN:           os.Getenv("DATABASE_URL"),
     TenantColumns: []string{"organization_id", "business_unit_id"},
-    Tenant: func(ctx context.Context) ([]any, bool) {
+    Tenant: func(ctx context.Context) ([]string, bool) {
         t, ok := ctx.Value(tenantCtxKey{}).([2]ids.ID)
         if !ok {
             return nil, false
         }
-        return []any{t[0], t[1]}, true
+        return []string{string(t[0]), string(t[1])}, true
     },
     NewID: newID, // your generator: func(prefix string) string
 })

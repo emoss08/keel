@@ -122,12 +122,12 @@ func keelConfig(dsn string) keel.Config {
 	return keel.Config{
 		DSN:           dsn,
 		TenantColumns: []string{"organization_id", "business_unit_id"},
-		Tenant: func(ctx context.Context) ([]any, bool) {
+		Tenant: func(ctx context.Context) ([]string, bool) {
 			v, ok := ctx.Value(tenantKey{}).([2]ids.ID)
 			if !ok {
 				return nil, false
 			}
-			return []any{v[0], v[1]}, true
+			return []string{string(v[0]), string(v[1])}, true
 		},
 		JSON: &keel.JSONCodec{Marshal: sonic.Marshal, Unmarshal: sonic.Unmarshal},
 		NewID: func(prefix string) string {
