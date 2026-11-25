@@ -57,6 +57,9 @@ func TestRequireWait(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer pool.Close()
+	if err := pool.Ping(ctx); err != nil {
+		t.Fatal(err)
+	}
 
 	short, cancel := context.WithTimeout(ctx, 150*time.Millisecond)
 	defer cancel()
