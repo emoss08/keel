@@ -66,12 +66,12 @@ func testConfig(dsn string) keel.Config {
 	return keel.Config{
 		DSN:           dsn,
 		TenantColumns: []string{"organization_id", "business_unit_id"},
-		Tenant: func(ctx context.Context) ([]any, bool) {
+		Tenant: func(ctx context.Context) ([]string, bool) {
 			t, ok := ctx.Value(tenantKey{}).(tenant)
 			if !ok {
 				return nil, false
 			}
-			return []any{t.org, t.bu}, true
+			return []string{string(t.org), string(t.bu)}, true
 		},
 		NewID: func(prefix string) string {
 			b := make([]byte, 10)

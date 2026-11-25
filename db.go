@@ -23,8 +23,9 @@ type Config struct {
 
 	// TenantColumns names the tenant columns, in the order Tenant returns their values.
 	TenantColumns []string
-	// Tenant returns the tenant of the context.
-	Tenant func(ctx context.Context) ([]any, bool)
+	// Tenant returns the tenant of the context: one value per tenant column, in the order of
+	// TenantColumns. Tenant columns hold text keys (Trenova's pulids), so the values are strings.
+	Tenant func(ctx context.Context) ([]string, bool)
 	// System reports whether the context carries a system scope, and its reason.
 	System func(ctx context.Context) (reason string, ok bool)
 
@@ -66,10 +67,10 @@ type Config struct {
 	// bind as arrays and decode into one shared string per label, so enum columns cost no
 	// allocation per row.
 	SkipEnums bool
-	// JSON encodes and decodes json and jsonb values. Each function left nil defaults to sonic in
-	// its encoding/json-compatible mode, which encodes a value to the bytes encoding/json would;
-	// set sonic.ConfigDefault's functions, which skip HTML escaping and map key sorting, for more
-	// speed. Its UnmarshalNumber decodes the columns tagged jsonnumber.
+	// JSON encodes and decodes json and jsonb values. Each function left nil defaults to the
+	// standard library's encoding/json; set another codec's functions (encoding/json/v2 with its
+	// own options, or a faster third-party library) to change it. Its UnmarshalNumber decodes the
+	// columns tagged jsonnumber.
 	JSON *JSONCodec
 	// PlanCache chooses how statements are prepared. The default, PlanCacheAuto, prepares every
 	// statement shape once per connection.
@@ -156,8 +157,8 @@ type JSONCodec struct {
 	Unmarshal func(data []byte, v any) error
 	// UnmarshalNumber decodes the columns tagged jsonnumber: as Unmarshal, except that a number
 	// decoded into an interface value (map[string]any, []any, any) is a json.Number holding its
-	// literal instead of a float64, so integers past 2^53 keep every digit. With sonic,
-	// sonic.Config{UseNumber: true}.Froze().Unmarshal.
+	// literal instead of a float64, so integers past 2^53 keep every digit. With encoding/json, a
+	// Decoder with UseNumber.
 	UnmarshalNumber func(data []byte, v any) error
 }
 
