@@ -28,6 +28,13 @@ type Config struct {
 	Tenant func(ctx context.Context) ([]string, bool)
 	// System reports whether the context carries a system scope, and its reason.
 	System func(ctx context.Context) (reason string, ok bool)
+	// TenantSettings names run-time parameters set, transaction-local, to the tenant's values at
+	// the start of every transaction a tenant scope opens: one per TenantColumns, in their order,
+	// such as "app.organization_id" for row-level security policies to compare with. They are
+	// sent with BEGIN in the same round trip, and tenant-scoped terminals outside a transaction
+	// run in an implicit one. System scopes and unscoped work set nothing. Unlike OnBegin, the
+	// settings follow the scope, so the result cache needs no Key for them.
+	TenantSettings []string
 
 	// OnBegin returns statements to run at the start of every transaction, explicit or implicit,
 	// for example a row-level security set_config. When it is set, terminals outside a transaction
@@ -224,6 +231,10 @@ func Open(ctx context.Context, cfg Config) (*DB, error) {
 	}
 	if cfg.TenantConcurrency < 0 {
 		return nil, errf("Config.TenantConcurrency must not be negative")
+	}
+	if len(cfg.TenantSettings) > 0 && len(cfg.TenantSettings) != len(cfg.TenantColumns) {
+		return nil, errf("Config.TenantSettings names %d settings for %d tenant columns",
+			len(cfg.TenantSettings), len(cfg.TenantColumns))
 	}
 	cfg.JSON = resolveJSON(cfg.JSON)
 	cfg.configure(pc)

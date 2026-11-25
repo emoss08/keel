@@ -78,13 +78,7 @@ db, err := keel.Open(ctx, keel.Config{
         sc, ok := ctx.Value(scopeKey{}).(scope)
         return sc.SystemReason, ok && sc.SystemReason != ""
     },
-    OnBegin: func(ctx context.Context, tx keel.TxInfo) ([]keel.Statement, error) {
-        sc, _ := ctx.Value(scopeKey{}).(scope)
-        return []keel.Statement{{
-            SQL:  "SELECT set_config('app.organization_id', $1, true)",
-            Args: []any{string(sc.OrganizationID)},
-        }}, nil
-    },
+    TenantSettings: []string{"app.organization_id", "app.business_unit_id"}, // for RLS policies
     NewID:     newID, // Trenova: func(p string) string { return pulid.MustNew(p).String() }
     Observers: []keel.Observer{slowQueryLog{threshold: 200 * time.Millisecond}},
 })
@@ -106,6 +100,7 @@ the request context.
 | `TenantColumns` | `[]string` | names of the tenant columns, in the order `Tenant` returns their values |
 | `Tenant` | `func(ctx) ([]string, bool)` | the tenant of the context, one text key per tenant column; a result with a different number of values than `TenantColumns` counts as no tenant |
 | `System` | `func(ctx) (reason string, ok bool)` | reports a system scope; checked before `Tenant` |
+| `TenantSettings` | `[]string` | run-time parameters set, transaction-local, to the tenant's values at the start of every transaction a tenant scope opens, one per `TenantColumns`; tenant-scoped terminals outside a transaction then run in an implicit one. System scopes and unscoped work set nothing |
 | `OnBegin` | `func(ctx, keel.TxInfo) ([]keel.Statement, error)` | statements sent at the start of every transaction, explicit or implicit; when set, every terminal outside a transaction runs in an implicit one |
 | `NewID` | `func(prefix string) string` | new primary keys for `autoid` columns; a write that needs one fails without it |
 | `Now` | `func() time.Time` | the time stamped into `autocreate` and `autoupdate` columns; defaults to `time.Now` |
@@ -149,10 +144,13 @@ For an application like Trenova, where every tenant table carries `organization_
   statement on a table with `tenant` columns is then scoped (see [Tenancy](#tenancy)).
 - Set `System` for work that is not done for one tenant (sweeps, reports, migrations), and give
   each system scope a reason so logs say why a statement crossed tenants.
-- Set `OnBegin` when Postgres row-level security backs the application's own checks. The
-  `set_config(…, true)` call is transaction-local, and keel pipelines `BEGIN`, the `OnBegin`
-  statements, the statement and `COMMIT` in one round trip, so the extra safety costs no extra
-  round trip (see [Transactions](#transactions)).
+- Set `TenantSettings` when Postgres row-level security backs the application's own checks:
+  policies compare the tenant columns with `current_setting('app.organization_id', true)`. The
+  settings are transaction-local, and keel pipelines `BEGIN`, the settings, the statement and
+  `COMMIT` in one round trip, so the extra safety costs no extra round trip (see
+  [Transactions](#transactions)). Because they follow the scope, the result cache needs no `Key`
+  for them. Use `OnBegin` for settings that depend on more than the tenant, such as a user's
+  permissions.
 - Set `NewID` to the application's ID generator.
 - Set `JSON` to a fast codec and register a binary decimal codec in `AfterConnect`.
 

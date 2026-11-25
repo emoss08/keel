@@ -98,7 +98,7 @@ func (db *DB) runnerFor(ctx context.Context, mode runMode) (*runner, error) {
 			rt = nil
 		}
 	}
-	if db.cfg.OnBegin != nil || rt != nil {
+	if db.cfg.OnBegin != nil || rt != nil || (len(db.cfg.TenantSettings) > 0 && r.sc.tenant != nil) {
 		r.tx = &txState{db: db, readOnly: !write, implicit: true, scopeCtx: ctx, scope: r.sc, rep: r.rep,
 			route: rt, hold: slotHold{slot: r.hold.slot}}
 		r.own = true

@@ -446,7 +446,8 @@ func durationSetting(d time.Duration) string {
 	return strconv.FormatInt(max(d.Milliseconds(), 1), 10) + "ms"
 }
 
-// queueBegin queues BEGIN, the transaction options and the OnBegin statements. With
+// queueBegin queues BEGIN, the transaction options, the tenant settings and the OnBegin
+// statements. With
 // Config.DeadlineTimeouts it also sets statement_timeout to the time left before the deadline of
 // the transaction's context: Read's or Write's for an explicit transaction, ctx, the context of the
 // round trip that begins it, for an implicit one (a Query.Timeout is a deadline on it).
@@ -474,6 +475,12 @@ func (tx *txState) queueBegin(ctx context.Context, b *pgx.Batch) (int, error) {
 	for _, st := range tx.opts.settings {
 		b.Queue("SELECT set_config($1, $2, true)", st.name, st.value)
 		n++
+	}
+	if tx.scope != nil && tx.scope.tenant != nil {
+		for i, name := range tx.db.cfg.TenantSettings {
+			b.Queue("SELECT set_config($1, $2, true)", name, tx.scope.tenant[i])
+			n++
+		}
 	}
 	if tx.db.cfg.OnBegin != nil {
 		info := TxInfo{ReadOnly: tx.readOnly, Implicit: tx.implicit}
